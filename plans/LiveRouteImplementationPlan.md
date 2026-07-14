@@ -4,6 +4,8 @@
 
 Build LiveRoute as a C++20 low-latency live itinerary replanning service, with the C++ serving path as the core project and only minimal surrounding app infrastructure.
 
+The cross-component v1 contracts are fixed in `plans/LiveRouteV1ArchitecturePlan.md`. This document describes the implementation components; where wording differs, the architecture contract governs service ownership, delivery, recovery, and concurrency semantics.
+
 Primary goal:
 
 > A multithreaded C++ service that receives live trip events, owns trip state by shard, fetches local OSRM travel-time matrices, incrementally replans only the affected itinerary suffix, and returns a revised plan under bounded latency with p50/p95/p99 benchmarks.
@@ -49,8 +51,11 @@ Each request and response envelope must carry a backend-generated `request_id` f
 
 Request fields:
 
+- `request_id`
 - `trip_id`
+- `runtime_epoch`
 - `sequence_number`
+- `observation_sequence`
 - `expected_state_version`
 - `event_timestamp`
 - `deadline_unix_ms`
@@ -224,7 +229,7 @@ Persistence direction:
 
 - PostgreSQL is part of v1 and is the durable source of truth for users, trips, saved plans, and recovery snapshots.
 - The backend owns PostgreSQL access. The C++ service keeps active trip state in memory and is rehydrated from a versioned snapshot after restart or reassignment.
-- Define an explicit durability boundary: which events/results must commit before acknowledgement, which GPS updates may be ephemeral or coalesced, and when snapshots are written.
+- Use the architecture contract's two-stage durable intent/outbox acknowledgement; GPS telemetry is non-durable/latest-value, and versioned snapshots checkpoint resolved mutation watermarks asynchronously.
 - Avoid putting database transactions in the C++ planner hot path or giving the planner direct database access.
 - Firebase is not the preferred durable source of truth for this systems-focused backend because it hides more of the database/query/runtime behavior and is less aligned with explicit low-latency service design.
 - Supabase is a hosted platform around PostgreSQL plus auth/storage/realtime features. It can be useful for product acceleration, but the core design should still treat PostgreSQL as the durable storage model and keep it outside the planner candidate loop.
@@ -238,10 +243,10 @@ Persistence direction:
 OSRM integration:
 
 - OSRM's Table service is an HTTP/JSON API, not a gRPC service.
-- The C++ `OsrmTravelTimeProvider` should call OSRM with a C++ HTTP client such as libcurl or Boost.Beast, then parse JSON and convert the result into `TravelTimeMatrix`.
+- The C++ `OsrmTravelTimeProvider` uses a bounded libcurl-multi wrapper, then parses JSON and converts the result into `TravelTimeMatrix`.
 - The planner must not call OSRM directly and must not parse OSRM JSON.
 - The backend gateway speaks WebSocket to browsers and bidirectional gRPC to the C++ replanning service, but OSRM-to-C++ remains behind the `TravelTimeProvider` abstraction.
-- There is no "gRPC with HTTP GET" path from OSRM; gRPC and HTTP GET are different protocols. For v1, use HTTP GET/POST from the provider adapter to local OSRM, then pass an immutable in-memory matrix into the planner.
+- There is no "gRPC with HTTP GET" path from OSRM; gRPC and HTTP GET are different protocols. For v1, use the documented HTTP GET Table endpoint from the provider adapter to local OSRM, then pass an immutable in-memory matrix into the planner.
 
 V2 route provider:
 
@@ -292,6 +297,9 @@ Implement runtime systems:
 - Add priority lanes for critical, high, normal, and advisory work; prefer critical/high work while allowing bounded normal-work progress to avoid starvation.
 - Partition trip ownership by `hash(trip_id) % shard_count`.
 - Ensure one trip's events are processed in order by its owning shard.
+- Run provider I/O and planner CPU work on separate bounded executors; shard owners never block on either.
+- Tag immutable planning snapshots with state version and planning generation; commit results only when both still match on the owner shard.
+- Allow at most one running plan and one coalesced pending replan trigger per trip.
 - Add GPS-event coalescing: keep at most one pending location update per trip, replacing older updates unless an older event crossed a geofence or route-deviation boundary.
 - Do not replan on every GPS update; trigger full replans only for route deviation, geofence crossing, material itinerary improvement, or deadline-slack risk.
 - Use initial slack policy: `slack > 20 min` no full replan, `10-20 min` ETA/progress refresh, `< 10 min` full replan, `< 0 min` critical replan.
@@ -306,6 +314,7 @@ Implement gRPC server:
 - Keep gRPC handlers thin: deserialize, validate, assign deadline, dispatch to shard, and serialize asynchronous responses.
 - Propagate client cancellation and deadline into the runtime and planner.
 - Do not assume stream arrival order provides global or cross-reconnect event ordering; enforce per-trip sequence and state-version checks.
+- Enforce runtime lease epochs, at-least-once idempotency, contiguous durable mutation ordering, and latest-value observation ordering.
 - Return structured statuses for accepted, duplicate, stale, infeasible, degraded, deadline exceeded, and internal error.
 
 Implement observability:
