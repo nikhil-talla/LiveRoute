@@ -13,10 +13,10 @@ Primary goal:
 V1 architecture:
 
 ```text
-Browser <-> WebSocket <-> Backend gateway
-                           |-- PostgreSQL: durable users, trips, saved plans, snapshots
-                           `-- bidirectional gRPC/Protobuf stream
-                                 <-> C++ gRPC callback server with in-memory active trip state
+CLI/load/integration client <-> WebSocket <-> single backend gateway
+                                                |-- PostgreSQL: durable state, command intents/outbox, leases
+                                                `-- bounded gRPC/Protobuf stream pool
+                                                      <-> single C++ callback server with in-memory active trips
   -> bounded ingress queue
   -> event priority lanes
   -> trip-id shard
@@ -36,7 +36,7 @@ Latency targets:
 
 ## Key Interfaces
 
-Use bidirectional streaming gRPC + Protocol Buffers between the backend and C++ service. The backend owns browser sessions and durable PostgreSQL records; the C++ service owns active trip state in memory.
+Use bidirectional streaming gRPC + Protocol Buffers between the backend and C++ service. The single V1 backend owns client sessions and durable PostgreSQL records; the single V1 C++ process owns active trip state in memory. Horizontal service replication is future work.
 
 Initial stream:
 
@@ -54,25 +54,26 @@ Request fields:
 - `request_id`
 - `trip_id`
 - `runtime_epoch`
-- `sequence_number`
+- `mutation_sequence`
 - `observation_sequence`
-- `expected_state_version`
-- `event_timestamp`
-- `deadline_unix_ms`
-- one event delta: location update, activity completed, activity delayed, reservation changed, travel delay
+- optional `expected_planner_state_version`
+- optional `expected_trip_revision`
+- `expires_at_unix_ms`
+- exactly one payload defined by the architecture contract; event occurrence time belongs to `ApplyTripEvent`
 - event priority derived by the service from event type and current trip state
 
 Response fields:
 
+- `request_id`
 - `trip_id`
-- `new_state_version`
-- `accepted_sequence_number`
-- `status`
-- revised itinerary suffix
-- completed/unchanged prefix summary
-- per-stage latency metrics
-- planner candidate count
-- deadline/cancellation/degraded-result flags
+- `runtime_epoch`
+- `trip_revision`
+- `planner_state_version`
+- `accepted_mutation_sequence`
+- `accepted_observation_sequence`
+- exactly one response payload such as acknowledgement, revised plan, snapshot, structured error, or pong; disposition/status and retryability live in the relevant payload
+
+The complete checked-in `.proto` definitions and WebSocket JSON Schemas are implementation prerequisites, not details to fill in inside handlers. Descriptor/JSON-Schema compatibility tests prevent accidental wire-contract drift.
 
 Keep the hot path transport-independent:
 
@@ -183,7 +184,8 @@ Product focus:
 - V1 focuses on the notification system and the C++ low-latency request-handling/replanning path.
 - The product should notify the user when they are approaching lateness for the next event.
 - Replanning is useful only when it supports a notification or gives the user a concrete alternative itinerary.
-- The frontend target is React/TypeScript with web and mobile-browser support.
+- V1 exercises the WebSocket gateway with CLI, load, and integration clients; it does not ship a user-facing frontend.
+- V1.5 adds the React/TypeScript frontend with web and mobile-browser support, plus user-facing login.
 - Native Android with Kotlin is a v2 target.
 - Native iOS with Swift/SwiftUI is a v3 target.
 
@@ -220,16 +222,16 @@ Trip sharding over a simple semaphore:
 
 HTTP/WebSocket/gRPC boundary:
 
-- V1 uses WebSockets between browsers and the backend for live events, notifications, revised plans, reconnects, and server-originated messages.
-- V1 uses a long-lived bidirectional gRPC stream between each backend instance and the C++ planner service.
+- V1 uses WebSockets between protocol clients and the backend for live events, notifications, revised plans, reconnects, and server-originated messages.
+- V1 deploys one backend and one C++ planner process. The backend uses a fixed pool of long-lived bidirectional gRPC streams to that planner process.
 - The backend translates WebSocket messages and PostgreSQL records into Protobuf stream envelopes; the C++ planner remains unaware of WebSocket, JSON, authentication, and database types.
-- Flow control is bounded at both boundaries. Slow browser connections and a slow or reconnecting planner stream must not create unbounded buffers.
+- Flow control is bounded at both boundaries. Slow clients and a slow or reconnecting planner stream must not create unbounded buffers.
 
 Persistence direction:
 
 - PostgreSQL is part of v1 and is the durable source of truth for users, trips, saved plans, and recovery snapshots.
-- The backend owns PostgreSQL access. The C++ service keeps active trip state in memory and is rehydrated from a versioned snapshot after restart or reassignment.
-- Use the architecture contract's two-stage durable intent/outbox acknowledgement; GPS telemetry is non-durable/latest-value, and versioned snapshots checkpoint resolved mutation watermarks asynchronously.
+- The backend owns PostgreSQL access. The C++ service keeps active trip state in memory and is rehydrated from a versioned snapshot after restart.
+- Use the architecture contract's two-stage durable intent/outbox acknowledgement. Retain command-intent outcome rows for the trip lifetime, while pruning covered outbox delivery rows. GPS telemetry is non-durable/latest-value, and versioned snapshots checkpoint resolved mutation watermarks asynchronously.
 - Avoid putting database transactions in the C++ planner hot path or giving the planner direct database access.
 - Firebase is not the preferred durable source of truth for this systems-focused backend because it hides more of the database/query/runtime behavior and is less aligned with explicit low-latency service design.
 - Supabase is a hosted platform around PostgreSQL plus auth/storage/realtime features. It can be useful for product acceleration, but the core design should still treat PostgreSQL as the durable storage model and keep it outside the planner candidate loop.
@@ -237,7 +239,7 @@ Persistence direction:
 `std::stop_token`:
 
 - A stop token is C++20's cooperative cancellation signal, commonly passed to work running in `std::jthread`.
-- LiveRoute uses it to stop planner search, provider calls, or queued work when the request deadline expires, the client disconnects, or a higher-priority event supersedes the current work.
+- LiveRoute uses it to stop planner search, provider calls, or queued replaceable work when the request deadline expires, its transport disconnects, or a higher-priority event supersedes it. An already recorded durable command is not cancelled merely because its WebSocket client disconnects.
 - The planner should check the token periodically and return the best feasible plan found so far.
 
 OSRM integration:
@@ -245,7 +247,7 @@ OSRM integration:
 - OSRM's Table service is an HTTP/JSON API, not a gRPC service.
 - The C++ `OsrmTravelTimeProvider` uses a bounded libcurl-multi wrapper, then parses JSON and converts the result into `TravelTimeMatrix`.
 - The planner must not call OSRM directly and must not parse OSRM JSON.
-- The backend gateway speaks WebSocket to browsers and bidirectional gRPC to the C++ replanning service, but OSRM-to-C++ remains behind the `TravelTimeProvider` abstraction.
+- The backend gateway speaks WebSocket to clients and bidirectional gRPC to the C++ replanning service, but OSRM-to-C++ remains behind the `TravelTimeProvider` abstraction.
 - There is no "gRPC with HTTP GET" path from OSRM; gRPC and HTTP GET are different protocols. For v1, use the documented HTTP GET Table endpoint from the provider adapter to local OSRM, then pass an immutable in-memory matrix into the planner.
 
 V2 route provider:
@@ -259,7 +261,8 @@ Set up the C++ project:
 
 - Use CMake, C++20, clang/gcc, `-Wall -Wextra -Wpedantic`, sanitizers, and release/profile builds.
 - Start with lightweight CTest/simple executable tests and `std::chrono` benchmark harnesses; defer GoogleTest and Google Benchmark until the core model, planner API, and runtime API stabilize.
-- Add protobuf/gRPC generation, a small CLI load generator, and a local OSRM configuration documented for development.
+- Add a single-host Docker Compose workflow for the backend, C++ service, PostgreSQL, and separate car/foot OSRM instances; expose only the backend on loopback by default.
+- Add Protobuf/gRPC generation, WebSocket JSON-Schema validation, a small CLI/load client, and local OSRM configuration documented for development.
 - Suggested layout: `src/domain`, `src/planner`, `src/runtime`, `src/routing`, `src/server`, `bench`, `tests`, `proto`.
 
 Implement the domain model:
@@ -267,7 +270,7 @@ Implement the domain model:
 - Define compact value types for `TripId`, `ActivityId`, `Location`, `TimeWindow`, `Activity`, `Reservation`, `TripEvent`, `TripState`, `ItinerarySegment`, and `ReplanResult`.
 - Add `PlaceId`, `ActivityTiming`, `HoursInfo`, `EventPriority`, and explicit event types for `PlaceFoundClosed`, `OperatingHoursChanged`, `RouteDeviationDetected`, and advisory refresh events.
 - Store itinerary activities in index-based vectors rather than pointer-heavy graphs.
-- Track `state_version`, latest accepted sequence number, completed prefix index, current activity, current location, and remaining suffix.
+- Track `trip_revision`, `planner_state_version`, accepted mutation/observation sequences, completed prefix index, current activity, current location, and remaining suffix.
 - Enforce idempotency: duplicate events are accepted without double-applying state changes; stale events do not overwrite newer state.
 
 Implement incremental planning:
@@ -298,6 +301,7 @@ Implement runtime systems:
 - Partition trip ownership by `hash(trip_id) % shard_count`.
 - Ensure one trip's events are processed in order by its owning shard.
 - Run provider I/O and planner CPU work on separate bounded executors; shard owners never block on either.
+- Reserve internal completion capacity before dispatching provider/planner work and reserve essential gRPC response capacity before admitting a state-changing request.
 - Tag immutable planning snapshots with state version and planning generation; commit results only when both still match on the owner shard.
 - Allow at most one running plan and one coalesced pending replan trigger per trip.
 - Add GPS-event coalescing: keep at most one pending location update per trip, replacing older updates unless an older event crossed a geofence or route-deviation boundary.
@@ -311,11 +315,23 @@ Implement gRPC server:
 
 - Use the modern C++ callback API.
 - Implement the `PlanTrips` bidirectional stream with explicit connection lifecycle, per-message correlation, flow control, and reconnect behavior.
-- Keep gRPC handlers thin: deserialize, validate, assign deadline, dispatch to shard, and serialize asynchronous responses.
-- Propagate client cancellation and deadline into the runtime and planner.
+- Keep gRPC handlers thin: deserialize, validate, convert `expires_at_unix_ms` to a monotonic internal deadline, reserve response capacity, dispatch to shard, and serialize asynchronous responses.
+- Propagate stream cancellation and per-message expiry into replaceable runtime/provider/planner work without abandoning accepted durable commands.
 - Do not assume stream arrival order provides global or cross-reconnect event ordering; enforce per-trip sequence and state-version checks.
-- Enforce runtime lease epochs, at-least-once idempotency, contiguous durable mutation ordering, and latest-value observation ordering.
+- Enforce current runtime lease epochs, at-least-once idempotency, contiguous durable mutation ordering, independent trip/planner version rules, and latest-value observation ordering.
+- Bind a trip to its current stream during bootstrap. Route committed results to that binding, or retain the latest plan in `TripState` for the next bootstrap when disconnected.
 - Return structured statuses for accepted, duplicate, stale, infeasible, degraded, deadline exceeded, and internal error.
+
+Implement backend durability and WebSocket gateway:
+
+- Use one backend process in V1; do not add cross-instance routing or distributed fanout.
+- Add complete `liveroute.v1` Protobuf schemas and WebSocket JSON Schemas before implementing handlers.
+- Add PostgreSQL migrations for canonical trip data, `command_intents`, lease-neutral `planner_outbox`, snapshots, and runtime leases.
+- Retain command-intent payload digests and outcomes for the trip lifetime; reject reuse of an idempotency key with a different payload.
+- Acquire/renew leases using PostgreSQL time. Add the current epoch only when dispatching an outbox entry, including replay after restart.
+- Use bounded per-connection admission, bounded per-trip pending-command queues, and bounded outbound buffers.
+- Use the architecture contract's local development bearer-token authentication, trip authorization, origin policy, secret redaction, and loopback/private-network defaults.
+- On reconnect, return canonical trip state, requested outstanding command outcomes, and the latest rehydrated planner state/plan.
 
 Implement observability:
 
@@ -374,6 +390,18 @@ OSRM-backed integration tests:
 - Place found closed.
 - Operating hours change makes a remaining activity infeasible.
 
+Cross-component recovery and contract tests:
+
+- Complete Protobuf descriptors and WebSocket JSON Schemas pass compatibility checks.
+- Connection-scoped WebSocket messages work without `trip_id`; trip-scoped messages require it.
+- Unauthenticated, unauthorized, oversized, and disallowed-origin messages are rejected before domain work.
+- A command retry returns its stored outcome after the covered outbox row has been pruned.
+- Reusing one `message_id` with a different payload is rejected.
+- Backend restart wraps replayed lease-neutral outbox work in the newly acquired epoch.
+- Telemetry may advance planner state without causing an ordinary durable trip mutation to fail its trip-revision check.
+- Essential response capacity is unavailable before admission, so no state mutation occurs.
+- A plan completing across stream reconnect is delivered on the current binding or returned by bootstrap.
+
 Benchmark suites:
 
 - Planner-only latency by suffix size and beam width.
@@ -400,7 +428,8 @@ Acceptance criteria:
 ## Assumptions
 
 - The initial systems-design context is `plans/LiveRouteInitialPlan.md`.
-- V1 includes a browser WebSocket gateway and PostgreSQL durability, while the low-latency C++ service remains the core systems component.
+- V1 is a single-host, single-backend, single-C++-process development/demo deployment with a WebSocket gateway and PostgreSQL durability; horizontal scaling and production deployment are future work.
+- V1 uses CLI/load/integration WebSocket clients. The React/TypeScript frontend and user-facing login are V1.5.
 - Bidirectional gRPC + Protobuf is the v1 backend-to-planner interface.
 - OSRM is the first realistic travel-time provider.
 - Manual or seed-file hours are the first operating-hours provider; external place APIs are future adapters.
