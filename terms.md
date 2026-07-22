@@ -6,6 +6,7 @@ Concise definitions for the v1 architecture.
 
 - **Service:** A separately running software process, such as the backend, C++ planner, PostgreSQL, or an OSRM instance. Multiple services can run on one computer using containers.
 - **V1 deployment:** One backend process and one C++ planner process plus PostgreSQL and separate car/foot OSRM instances on a single-host private Docker Compose network. React is a V1.5 client.
+- **V1 backend stack:** Go 1.26 with `net/http`, `coder/websocket`, gRPC-Go, `pgx/v5`, Goose SQL migrations, and draft-2020-12 JSON Schema validation.
 - **WebSocket client:** A CLI, load, or integration client in V1, or the React browser client in V1.5, that uses the same backend WebSocket contract.
 - **Active trip:** A trip currently loaded into the C++ planner's in-memory runtime for live updates and replanning.
 - **Planner snapshot:** A persisted checkpoint of the C++ planner state for an active trip. It is used to restore the trip after a restart; it is not the complete source of truth for the trip.
@@ -19,25 +20,66 @@ Concise definitions for the v1 architecture.
 - **Durable client command:** A client command whose intent must survive disconnects and service restarts. The backend records it in PostgreSQL before dispatching it to C++.
 - **Durable:** Persisted in a way that can be recovered after a process or connection failure.
 - **At-least-once delivery:** A command may be delivered more than once because of retries. The receiver must make duplicate deliveries safe.
-- **Idempotency:** Processing the same command again does not apply its state change twice. Client `message_id` values and durable mutation identifiers support this. V1 retains the command outcome for the trip lifetime even after delivery outbox pruning.
+- **Idempotency:** Processing the same command again does not apply its state change twice. A durable client `message_id` is a trip-scoped UUID key; its validated payload is canonicalized with RFC 8785 and SHA-256. V1 retains the digest/outcome for the trip lifetime even after delivery outbox pruning.
 - **Command intent:** A durable PostgreSQL record containing a command's `message_id`, canonical payload digest, mutation sequence, and pending or terminal outcome. It is the long-lived idempotency record.
 - **Outbox entry:** A durable, lease-neutral PostgreSQL delivery row for a recorded command that still needs C++ delivery or replay. It may be pruned after a compatible snapshot covers it; pruning does not remove the command intent.
 - **Dispatch:** The backend taking an outbox entry, wrapping it in the currently held runtime epoch, and sending it to the C++ service.
 - **Two-stage acknowledgement:** `durable_recorded` confirms the command is persisted; `planner_applied` confirms C++ accepted it and the backend committed the resulting domain mutation.
+- **Accepted mutation watermark:** The highest contiguous durable mutation sequence resolved by C++ in memory.
+- **Finalized mutation watermark:** The highest contiguous durable mutation sequence whose terminal outcome is committed in PostgreSQL. The backend reports this cumulative watermark to C++ after finalization.
+- **Covered finalized mutation sequence:** The finalized watermark included in a persisted snapshot. Accepted effects through this sequence are in the snapshot; terminally rejected sequences are covered without a state effect.
 - **`durable_recorded`:** The backend has committed the command intent and outbox entry. The command is recoverable, but C++ has not necessarily applied it yet.
 - **`planner_applied`:** C++ accepted the command and the backend committed the resulting canonical trip/plan mutation.
 - **Terminal rejection:** A final rejection that will not be fixed by retrying the same command, such as invalid input, a stale plan, or an infeasible request.
 - **Retryable overload:** A temporary capacity problem, such as a full bounded queue. The command was not silently discarded and may be retried later.
 - **Reject when durability is unavailable:** Refuse a command if PostgreSQL cannot safely record it. The backend must not claim success for a change it cannot recover.
 - **Telemetry/latest-value data:** Replaceable information such as location, velocity, or heading. It may be coalesced or dropped because newer data supersedes it.
+- **Telemetry coalescing:** During disconnect/overload, the backend keeps only the newest sample per type/trip and reports replaced samples. The C++ owner shard—not the backend—classifies route/geofence/slack conditions against authoritative live state.
 - **Drop with explicit status:** Intentionally discard data under pressure while reporting `dropped` or an equivalent status to make the outcome visible.
+
+## Stream Recovery Terms
+
+- **Stream failure:** The long-lived backend-to-C++ gRPC connection is broken or unusable. The trip state is not automatically lost; the backend reconnects and restores it.
+- **Bounded exponential backoff:** Retry delays that increase after repeated failures, up to a configured maximum. “Bounded” prevents retries from becoming infinitely delayed or unbounded work from accumulating.
+- **Jitter:** A small random variation added to retry delays so multiple reconnecting clients do not all retry at exactly the same time.
+- **Obsolete telemetry:** A location or other observation that has been superseded by a newer observation. It can be discarded or replaced without replaying every intermediate sample.
+- **Lease renewal:** Extending the backend's current PostgreSQL lease before it expires so that the backend remains authorized to coordinate the trip.
+- **Higher epoch:** A newer `runtime_epoch` issued when ownership changes or a lease holder restarts. It fences off messages from the old owner.
+- **Mutation watermark:** A sequence boundary; when used for snapshot/replay it means the covered finalized mutation sequence unless explicitly called the accepted watermark.
+- **Uncovered durable mutation:** A durable outbox command with a mutation sequence higher than the snapshot's covered finalized watermark. It must be replayed after bootstrap.
+- **Bounded individual stream message:** One durable mutation sent as its own gRPC message, with the number of queued or in-flight messages limited by configuration.
+- **Lease-neutral outbox payload:** An outbox record that stores the command itself but does not treat its recorded epoch as future ownership authority. The backend attaches its currently valid epoch each time it dispatches or replays the command.
+- **Audit epoch:** An epoch retained to record historical context. It may be useful for auditing but cannot authorize a new dispatch.
+- **Dispatch authority:** The current valid backend lease and runtime epoch used to authorize sending a command to C++. Historical data cannot provide this authority.
+- **Idempotent bootstrap/event handling:** C++ can receive the same bootstrap or event again without applying the state change twice.
+- **Stale epoch or version:** A message refers to an older owner or older state than C++ currently accepts. C++ rejects it without mutating trip state.
+- **Stable `STALE` status:** All old runtime epochs, sequences, revisions, planner versions, and plan proposals use one status plus a structured reason.
+- **Logical command expiry:** Optional durable product time after which an unaccepted command resolves terminally as `COMMAND_EXPIRED`; it is different from a fresh per-dispatch transport deadline.
+- **Finalization confirmation:** Idempotent backend-to-C++ message reporting PostgreSQL's cumulative finalized mutation watermark so C++ can decide whether a snapshot is safe.
+
+## Execution and Synchronization
+
+- **Executor:** A task-processing component that accepts work and runs it on worker threads.
+- **Bounded executor:** An executor with fixed worker capacity and a maximum queued-work limit. When full, it applies an explicit overload policy instead of growing without limit.
+- **Task queue:** The queue of work items waiting for executor workers.
+- **Fixed worker threads:** A configured number of long-lived threads that repeatedly take tasks from a queue.
+- **Worker pool:** A group of worker threads sharing an executor's task queue and capacity limit.
+- **Provider executor:** A bounded executor for route or hours-provider I/O, such as waiting for OSRM responses.
+- **Planner executor:** A separate bounded executor for CPU-heavy in-memory replanning searches.
+- **Separate bounded executors:** Independent provider and planner worker pools so slow provider waits do not occupy all planner workers, and each type of work has its own capacity limit.
+- **Synchronization baseline:** The ordinary, correctness-first thread coordination approach selected as the starting point for v1.
+- **`std::mutex`:** A C++ lock that allows only one thread at a time to access protected shared state.
+- **`std::condition_variable`:** A C++ mechanism that lets a waiting worker sleep until another thread signals that work or state is available.
+- **`std::jthread`:** A C++20 thread type with automatic joining and built-in cooperative stop support.
+- **Cooperative stopping:** A task checks a stop signal and exits on its own; another thread does not forcibly terminate it.
+- **Lock-free queue:** A specialized queue designed to coordinate threads without ordinary mutex locks. V1 does not require one.
 
 ## WebSocket Terms
 
 - **Subscribe trip:** Ask the backend to send this WebSocket connection live updates for a particular trip.
 - **Unsubscribe trip:** Stop live updates for that connection. It does not delete or deactivate the trip.
-- **`protocol_version`:** The version of the message envelope and communication contract. It is separate from trip revisions and planner state versions.
-- **Authenticate:** Prove which user owns the client session. V1 sends an opaque development bearer token in the first non-ping WebSocket message; the backend then authorizes each requested trip. User-facing login is V1.5 or later.
+- **`protocol_version`:** The exact V1 wire string `liveroute.v1`. It is separate from trip revisions and planner state versions.
+- **Authenticate:** Prove which user owns the client session. V1 sends an unpadded base64url token encoding exactly 32 random bytes in the first non-ping WebSocket message; the backend stores only its SHA-256 digest and then authorizes each requested trip. User-facing login is V1.5 or later.
 - **Connection-ready:** The backend's confirmation that authentication and protocol setup succeeded and normal messages may proceed.
 - **Revised plan:** A structured planner result containing the plan version, preserved prefix, revised suffix, and changes such as moved, shortened, or skipped activities. It is more than a single change event.
 - **Resynchronization:** Reconnecting, authenticating, reporting last-observed versions and a bounded list of outstanding command IDs, subscribing again, and receiving the current durable trip, requested command outcomes, and latest planner state/plan.
@@ -50,6 +92,7 @@ Concise definitions for the v1 architecture.
 
 - **Backend-to-client outbound queue:** Bounded memory in the backend for acknowledgements, plans, errors, and notifications waiting to be sent over a WebSocket.
 - **Backend-to-C++ outbound queue:** Bounded memory in the backend for commands and telemetry waiting to be sent over the gRPC stream.
+- **Coarse admission:** The backend performs basic checks and decides whether it can accept the message into bounded processing capacity. Examples include authenticated user, trip access, valid message shape, size limits, queue capacity, and whether PostgreSQL can record a durable command. It does not decide the planner's domain logic.
 - **Backend inbound admission:** Bounded handling of messages arriving from clients. It uses per-connection and per-trip limits rather than an unbounded global queue.
 - **Client outbound buffer:** Client-side/WebSocket memory for commands and location updates. V1 does not define a separate application-level client queue.
 - **PostgreSQL outbox:** Durable retry storage, not a runtime output buffer. The backend reads pending rows and dispatches them through its bounded C++ queue.
@@ -60,12 +103,14 @@ Concise definitions for the v1 architecture.
 - **Backend lease holder:** The backend process currently authorized to coordinate an active trip. V1 has one backend process, but the lease still fences restarts.
 - **Runtime epoch:** A monotonically increasing ownership generation attached to a backend lease. C++ rejects messages from an older epoch.
 - **Mutation sequence:** A contiguous per-trip order number for durable commands.
-- **Observation sequence:** An order number for replaceable telemetry. Gaps are allowed and older observations may be ignored.
+- **Observation sequence:** A backend-owned in-memory order number scoped to one trip/runtime epoch. It starts at 1, gaps are allowed, old values are ignored, same-epoch reconnect preserves it, and a higher epoch discards old telemetry and resets it.
 - **Trip revision:** The durable canonical trip version. It advances only after C++ accepts a durable mutation and PostgreSQL finalizes that mutation.
 - **Expected trip revision:** The durable revision against which a command was recorded. C++ compares its mirrored trip revision before accepting that durable command.
-- **Planner state version:** A version that increases whenever C++ accepts a state-changing durable event or telemetry observation. It is independent of trip revision.
+- **Planner state version:** An epoch-scoped version starting at 0 that increases whenever C++ accepts a state-changing durable event or telemetry observation. Freshness compares runtime epoch first; it is independent of durable trip revision.
 - **Expected planner state version:** An optional compare-and-set version used for a decision about a specific proposed plan or another explicitly version-sensitive planner operation. Ordinary trip mutations omit it so telemetry does not create false conflicts.
 - **Current stream binding:** The gRPC stream currently carrying one trip and runtime epoch. It is transport routing only; the shard remains the state owner, and the latest plan is retained for bootstrap when no stream is bound.
-- **`request_id`:** An opaque identifier used to correlate an asynchronous request with its response. It is commonly a UUID or ULID, so it is represented as a string.
-- **`trip_id`:** An opaque identifier for a trip, commonly a UUID or another application-defined format.
-- **`expires_at_unix_ms`:** A signed Unix-epoch timestamp in milliseconds defining when a message expires. It is `int64` because timestamps and time arithmetic are signed.
+- **`request_id`:** A backend-generated canonical lowercase UUID used only to correlate one asynchronous gRPC dispatch attempt. Each retry gets a new request id.
+- **`trip_id`:** A canonical lowercase UUID identifying one trip.
+- **`expires_at_unix_ms`:** A signed Unix-epoch timestamp in milliseconds defining one gRPC dispatch attempt's expiry. It is regenerated on retry and is distinct from optional durable logical command expiry.
+- **Result quality:** Successful lower-quality output uses `OK` plus `plan_quality`, `routing_quality`, and `recovery_state`; `degraded` is not a status.
+- **Readiness:** A service can serve its contracted dependency path, not merely that its process exists. Backend readiness covers migrations/PostgreSQL, a ready planner stream, and both OSRM profiles.

@@ -4,7 +4,7 @@
 
 Build LiveRoute as a C++20 low-latency live itinerary replanning service, with the C++ serving path as the core project and only minimal surrounding app infrastructure.
 
-The cross-component v1 contracts are fixed in `plans/LiveRouteV1ArchitecturePlan.md`. This document describes the implementation components; where wording differs, the architecture contract governs service ownership, delivery, recovery, and concurrency semantics.
+The cross-component v1 contracts are fixed in `plans/LiveRouteV1ArchitecturePlan.md` and `plans/LiveRouteV1ContractSpec.md`. This document describes implementation components; where wording differs, those contracts govern.
 
 Primary goal:
 
@@ -38,6 +38,8 @@ Latency targets:
 
 Use bidirectional streaming gRPC + Protocol Buffers between the backend and C++ service. The single V1 backend owns client sessions and durable PostgreSQL records; the single V1 C++ process owns active trip state in memory. Horizontal service replication is future work.
 
+The backend is Go 1.26 using `net/http`, `coder/websocket`, gRPC-Go, `pgx/v5`, Goose SQL migrations, and draft-2020-12 JSON Schema validation. Dependency/version pinning and readiness rules follow `plans/LiveRouteV1ContractSpec.md`.
+
 Initial stream:
 
 ```proto
@@ -61,6 +63,7 @@ Request fields:
 - `expires_at_unix_ms`
 - exactly one payload defined by the architecture contract; event occurrence time belongs to `ApplyTripEvent`
 - event priority derived by the service from event type and current trip state
+- `ConfirmFinalizedMutations` carries PostgreSQL's cumulative finalized mutation watermark in its payload; envelope sequences remain zero
 
 Response fields:
 
@@ -72,8 +75,9 @@ Response fields:
 - `accepted_mutation_sequence`
 - `accepted_observation_sequence`
 - exactly one response payload such as acknowledgement, revised plan, snapshot, structured error, or pong; disposition/status and retryability live in the relevant payload
+- `FinalizedMutationsAcknowledged` confirms the cumulative watermark idempotently
 
-The complete checked-in `.proto` definitions and WebSocket JSON Schemas are implementation prerequisites, not details to fill in inside handlers. Descriptor/JSON-Schema compatibility tests prevent accidental wire-contract drift.
+Transcribe the exact fields/numbers/enums in `plans/LiveRouteV1ContractSpec.md` into checked-in `.proto` definitions and WebSocket JSON Schemas before handlers. Buf `FILE` breaking checks, a descriptor baseline, frozen JSON schema digest, and positive/negative corpus prevent contract drift.
 
 Keep the hot path transport-independent:
 
@@ -170,6 +174,8 @@ public:
 
 The provider returns normalized time windows and activity timing constraints. The planner only sees in-memory constraints such as open windows, reservation start/grace, min/preferred/max duration, and whether an activity is mandatory, movable, skippable, or shorten-able. The planner must not call Google Places, Yelp, OpenStreetMap, scrape websites, or parse provider responses while evaluating candidates.
 
+V1 accepts IANA zones whose pinned tzdata entry includes country `US`. CLI/fixture/seed ingestion rejects DST gaps, requires an explicit valid offset for DST folds, expands overnight/exception hours, and converts local input to UTC Unix milliseconds. The backend revalidates normalized values; the planner operates only on UTC, and output carries the activity IANA zone for display conversion after replanning.
+
 Operating-hours provider progression:
 
 - V1: manual or seed-file hours
@@ -192,7 +198,7 @@ Product focus:
 Replanning behavior:
 
 - Replan only the future events for the current day; completed events are immutable.
-- V1 can start with greedy scheduling over time windows, then move to deadline-bounded branch-and-bound or beam search with pruning.
+- V1 uses deadline-bounded beam search with pruning from the first functional planner implementation.
 - Replanning inputs include current location, travel-time estimates, event operating hours, min/max desired event duration, reservation/fixed-time constraints, and user-provided event priority rank.
 - The planner should consider whether lower-priority events can be cut, compressed, moved, or skipped.
 - Reservations and explicitly fixed events should not move in v1 when feasible.
@@ -223,7 +229,7 @@ Trip sharding over a simple semaphore:
 HTTP/WebSocket/gRPC boundary:
 
 - V1 uses WebSockets between protocol clients and the backend for live events, notifications, revised plans, reconnects, and server-originated messages.
-- V1 deploys one backend and one C++ planner process. The backend uses a fixed pool of long-lived bidirectional gRPC streams to that planner process.
+- V1 deploys one Go backend and one C++ planner process. The backend uses a fixed pool of long-lived bidirectional gRPC streams to that planner process.
 - The backend translates WebSocket messages and PostgreSQL records into Protobuf stream envelopes; the C++ planner remains unaware of WebSocket, JSON, authentication, and database types.
 - Flow control is bounded at both boundaries. Slow clients and a slow or reconnecting planner stream must not create unbounded buffers.
 
@@ -275,7 +281,7 @@ Implement the domain model:
 
 Implement incremental planning:
 
-- Start with a bounded beam-search planner over the remaining suffix.
+- Implement a bounded beam-search planner over the remaining suffix as the first functional V1 replanner.
 - Preserve completed activities and fixed reservations when feasible.
 - Allow flexible activities to be moved, shortened, skipped, or reordered according to explicit activity constraints.
 - Score candidates using utility, lateness penalties, skipped-activity penalties, reservation protection, travel feasibility, and operating-hours feasibility.
@@ -304,11 +310,13 @@ Implement runtime systems:
 - Reserve internal completion capacity before dispatching provider/planner work and reserve essential gRPC response capacity before admitting a state-changing request.
 - Tag immutable planning snapshots with state version and planning generation; commit results only when both still match on the owner shard.
 - Allow at most one running plan and one coalesced pending replan trigger per trip.
-- Add GPS-event coalescing: keep at most one pending location update per trip, replacing older updates unless an older event crossed a geofence or route-deviation boundary.
+- Backend GPS handling is transport-only: assign epoch-scoped observation sequences and retain only the newest sample while disconnected/overloaded, with explicit coalesced/dropped status. The backend never infers route/geofence boundaries.
+- On the owner shard, apply a non-stale latest observation, classify route/geofence/slack conditions against shard-owned state, promote a current boundary condition, and keep at most one pending ordinary-location replan trigger. A boundary that must never be lost is an explicit non-coalescible domain event rather than an intermediate GPS sample.
 - Do not replan on every GPS update; trigger full replans only for route deviation, geofence crossing, material itinerary improvement, or deadline-slack risk.
 - Use initial slack policy: `slack > 20 min` no full replan, `10-20 min` ETA/progress refresh, `< 10 min` full replan, `< 0 min` critical replan.
 - Cancel or supersede lower-priority queued/running work when higher-priority events arrive, such as cancelling a recommendation refresh on `ActivityCompleted` or a location-based replan on `ReservationChanged`.
-- Add overload behavior: reject or degrade requests when queues are full, deadlines are already expired, or OSRM cannot return before deadline.
+- Add exact overload behavior: use `RESOURCE_EXHAUSTED` for capacity, `DEADLINE_EXCEEDED` for an attempt with no valid result, `PROVIDER_UNAVAILABLE` for missing required provider data, or `OK` plus result-quality metadata when a valid lower-quality result exists.
+- Treat `degraded` as result metadata rather than a status: valid best-so-far/stale-cache/not-advancing results use `OK` plus explicit quality fields; actual capacity/provider/durability failures use their exact status.
 - Add graceful shutdown using `std::stop_token`.
 
 Implement gRPC server:
@@ -319,19 +327,25 @@ Implement gRPC server:
 - Propagate stream cancellation and per-message expiry into replaceable runtime/provider/planner work without abandoning accepted durable commands.
 - Do not assume stream arrival order provides global or cross-reconnect event ordering; enforce per-trip sequence and state-version checks.
 - Enforce current runtime lease epochs, at-least-once idempotency, contiguous durable mutation ordering, independent trip/planner version rules, and latest-value observation ordering.
+- On higher epoch, discard all old telemetry/proposals/work and reset epoch-scoped observation/planner versions; on same-epoch reconnect, preserve the in-memory observation watermark.
+- Accept cumulative `ConfirmFinalizedMutations` after PostgreSQL finalization; return `SNAPSHOT_NOT_READY` until accepted and finalized watermarks match.
 - Bind a trip to its current stream during bootstrap. Route committed results to that binding, or retain the latest plan in `TripState` for the next bootstrap when disconnected.
-- Return structured statuses for accepted, duplicate, stale, infeasible, degraded, deadline exceeded, and internal error.
+- Return only the stable statuses and quality metadata defined in `plans/LiveRouteV1ContractSpec.md`; all old epoch/sequence/version/proposal cases are `STALE` with a structured reason.
 
 Implement backend durability and WebSocket gateway:
 
-- Use one backend process in V1; do not add cross-instance routing or distributed fanout.
+- Use one Go 1.26 backend process in V1; do not add cross-instance routing or distributed fanout.
 - Add complete `liveroute.v1` Protobuf schemas and WebSocket JSON Schemas before implementing handlers.
-- Add PostgreSQL migrations for canonical trip data, `command_intents`, lease-neutral `planner_outbox`, snapshots, and runtime leases.
-- Retain command-intent payload digests and outcomes for the trip lifetime; reject reuse of an idempotency key with a different payload.
+- Add Goose SQL migrations for every exact table/column/constraint/index in `plans/LiveRouteV1ContractSpec.md`, including development token digests, canonical trip/activity windows, `command_intents`, lease-neutral `planner_outbox`, two retained compatible snapshots, and runtime leases.
+- Canonicalize validated durable commands with RFC 8785 and SHA-256; retain digest algorithm/digest/outcome for the trip lifetime and reject changed-payload key reuse.
 - Acquire/renew leases using PostgreSQL time. Add the current epoch only when dispatching an outbox entry, including replay after restart.
+- Generate a new gRPC `request_id` and attempt deadline per dispatch while preserving stable `event_id`/mutation/payload identity. Use capped full-jitter outbox retry without a fixed attempt cutoff; stop only on an acknowledged terminal/applied outcome, deletion, or explicit paused-internal repair. Logical expiry must be terminally resolved by C++ as `COMMAND_EXPIRED`.
+- After PostgreSQL finalization, send the cumulative finalized mutation watermark to C++; snapshot only after acknowledgement or bootstrap convergence.
+- Hold at most one latest plan whose `source_accepted_mutation_sequence` is ahead of PostgreSQL finalization; publish it only after the watermark covers it and its epoch/state version remains current.
 - Use bounded per-connection admission, bounded per-trip pending-command queues, and bounded outbound buffers.
-- Use the architecture contract's local development bearer-token authentication, trip authorization, origin policy, secret redaction, and loopback/private-network defaults.
+- Read the exact 43-character development token only from `/run/secrets/liveroute_dev_token`, store only its SHA-256 digest, authorize every trip message, enforce exact origin/close-code policy, and redact tokens/location/provider/database bodies.
 - On reconnect, return canonical trip state, requested outstanding command outcomes, and the latest rehydrated planner state/plan.
+- Add PostgreSQL/Goose, OSRM Table, gRPC health, backend `/healthz`, and dependency-aware `/readyz` checks. Only Docker/Compose is required on the host.
 
 Implement observability:
 
@@ -369,7 +383,7 @@ Correctness tests:
 - No returned itinerary violates operating-hours windows.
 - Every segment allows enough travel time from the previous location.
 - No feasible itinerary returns a structured infeasible response.
-- Deadline expiration returns best-so-far or degraded result.
+- Deadline expiration returns `OK` + `BEST_SO_FAR` for a valid plan or the exact terminal/error status when no valid plan exists.
 - `PlaceFoundClosed` triggers replanning.
 - `OperatingHoursChanged` triggers replanning only when remaining-itinerary feasibility changes.
 - Low-priority recommendation refresh can be dropped or cancelled under load.
@@ -401,6 +415,14 @@ Cross-component recovery and contract tests:
 - Telemetry may advance planner state without causing an ordinary durable trip mutation to fail its trip-revision check.
 - Essential response capacity is unavailable before admission, so no state mutation occurs.
 - A plan completing across stream reconnect is delivered on the current binding or returned by bootstrap.
+- Higher-epoch bootstrap discards old observations/proposals/work, resets epoch-scoped sequences, and accepts the first new observation; same-epoch reconnect preserves the watermark.
+- Crashes at every boundary between intent commit, C++ acceptance, PostgreSQL finalization, finalization confirmation, and WebSocket acknowledgement converge without double application.
+- Snapshot request racing an unresolved mutation returns `SNAPSHOT_NOT_READY`; a terminal rejection advances finalized/mutation watermarks without advancing trip revision.
+- Per-attempt deadline retry and optional logical command expiry produce different contracted outcomes.
+- Lease races/expiry, outbox claim expiry/duplicate claim, transaction rollback/deadlock retry, corrupt/incompatible snapshot fallback, and shutdown with in-flight durable/provider/planner work preserve recovery invariants.
+- US DST gap/fold, explicit fold offset, non-DST zones, overnight windows, and exceptional closure normalization are tested.
+- Every WebSocket version/unknown-field/extension/close/auth/origin/size case and every contracted OSRM malformed/error case has a test.
+- Buf baseline, frozen JSON-schema digest/corpus, previous database migration, and snapshot golden-fixture compatibility checks run in the standard check target.
 
 Benchmark suites:
 
@@ -429,6 +451,7 @@ Acceptance criteria:
 
 - The initial systems-design context is `plans/LiveRouteInitialPlan.md`.
 - V1 is a single-host, single-backend, single-C++-process development/demo deployment with a WebSocket gateway and PostgreSQL durability; horizontal scaling and production deployment are future work.
+- The V1 backend stack is Go 1.26, `coder/websocket`, gRPC-Go, `pgx/v5`, Goose, and draft-2020-12 JSON Schema validation.
 - V1 uses CLI/load/integration WebSocket clients. The React/TypeScript frontend and user-facing login are V1.5.
 - Bidirectional gRPC + Protobuf is the v1 backend-to-planner interface.
 - OSRM is the first realistic travel-time provider.
