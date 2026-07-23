@@ -35,7 +35,7 @@ Every non-standard dependency is pinned by `go.mod`/`go.sum`; build images and s
 - `server_message_id`: backend-generated lowercase RFC 4122 UUID string for each WebSocket server message.
 - `request_id`: backend-generated lowercase RFC 4122 UUID string for one gRPC dispatch attempt. A retry uses a new `request_id`.
 - `event_id`: stable event identity. For a durable command it equals the client `message_id`; for telemetry/advisory input it is a backend-generated UUID.
-- `outbox_id`, `snapshot_id`, `plan_id`, backend instance id, and C++ instance id: lowercase RFC 4122 UUID strings.
+- `outbox_id`, `snapshot_id`, `plan_id`, `proposal_id`, backend instance id, and C++ instance id: lowercase RFC 4122 UUID strings.
 - `trip_id`, `activity_id`, and `user_id`: lowercase RFC 4122 UUID strings.
 - All UUID fields are exactly 36 ASCII characters and are rejected if not in canonical lowercase form.
 
@@ -56,19 +56,20 @@ Reusing a `(trip_id, message_id)` with an identical algorithm and digest returns
 ## Version and Sequence Contract
 
 - `runtime_epoch` is PostgreSQL-issued and starts at 1 on the first lease acquisition. Every new lease holder/process acquisition increments it by exactly one while holding the trip row lock.
-- `trip_revision` is durable and starts at 0 when the trip is created. It increments by one only when an accepted durable mutation is finalized in PostgreSQL.
-- `mutation_sequence` is durable, starts at 1, and is never reused. Accepted and terminally rejected commands both consume a sequence. Only an accepted mutation advances `trip_revision`.
+- `trip_revision` is durable. Atomic `create_trip` commits revision 1 with the initial user-authored plan; later revisions increment by one for either a canonical-first user trip/current-plan edit committed in PostgreSQL or an accepted runtime-first durable mutation finalized in PostgreSQL.
+- `mutation_sequence` is durable, starts at 1 with `create_trip`, and is never reused. Canonical-first user edits, accepted runtime-first commands, and terminally rejected runtime-first commands all consume a sequence. Only a canonical-first committed edit or accepted runtime-first mutation advances `trip_revision`.
 - `planner_state_version` is scoped to `runtime_epoch`, starts at 0 after a higher-epoch bootstrap, and increments once for each accepted state-changing durable event or telemetry observation in that epoch.
 - `planning_generation` is internal, starts at 0 per runtime epoch, and increments whenever accepted input invalidates planning work.
 - `observation_sequence` is owned by the backend in memory, scoped to `(trip_id, runtime_epoch)`, starts at 1, and may contain gaps. It is never stored in PostgreSQL or a durable snapshot.
 - Freshness is compared lexicographically as `(runtime_epoch, planner_state_version)`, never by planner state version alone.
-- A proposed plan is identified by `(runtime_epoch, plan_id, source_planner_state_version)`. Acceptance/rejection must match all three values.
+- The authoritative current plan is identified durably by `(trip_id, plan_id, plan_revision)`. It changes only through `create_trip`, canonical-first `trip_edited`/`replace_current_plan`, or fresh user acceptance of an engine proposal.
+- An engine proposal is identified by `(runtime_epoch, proposal_id, source_planner_state_version, base_current_plan_id)`. Acceptance/rejection must match all four values.
 
 When a higher runtime epoch is bootstrapped, C++ atomically:
 
 1. fences the old epoch;
 2. cancels and discards old-epoch provider/planner work and pending telemetry;
-3. clears the current observation, observation watermark, ephemeral proposal, and observation-derived latest plan;
+3. clears the current observation, observation watermark, active proposal, and observation-derived unpublished result while retaining the bootstrapped authoritative current plan;
 4. resets planner state version and planning generation to 0;
 5. retains/rebuilds only durable trip state from the bootstrap base and finalized mutation replay.
 
@@ -96,7 +97,7 @@ The same names and numeric values are used by Protobuf and WebSocket JSON:
 | 11 | `DEADLINE_EXCEEDED` | context-specific | One transport/planner attempt exceeded its deadline. Durable work is retried; obsolete telemetry is not. |
 | 12 | `COMMAND_EXPIRED` | false | Optional durable-command logical expiry passed before acceptance. |
 | 13 | `CANCELLED` | context-specific | Work was cooperatively cancelled. Superseded telemetry/advisory work is terminal; durable work remains pending. |
-| 14 | `INFEASIBLE` | false | No plan satisfies protected constraints. |
+| 14 | `INFEASIBLE` | false | No engine proposal satisfies protected constraints; the user-selected current plan remains authoritative. |
 | 15 | `PROVIDER_UNAVAILABLE` | true | Required route/hours data was unavailable and no permitted data source could answer. |
 | 16 | `DURABILITY_UNAVAILABLE` | true | PostgreSQL cannot safely record/finalize durability-dependent work. |
 | 17 | `UNAVAILABLE` | true | Transient stream/service failure not covered by a more specific code. |
@@ -111,20 +112,20 @@ All old/late ownership and version cases use `STALE`. A structured stale reason 
 
 `degraded` is not a status. It previously mixed successful-but-lower-quality output with actual failures. Successful results use `status = OK` plus:
 
-- `plan_quality`: `COMPLETE`, `BEST_SO_FAR`, or `NO_NEW_PLAN`;
+- `plan_quality`: `COMPLETE`, `BEST_SO_FAR`, or `NO_NEW_PROPOSAL`;
 - `routing_quality`: `FRESH`, `STALE_CACHE`, or `UNAVAILABLE`;
 - `recovery_state`: `CURRENT` or `NOT_ADVANCING`.
 
 Examples:
 
-- A deadline returns a valid partial plan: `OK` + `BEST_SO_FAR`.
-- OSRM fails and no plan can be computed: `PROVIDER_UNAVAILABLE`.
-- A future explicitly allowed stale cache produces a plan: `OK` + `STALE_CACHE`.
+- A deadline returns a valid partial proposal: `OK` + `BEST_SO_FAR`.
+- OSRM fails and no proposal can be computed: `PROVIDER_UNAVAILABLE`.
+- A future explicitly allowed stale cache produces a proposal: `OK` + `STALE_CACHE`.
 - PostgreSQL is down but still-valid-lease telemetry is accepted: `OK` + `NOT_ADVANCING`.
 
 Telemetry has a separate disposition: `ACCEPTED`, `COALESCED`, `DROPPED`, or `REJECTED`. A dropped/coalesced obsolete sample is not a planner error.
 
-For a new durable mutation, C++ consumes/advances the mutation sequence only on `ACCEPTED`, or on terminal `REJECTED` with `STALE`, `INVALID_ARGUMENT`, `NOT_FOUND`, `COMMAND_EXPIRED`, or `INFEASIBLE`. `INACTIVE_TRIP`, `RESOURCE_EXHAUSTED`, `DEADLINE_EXCEEDED`, `CANCELLED`, `PROVIDER_UNAVAILABLE`, and `UNAVAILABLE` leave the sequence pending for retry. `INTERNAL` also leaves it pending, pauses automatic dispatch for that trip, and requires an explicit operator repair/retry decision; later durable commands remain blocked rather than silently bypassing uncertain state. `DUPLICATE` returns the already-recorded resolution and does not apply anything again.
+For a new runtime-first durable mutation, C++ consumes/advances the mutation sequence only on `ACCEPTED`, or on terminal `REJECTED` with `STALE`, `INVALID_ARGUMENT`, `NOT_FOUND`, `COMMAND_EXPIRED`, or `INFEASIBLE`. `INACTIVE_TRIP`, `RESOURCE_EXHAUSTED`, `DEADLINE_EXCEEDED`, `CANCELLED`, `PROVIDER_UNAVAILABLE`, and `UNAVAILABLE` leave the sequence pending for retry. `INTERNAL` also leaves it pending, pauses automatic dispatch for that trip, and requires an explicit operator repair/retry decision; later durable commands remain blocked rather than silently bypassing uncertain state. `DUPLICATE` returns the already-recorded resolution and does not apply anything again. A canonical-first `TripEdited` or `CurrentPlanReplaced` mirror may resolve only as accepted/duplicate; structurally incompatible normalized data is `INTERNAL`, leaves the sequence pending, and never converts the already-committed user edit into a terminal rejection.
 
 ## Complete Protobuf Payload Schema
 
@@ -173,8 +174,9 @@ Fields 20-26 form one `payload` oneof.
 | 25 | `PlannerError` | `error` |
 | 26 | `Pong` | `pong` |
 | 27 | `FinalizedMutationsAcknowledged` | `finalized_mutations_acknowledged` |
+| 28 | `TripBootstrapped` | `trip_bootstrapped` |
 
-Fields 20-27 form one `payload` oneof.
+Fields 20-28 form one `payload` oneof.
 
 ### Common enums
 
@@ -185,10 +187,12 @@ Fields 20-27 form one `payload` oneof.
 - `ActivityClass`: 0 `UNSPECIFIED`, 1 `FIXED`, 2 `FLEXIBLE`.
 - `ActivityState`: 0 `UNSPECIFIED`, 1 `PLANNED`, 2 `STARTED`, 3 `COMPLETED`, 4 `SKIPPED`.
 - `PlanDecision`: 0 `UNSPECIFIED`, 1 `ACCEPT`, 2 `REJECT`.
+- `PlanOrigin`: 0 `UNSPECIFIED`, 1 `USER_AUTHORED`, 2 `ACCEPTED_ENGINE_PROPOSAL`.
+- `PlanEntryState`: 0 `UNSPECIFIED`, 1 `SCHEDULED`, 2 `OMITTED`.
 - `SegmentDisposition`: 0 `UNSPECIFIED`, 1 `PRESERVED`, 2 `MOVED`, 3 `SHORTENED`, 4 `SKIPPED`, 5 `ADDED`.
 - `NotificationType`: 0 `UNSPECIFIED`, 1 `NONE`, 2 `LOW_SLACK_WARNING`, 3 `CRITICAL_LATENESS`, 4 `PLAN_CHANGE_SUGGESTED`, 5 `INFEASIBLE_SCHEDULE`.
 - `PlanReasonCode`: 0 `UNSPECIFIED`, 1 `LATE_DEPARTURE`, 2 `ACTIVITY_DELAY`, 3 `ROUTE_DEVIATION`, 4 `HOURS_CHANGED`, 5 `PLACE_CLOSED`, 6 `RESERVATION_AT_RISK`, 7 `TRAVEL_DELAY`, 8 `USER_EDIT`, 9 `DEADLINE_BUDGET`, 10 `NO_FEASIBLE_PLAN`.
-- `PlanQuality`: 0 `UNSPECIFIED`, 1 `COMPLETE`, 2 `BEST_SO_FAR`, 3 `NO_NEW_PLAN`.
+- `PlanQuality`: 0 `UNSPECIFIED`, 1 `COMPLETE`, 2 `BEST_SO_FAR`, 3 `NO_NEW_PROPOSAL`.
 - `RoutingQuality`: 0 `UNSPECIFIED`, 1 `FRESH`, 2 `STALE_CACHE`, 3 `UNAVAILABLE`.
 - `RecoveryState`: 0 `UNSPECIFIED`, 1 `CURRENT`, 2 `NOT_ADVANCING`.
 - `SnapshotReason`: 0 `UNSPECIFIED`, 1 `PERIODIC`, 2 `DURABLE_BOUNDARY`, 3 `DEACTIVATION`, 4 `SHUTDOWN`.
@@ -207,19 +211,29 @@ Fields 20-27 form one `payload` oneof.
 
 `TravelDelayState`: 1 `string from_activity_id`, 2 `string to_activity_id`, 3 `uint32 additional_seconds`, 4 `int64 observed_at_unix_ms`.
 
-`TripDefinition`: 1 `string trip_id`, 2 `string owner_user_id`, 3 `string default_time_zone_name`, 4 `repeated Activity activities`, 5 `uint32 completed_prefix_count`, 6 `string current_activity_id`, 7 `string accepted_plan_id`, 8 `repeated TravelDelayState travel_delays`.
+`TripDefinition`: 1 `string trip_id`, 2 `string owner_user_id`, 3 `string default_time_zone_name`, 4 `repeated Activity activities`, 5 `uint32 completed_prefix_count`, 6 `string current_activity_id`, 7 `string current_plan_id`, 8 `repeated TravelDelayState travel_delays`.
 
 `CurrentObservation`: 1 `Location location`, 2 `int64 observed_at_unix_ms`, 3 `optional double velocity_meters_per_second`, 4 `optional double heading_degrees`.
 
+`CurrentPlanSegment`: 1 `string activity_id`, 2 `PlanEntryState state`, 3 `optional int64 scheduled_start_unix_ms`, 4 `optional int64 scheduled_end_unix_ms`.
+
+`CurrentPlan`: 1 `string plan_id`, 2 `uint64 plan_revision`, 3 `PlanOrigin origin`, 4 `repeated CurrentPlanSegment segments`, 5 `int64 created_at_unix_ms`, 6 `optional string source_proposal_id`.
+
+The repeated `CurrentPlan.segments` order is the user's authoritative itinerary and contains every trip activity exactly once using canonical activity ids. A `SCHEDULED` entry requires both times, `start < end`, and no overlap with the next scheduled entry; an `OMITTED` entry forbids both times. It intentionally omits provider-computed route metrics, planner reasons, quality, and source runtime versions. Travel-time, operating-hours, reservation, and deadline infeasibility do not invalidate a structurally valid current plan; they become warnings and proposal inputs.
+
 `RouteLeg`: 1 `uint32 duration_seconds`, 2 `uint32 distance_meters`, 3 `bool reachable`.
 
-`ItinerarySegment`: 1 `string activity_id`, 2 `Location location`, 3 `string time_zone_name`, 4 `int64 scheduled_start_unix_ms`, 5 `int64 scheduled_end_unix_ms`, 6 `RouteLeg inbound_route`, 7 `SegmentDisposition disposition`, 8 `repeated PlanReasonCode reasons`.
+`ProposalSegment`: 1 `string activity_id`, 2 `Location location`, 3 `string time_zone_name`, 4 `optional int64 scheduled_start_unix_ms`, 5 `optional int64 scheduled_end_unix_ms`, 6 `optional RouteLeg inbound_route`, 7 `SegmentDisposition disposition`, 8 `repeated PlanReasonCode reasons`. `SKIPPED` forbids fields 4-6; every other disposition requires them with `start < end`.
 
-`ItineraryPlan`: 1 `string plan_id`, 2 `uint64 source_runtime_epoch`, 3 `uint64 source_planner_state_version`, 4 `repeated ItinerarySegment preserved_prefix`, 5 `repeated ItinerarySegment revised_suffix`, 6 `int64 created_at_unix_ms`, 7 `uint64 source_accepted_mutation_sequence`.
+`PlanProposal`: 1 `string proposal_id`, 2 `uint64 source_runtime_epoch`, 3 `uint64 source_planner_state_version`, 4 `string base_current_plan_id`, 5 `uint64 source_trip_revision`, 6 `uint64 source_accepted_mutation_sequence`, 7 `repeated ProposalSegment preserved_prefix`, 8 `repeated ProposalSegment revised_suffix`, 9 `int64 created_at_unix_ms`.
+
+The concatenated preserved prefix and revised suffix contain every trip activity exactly once. The preserved prefix matches immutable/completed current-plan entries; the revised suffix expresses every retained, moved, shortened, added-back, or omitted future activity explicitly. This makes proposal acceptance a deterministic conversion rather than a second planner run.
 
 `PlannerStats`: 1 `uint64 candidates_evaluated`, 2 `uint64 candidates_pruned`, 3 `uint32 search_depth`, 4 `uint32 queue_wait_microseconds`, 5 `uint32 provider_microseconds`, 6 `uint32 planner_microseconds`, 7 `uint32 serialization_microseconds`, 8 `bool deadline_hit`.
 
 `ResultQuality`: 1 `PlanQuality plan_quality`, 2 `RoutingQuality routing_quality`, 3 `RecoveryState recovery_state`.
+
+`StoredPlanProposal`: 1 `PlanProposal proposal`, 2 `NotificationType notification`, 3 `repeated PlanReasonCode reasons`, 4 `PlannerStats stats`, 5 `ResultQuality quality`.
 
 ### Stream-control payloads
 
@@ -227,13 +241,15 @@ Fields 20-27 form one `payload` oneof.
 
 `StreamReady`: 1 `string cpp_instance_id`, 2 `string protocol_version`, 3 `repeated string capabilities`, 4 `uint32 max_message_bytes`, 5 `uint32 max_snapshot_bytes`, 6 `uint32 max_active_trips`, 7 `StatusCode status`.
 
-Both sides require protocol string `liveroute.v1` and these exact capability strings: `finalized_mutation_watermark`, `result_quality_metadata`, `epoch_scoped_observations`, and `snapshot_schema_1`. Capabilities are sorted lexicographically and unique. Unknown capabilities are ignored for negotiation, but any missing required V1 capability returns `UNSUPPORTED_VERSION` and closes the stream without trip admission.
+Both sides require protocol string `liveroute.v1` and these exact capability strings: `canonical_first_plan_sync`, `durable_plan_proposals`, `epoch_scoped_observations`, `finalized_mutation_watermark`, `result_quality_metadata`, `snapshot_schema_1`, and `user_authoritative_current_plan`. Capabilities are sorted lexicographically and unique. Unknown capabilities are ignored for negotiation, but any missing required V1 capability returns `UNSUPPORTED_VERSION` and closes the stream without trip admission.
 
 `SnapshotBlob`: 1 `uint32 snapshot_schema_version`, 2 `uint64 source_runtime_epoch`, 3 `uint64 source_planner_state_version`, 4 `uint64 trip_revision`, 5 `uint64 covered_finalized_mutation_sequence`, 6 `uint32 payload_size_bytes`, 7 `bytes checksum_sha256`, 8 `bytes payload`.
 
-`BootstrapTrip`: 1 `oneof base { SnapshotBlob snapshot = 1; TripDefinition full_trip = 2; }`, 3 `uint64 finalized_mutation_sequence`, 4 `uint64 trip_revision`, 5 `optional CurrentObservation current_observation`, 6 `uint64 current_observation_sequence`, 7 `optional ItineraryPlan accepted_plan`.
+`BootstrapTrip`: 1 `oneof base { SnapshotBlob snapshot = 1; TripDefinition full_trip = 2; }`, 3 `uint64 finalized_mutation_sequence`, 4 `uint64 trip_revision`, 5 `optional CurrentObservation current_observation`, 6 `uint64 current_observation_sequence`, 7 `optional CurrentPlan current_plan`.
 
-For a higher epoch, fields 5-6 are absent/zero. For same-epoch stream rebinding they carry the backend's latest observation and watermark. A snapshot may cover only finalized durable state; telemetry is never serialized in it.
+For a snapshot base, field 7 is absent because `TripStateSnapshot` contains the current plan at that covered watermark. For a full-trip base, field 7 is required and its plan id must equal `TripDefinition.current_plan_id`; the full trip, plan, revision, and finalized watermark describe one PostgreSQL-consistent read. For a higher epoch, fields 5-6 are absent/zero. For same-epoch stream rebinding they carry the backend's latest observation and watermark. A snapshot may cover only finalized durable state; telemetry is never serialized in it.
+
+`TripBootstrapped`: 1 `StatusCode status`, 2 `bool retryable`, 3 `string current_plan_id`, 4 `uint64 accepted_mutation_sequence`, 5 `uint64 finalized_mutation_sequence`, 6 `string safe_message`. On successful full canonical bootstrap, fields 3-5 exactly match the loaded plan and PostgreSQL watermark; the backend may use that acknowledgement to resolve covered canonical-first mirror rows. Snapshot bootstrap reports only the snapshot-covered values, after which uncovered events are replayed normally.
 
 `ConfirmFinalizedMutations`: 1 `uint64 finalized_mutation_sequence`.
 
@@ -262,7 +278,7 @@ For a higher epoch, fields 5-6 are absent/zero. For same-epoch stream rebinding 
 | 22 | `HeadingUpdated` | `heading_updated` | telemetry |
 | 23 | `ActivityStatusChanged` | `activity_status_changed` | durable |
 | 24 | `ActivityDelayed` | `activity_delayed` | durable |
-| 25 | `TripEdited` | `trip_edited` | durable |
+| 25 | `TripEdited` | `trip_edited` | canonical-first durable mirror |
 | 26 | `ReservationChanged` | `reservation_changed` | durable |
 | 27 | `MandatoryDeadlineChanged` | `mandatory_deadline_changed` | durable |
 | 28 | `RouteDeviationDetected` | `route_deviation_detected` | high observation |
@@ -271,6 +287,7 @@ For a higher epoch, fields 5-6 are absent/zero. For same-epoch stream rebinding 
 | 31 | `TravelDelay` | `travel_delay` | durable |
 | 32 | `PlanDecisionEvent` | `plan_decision` | durable/CAS |
 | 33 | `AdvisoryUpdate` | `advisory_update` | advisory |
+| 34 | `CurrentPlanReplaced` | `current_plan_replaced` | canonical-first durable mirror |
 
 Payload fields:
 
@@ -279,7 +296,7 @@ Payload fields:
 - `HeadingUpdated`: 1 `double degrees`.
 - `ActivityStatusChanged`: 1 `string activity_id`, 2 `ActivityState state`.
 - `ActivityDelayed`: 1 `string activity_id`, 2 `uint32 delay_seconds`; this replaces the activity's current total delay rather than incrementing it.
-- `TripEdited`: one `operation` of 1 `AddActivity add`, 2 `ReplaceActivity replace`, 3 `RemoveActivity remove`, 4 `ReorderActivities reorder`.
+- `TripEdited`: one `operation` of 1 `AddActivity add`, 2 `ReplaceActivity replace`, 3 `RemoveActivity remove`, 4 `ReorderActivities reorder`, plus 5 `CurrentPlan resulting_current_plan`. The backend has already committed both the normalized activity edit and this complete user-authored resulting plan; C++ mirrors them and does not approve feasibility.
 - `AddActivity`: 1 `Activity activity`, 2 `uint32 ordinal`.
 - `ReplaceActivity`: 1 `Activity activity`.
 - `RemoveActivity`: 1 `string activity_id`.
@@ -290,12 +307,15 @@ Payload fields:
 - `OperatingHoursChanged`: 1 `string activity_id`, 2 `repeated TimeWindow open_windows`.
 - `PlaceFoundClosed`: 1 `string activity_id`, 2 `int64 observed_at_unix_ms`.
 - `TravelDelay`: 1 `string from_activity_id`, 2 `string to_activity_id`, 3 `uint32 additional_seconds`; this replaces the current extra delay for that directed leg.
-- `PlanDecisionEvent`: 1 `PlanDecision decision`, 2 `string plan_id`, 3 `uint64 source_runtime_epoch`, 4 `uint64 source_planner_state_version`.
+- `PlanDecisionEvent`: 1 `PlanDecision decision`, 2 `string proposal_id`, 3 `uint64 source_runtime_epoch`, 4 `uint64 source_planner_state_version`, 5 `string base_current_plan_id`, 6 `optional CurrentPlan resulting_current_plan`. The backend deterministically converts the stored proposal, assigns id/revision/creation time, and durably records the exact serialized field 6 before dispatch. It is required for `ACCEPT` and forbidden for `REJECT`, so C++ and PostgreSQL install byte-identical immutable current-plan metadata across retries.
 - `AdvisoryUpdate`: 1 `AdvisoryKind kind`, 2 `string source`, 3 `bytes opaque_payload`, with a configured byte limit. Candidate search never reads opaque provider data; an adapter must normalize any advisory effect first.
+- `CurrentPlanReplaced`: 1 `CurrentPlan current_plan`. It is already canonical in PostgreSQL when delivered. C++ validates transport/domain compatibility, mirrors it, invalidates prior proposal work, and never rejects it for nonoptimality or schedule feasibility.
 
 `EventAcknowledged`: 1 `EventDisposition disposition`, 2 `StatusCode status`, 3 `bool retryable`, 4 `StaleReason stale_reason`, 5 `string event_id`, 6 `uint64 resolved_mutation_sequence`, 7 `uint64 resolved_observation_sequence`, 8 `bool replan_scheduled`, 9 `string safe_message`.
 
-`ReplanResult`: 1 `StatusCode status`, 2 `bool retryable`, 3 `ItineraryPlan plan`, 4 `NotificationType notification`, 5 `repeated PlanReasonCode reasons`, 6 `PlannerStats stats`, 7 `ResultQuality quality`, 8 `string safe_message`.
+`ReplanResult`: 1 `StatusCode status`, 2 `bool retryable`, 3 `PlanProposal proposal`, 4 `NotificationType notification`, 5 `repeated PlanReasonCode reasons`, 6 `PlannerStats stats`, 7 `ResultQuality quality`, 8 `string safe_message`.
+
+Field 3 is present exactly when `status = OK` and `plan_quality` is `COMPLETE` or `BEST_SO_FAR`. It is absent for `NO_NEW_PROPOSAL` and every error status. Only a present proposal is eligible for durable proposal persistence/publication.
 
 `PlannerError`: 1 `StatusCode status`, 2 `bool retryable`, 3 `StaleReason stale_reason`, 4 `string safe_message`, 5 `uint64 related_mutation_sequence`, 6 `uint64 related_observation_sequence`, 7 `uint64 related_planner_state_version`.
 
@@ -303,20 +323,21 @@ Payload fields:
 
 The `SnapshotBlob.payload` is the serialized bytes of `TripStateSnapshot` schema version 1:
 
-`TripStateSnapshot`: 1 `TripDefinition trip`, 2 `uint64 trip_revision`, 3 `uint64 accepted_mutation_sequence`, 4 `uint64 finalized_mutation_sequence`, 5 `optional ItineraryPlan accepted_plan`, 6 `uint32 snapshot_schema_version`.
+`TripStateSnapshot`: 1 `TripDefinition trip`, 2 `uint64 trip_revision`, 3 `uint64 accepted_mutation_sequence`, 4 `uint64 finalized_mutation_sequence`, 5 `CurrentPlan current_plan`, 6 `uint32 snapshot_schema_version`.
 
-It contains durable state only. It does not contain current location, velocity, heading, observation sequence, runtime epoch authority, pending work, stream bindings, cancellation objects, provider responses, or ephemeral proposals.
+It contains durable state only. It does not contain current location, velocity, heading, observation sequence, runtime epoch authority, pending work, stream bindings, cancellation objects, provider responses, or proposal history. PostgreSQL retains proposals separately; higher-epoch bootstrap marks pending old-epoch proposals stale rather than restoring them as active.
 
 ## Finalized Mutation Watermark and Snapshot Safety
 
-A mutation is **accepted** when C++ applies it in memory. It is **finalized** only when PostgreSQL commits its terminal result:
+A mutation is **accepted** when C++ applies it in memory. It is **finalized** when PostgreSQL commits its terminal result:
 
-- for an accepted command, the canonical trip/saved-plan mutation, new trip revision, command outcome, and outbox state commit together;
+- for a runtime-first accepted command, the canonical trip/current-plan/proposal-decision mutation, new trip revision, command outcome, and outbox state commit together after C++ acceptance;
+- for canonical-first `create_trip`, `trip_edited`, or `replace_current_plan`, the normalized user trip/current-plan state, new trip revision, command outcome, and finalized sequence commit before C++ mirror acceptance;
 - for a terminal rejection, the rejected command outcome and consumed mutation sequence commit together without a trip-revision change.
 
 The **covered finalized mutation sequence** is the highest contiguous mutation sequence whose terminal PostgreSQL outcome is committed and whose accepted effects, if any, are included in the snapshot. Rejected sequences are covered because their durable terminal outcome exists and they have no state effect to serialize.
 
-Protocol:
+Runtime-first protocol:
 
 1. C++ acknowledges accepted/rejected mutation `N` and advances its accepted mutation watermark to `N`.
 2. The backend commits the corresponding PostgreSQL finalization transaction.
@@ -325,9 +346,20 @@ Protocol:
 5. C++ returns `SNAPSHOT_NOT_READY` while accepted and finalized watermarks differ. It never serializes an unfinalized mutation.
 6. Bootstrap carries PostgreSQL's finalized watermark, so a lost confirmation or either process restarting converges without depending on the old stream.
 
-C++ may compute speculatively after accepting a durable mutation, but a plan carries `source_accepted_mutation_sequence`. The backend keeps at most one latest unpublished plan per trip and does not expose it over WebSocket until PostgreSQL's finalized watermark is at least that source sequence. If finalization fails, clients never observe a plan based on noncanonical durable state. Telemetry may continue in C++, but its resulting plans obey the same publication fence. After finalization, the backend publishes only if the epoch/state version is still current; otherwise normal stale-result rules discard it.
+Canonical-first user-edit protocol:
 
-The report is necessary because C++ cannot otherwise know whether the database transaction after its acknowledgement committed. Without it, a snapshot could get ahead of canonical PostgreSQL state; pruning outbox rows from such a snapshot could remove the replay evidence needed to recover.
+1. The backend atomically commits mutation `N`, any normalized activity edit, the immutable current-plan revision/pointer, trip revision, applied command outcome, finalized watermark `N`, and the mirror outbox row.
+2. It emits `canonical_committed`; the user plan is authoritative even while C++ remains at accepted mutation `N-1`.
+3. The backend serializes later runtime-first dispatch behind the mirror row and delivers `CurrentPlanReplaced(N)` or canonical-first `TripEdited(N)` with the prior expected trip revision.
+4. C++ applies the authoritative trip/current-plan state, advances its accepted mutation watermark to `N`, invalidates proposals/work based on the older plan, and acknowledges. Feasibility is not a rejection condition.
+5. The backend marks mirror delivery accepted, sends `ConfirmFinalizedMutations(N)`, and emits `runtime_synced`. If a higher-epoch full bootstrap loads PostgreSQL state already finalized through `N`, that bootstrap sets the accepted/finalized watermarks to `N` and idempotently resolves the mirror row.
+6. An unexpected normalized trip/current-plan incompatibility pauses runtime delivery as `INTERNAL`; it never rolls back PostgreSQL or changes the user-selected current plan.
+
+`create_trip` commits mutation/finalized sequence 1 but has no active-runtime mirror. The first full bootstrap contains the initial `CurrentPlan` and initializes both C++ watermarks to 1.
+
+C++ may compute speculatively after accepting a durable mutation, but a proposal carries `source_accepted_mutation_sequence` and `base_current_plan_id`. The backend keeps at most one latest unpublished proposal per trip and does not expose it over WebSocket until PostgreSQL's finalized watermark is at least that source sequence and a `plan_proposals` row containing the exact `StoredPlanProposal` bytes commits. If finalization or proposal persistence fails, clients never observe that suggestion and the authoritative current plan remains unchanged. Telemetry may continue in C++, but its resulting proposals obey the same publication fence. After finalization, the backend publishes only if the epoch/state version/base plan are still current; otherwise normal stale-result rules discard it.
+
+Finalization confirmation is necessary because C++ cannot infer PostgreSQL commit order. Runtime-first work could otherwise enter a snapshot before its database transaction commits, while canonical-first work can place PostgreSQL ahead of the C++ mirror. Equality of accepted and finalized watermarks proves that the snapshot and canonical database cover the same contiguous command prefix before outbox pruning.
 
 ## WebSocket JSON Contract
 
@@ -360,15 +392,22 @@ Client kinds and payloads:
 | Kind | Scope | Exact payload |
 | --- | --- | --- |
 | `authenticate` | connection | `token` string matching `[A-Za-z0-9_-]{43}` |
+| `create_trip` | new trip | `default_time_zone_name`, `activities` as JSON-equivalent `Activity` array, and `current_plan` as `UserPlanDraft` |
 | `subscribe_trip` | trip | optional `last_runtime_epoch`, `last_planner_state_version`, `last_trip_revision` canonical unsigned decimal strings |
 | `unsubscribe_trip` | trip | empty object |
-| `trip_command` | trip | `command_kind`, optional `command_expires_at_unix_ms`, and `command`; command kinds are `activity_status_changed`, `activity_delayed`, `trip_edited`, `reservation_changed`, `mandatory_deadline_changed`, `operating_hours_changed`, `place_found_closed`, `travel_delay`, `accept_plan`, `reject_plan` and use the JSON-equivalent Protobuf fields above |
+| `trip_command` | trip | `command_kind`, optional `command_expires_at_unix_ms`, and `command`; command kinds are `activity_status_changed`, `activity_delayed`, `trip_edited`, `reservation_changed`, `mandatory_deadline_changed`, `operating_hours_changed`, `place_found_closed`, `travel_delay`, `replace_current_plan`, `accept_proposal`, `reject_proposal` and use the JSON-equivalent fields defined here |
 | `telemetry_update` | trip | `observation_kind` (`location`, `velocity`, `heading`, `route_deviation`), `observed_at_unix_ms`, and matching `observation` object |
 | `resynchronize_trip` | trip | `last_runtime_epoch`, `last_planner_state_version`, `last_trip_revision` canonical unsigned decimal strings, and `outstanding_message_ids` unique UUID array bounded by configuration |
 | `ping` | connection | `nonce` string 1-64 bytes and `sent_at_unix_ms` |
 | `pong` | connection | `nonce` string 1-64 bytes and `received_at_unix_ms` |
 
-`command_expires_at_unix_ms` is a logical product expiry. Omission means the durable command does not expire merely because transport retries take time.
+`command_expires_at_unix_ms` is a logical product expiry on `trip_command`. Omission means the durable command does not expire merely because transport retries take time. For canonical-first `trip_edited`/`replace_current_plan`, expiry is checked before the PostgreSQL transaction begins; once committed, runtime mirroring never expires or reverses the user edit. `create_trip` has no expiry field and is attempted immediately.
+
+`create_trip` requires a client-generated top-level canonical UUID `trip_id` even though the row does not exist yet. The authenticated user becomes `owner_user_id`. `UserPlanDraft` contains 1 `plan_id` canonical UUID and 2 `segments` as JSON-equivalent `CurrentPlanSegment`; the backend supplies origin, plan revision, creation time, and any proposal source. The initial draft must reference every submitted activity exactly once.
+
+For `replace_current_plan`, `command` is `expected_trip_revision` as a canonical unsigned decimal string plus `current_plan` as `UserPlanDraft`. For `trip_edited`, `command` is `expected_trip_revision`, one JSON-equivalent `TripEdited.operation`, and a complete post-edit `current_plan` `UserPlanDraft` referencing the resulting activity set. The backend rejects a revision mismatch as `STALE/TRIP_REVISION`, then assigns the next immutable plan revision and `USER_AUTHORED` origin. For `accept_proposal`/`reject_proposal`, `command` contains `proposal_id`, `source_runtime_epoch`, `source_planner_state_version`, and `base_current_plan_id`; all must match the stored pending proposal and active C++ proposal. A client that wants proposal contents despite a stale tuple must submit them as a new `replace_current_plan`, making the explicit user choice authoritative.
+
+User-plan validation rejects malformed identifiers, a plan id already used by any non-idempotent command, unknown/duplicate/missing activities, invalid scheduled/omitted presence, nonfinite/out-of-range values, disallowed zones, `start >= end`, overlapping/reversed scheduled order, unsafe sizes, or stale expected revision. It does not reject a structurally valid user schedule merely because routing, hours, reservation, or deadline analysis finds it infeasible. The client does not send route legs, planner source versions, reasons, stats, or result quality in `UserPlanDraft`.
 
 ### Server envelope
 
@@ -383,19 +422,19 @@ Every server message contains:
 - optional `in_reply_to_message_id`;
 - optional `extensions`.
 
-Trip-scoped messages additionally contain `trip_id` and canonical unsigned decimal strings `trip_revision`, `runtime_epoch`, `planner_state_version`, `accepted_mutation_sequence`, and `accepted_observation_sequence`.
+Trip-scoped messages additionally contain `trip_id` and canonical unsigned decimal strings `trip_revision`, `runtime_epoch`, `planner_state_version`, `accepted_mutation_sequence`, and `accepted_observation_sequence`. When no C++ runtime is active, the four runtime/accepted fields are `"0"`; `trip_revision` still reports PostgreSQL authority. A `canonical_committed` acknowledgement may therefore show a newer trip revision while runtime fields remain zero or behind, with `recovery_state = NOT_ADVANCING`, until `runtime_synced`.
 
 Server kinds:
 
 | Kind | Exact payload |
 | --- | --- |
 | `connection_ready` | `user_id`, `backend_instance_id`, `heartbeat_interval_ms`, `idle_timeout_ms`, `max_frame_bytes`, `max_outstanding_resync_ids` |
-| `subscription_state` | `subscribed` boolean plus current durable trip and current active plan when available |
-| `command_acknowledgement` | `phase` (`durable_recorded`, `planner_applied`, `rejected`, `expired`), `message_id`, optional `mutation_sequence`, optional `outcome` |
+| `subscription_state` | `subscribed` boolean plus current durable trip, authoritative `CurrentPlan`, optional latest stored pending `StoredPlanProposal`, and runtime-sync state |
+| `command_acknowledgement` | `phase` (`durable_recorded`, `planner_applied`, `canonical_committed`, `runtime_synced`, `rejected`, `expired`), `message_id`, optional `mutation_sequence`, optional `outcome`, and `recovery_state` |
 | `telemetry_status` | `message_id`, `disposition` (`accepted`, `coalesced`, `dropped`, `rejected`), optional `observation_sequence` |
 | `planner_notification` | `notification`, `reasons`, and result-quality fields |
-| `revised_plan` | JSON-equivalent `ItineraryPlan`, reasons, stats, and result-quality fields |
-| `resynchronization_state` | current durable trip, current active/durable plan, and one outcome for every requested outstanding `message_id` |
+| `plan_proposal` | JSON-equivalent `StoredPlanProposal`; it is advisory and never changes the authoritative current plan |
+| `resynchronization_state` | current durable trip, authoritative `CurrentPlan`, optional latest stored pending `StoredPlanProposal`, runtime-sync state, and one outcome for every requested outstanding `message_id` |
 | `error` | optional `stale_reason`, `safe_message`, and structured field violations |
 | `ping` | nonce and timestamp |
 | `pong` | nonce and timestamp |
@@ -454,10 +493,10 @@ PostgreSQL 18 is the v1 development major version, pinned to the current support
 - `trip_revision bigint not null default 0 check (trip_revision >= 0)`
 - `next_mutation_sequence bigint not null default 1 check (next_mutation_sequence >= 1)`
 - `finalized_mutation_sequence bigint not null default 0 check (finalized_mutation_sequence >= 0)`
-- `accepted_plan_id uuid null`
+- `current_plan_id uuid not null`
 - `created_at`, `updated_at timestamptz not null`
 
-After `saved_plans` exists, add a deferrable composite foreign key `(id, accepted_plan_id)` to `saved_plans(trip_id, id)`; a null accepted plan is allowed.
+`create_trip` explicitly inserts revision/finalized mutation sequence 1 and next mutation sequence 2 rather than relying on the zero/one column defaults used while constructing the transaction. After `itinerary_plans` exists, add a deferrable initially deferred composite foreign key `(id, current_plan_id)` to `itinerary_plans(trip_id, id)`. Every committed trip therefore has exactly one authoritative current-plan pointer.
 
 `trip_activities`:
 
@@ -502,19 +541,47 @@ After `saved_plans` exists, add a deferrable composite foreign key `(id, accepte
 - primary key `(trip_id, from_activity_id, to_activity_id)`
 - composite foreign keys from `(trip_id, from_activity_id)` and `(trip_id, to_activity_id)` to `trip_activities(trip_id, id)` on delete cascade
 
-`saved_plans`:
+`itinerary_plans`:
 
 - `id uuid primary key`
 - `trip_id uuid not null references trips(id) on delete cascade`
-- `source_runtime_epoch bigint not null check > 0`
-- `source_planner_state_version bigint not null check >= 0`
-- `trip_revision bigint not null check >= 0`
+- `plan_revision bigint not null check > 0`
+- `origin text not null check in ('user_authored','accepted_engine_proposal')`
+- `authored_by_user_id uuid not null references users(id)`
+- `source_proposal_id uuid null`
 - `schema_version integer not null check = 1`
 - `payload bytea not null`
 - `payload_size_bytes integer not null check >= 0`
 - `checksum_sha256 bytea not null`, exactly 32 bytes
 - `created_at timestamptz not null`
+- unique `(trip_id, id)` and `(trip_id, plan_revision)`
+- check that `source_proposal_id` is null exactly for `user_authored` and non-null exactly for `accepted_engine_proposal`
+
+The payload is exact serialized `CurrentPlan` bytes and must agree with the row id/revision/origin/source/creation metadata. The backend captures one PostgreSQL transaction timestamp truncated to milliseconds, uses its Unix-millisecond value in the payload, and stores the same instant in `created_at`. Plan rows are immutable and retained until their trip is deleted. An accepted engine proposal creates a new plan row; it does not repurpose or overwrite the proposal payload.
+
+`plan_proposals`:
+
+- `id uuid primary key`
+- `trip_id uuid not null references trips(id) on delete cascade`
+- `base_current_plan_id uuid not null`
+- `source_runtime_epoch bigint not null check > 0`
+- `source_planner_state_version bigint not null check >= 0`
+- `source_trip_revision bigint not null check >= 1`
+- `source_accepted_mutation_sequence bigint not null check >= 1`
+- `schema_version integer not null check = 1`
+- `payload bytea not null`
+- `payload_size_bytes integer not null check >= 0`
+- `checksum_sha256 bytea not null`, exactly 32 bytes
+- `state text not null check in ('pending','accepted','rejected','stale','superseded')`
+- `decision_message_id uuid null`
+- `resulting_current_plan_id uuid null`
+- `created_at timestamptz not null`
+- `decided_at timestamptz null`
 - unique `(trip_id, id)`
+- check that `state = 'pending'` exactly when `decided_at is null`
+- check that `resulting_current_plan_id` is non-null exactly when `state = 'accepted'`
+
+The payload is exact serialized `StoredPlanProposal` bytes and must agree with the source columns; `created_at` is the exact millisecond instant in `PlanProposal.created_at_unix_ms`. Add composite foreign keys `(trip_id, base_current_plan_id)` and `(trip_id, resulting_current_plan_id)` to `itinerary_plans(trip_id, id)`, with the resulting-plan foreign key allowing null. After both tables exist, add a deferrable initially deferred composite foreign key `(trip_id, source_proposal_id)` from `itinerary_plans` to `plan_proposals`; it permits the accepted proposal and derived plan to be updated atomically. A partial unique index on `plan_proposals(trip_id) where state = 'pending'` permits at most one actionable proposal per trip. Proposal rows and payloads are retained until trip deletion.
 
 `command_intents`:
 
@@ -524,7 +591,8 @@ After `saved_plans` exists, add a deferrable composite foreign key `(id, accepte
 - `event_id uuid not null`
 - `mutation_sequence bigint not null check > 0`
 - `expected_trip_revision bigint not null check >= 0`
-- `command_kind text not null` checked against `activity_status_changed`, `activity_delayed`, `trip_edited`, `reservation_changed`, `mandatory_deadline_changed`, `operating_hours_changed`, `place_found_closed`, `travel_delay`, `accept_plan`, `reject_plan`
+- `command_kind text not null` checked against `create_trip`, `activity_status_changed`, `activity_delayed`, `trip_edited`, `reservation_changed`, `mandatory_deadline_changed`, `operating_hours_changed`, `place_found_closed`, `travel_delay`, `replace_current_plan`, `accept_proposal`, `reject_proposal`
+- `application_order text not null check in ('canonical_first','runtime_first')`; only `create_trip`, `trip_edited`, and `replace_current_plan` use `canonical_first`
 - `command_expires_at timestamptz null`
 - `digest_algorithm text not null check = 'rfc8785-sha256-v1'`
 - `payload_digest bytea not null`, exactly 32 bytes
@@ -534,6 +602,9 @@ After `saved_plans` exists, add a deferrable composite foreign key `(id, accepte
 - `outcome_payload jsonb null`
 - `resulting_trip_revision bigint null`
 - `resulting_planner_state_version bigint null`
+- `planned_current_plan_id uuid null`; required only for `accept_proposal`, generated during runtime-first recording and copied into every retry
+- `planned_current_plan_payload bytea null` and `planned_current_plan_checksum_sha256 bytea null`; both required only for `accept_proposal`, with checksum exactly 32 bytes and payload decoding to the planned id/revision/origin/source metadata
+- `runtime_sync_state text not null check in ('not_required','pending','synced','paused_internal')`
 - `recorded_at timestamptz not null`
 - `finalized_at timestamptz null`
 - unique `(trip_id, message_id)`, `(trip_id, event_id)`, and `(trip_id, mutation_sequence)`
@@ -584,23 +655,50 @@ The outbox does not persist a dispatch-authority runtime epoch or a reusable `re
 - `lease_expires_at timestamptz not null`
 - `renewed_at timestamptz not null`
 
-Required indexes cover owner-to-trip lookup, pending outbox `(next_attempt_at, trip_id)`, command outcome `(trip_id, message_id)`, latest valid snapshots `(trip_id, covered_finalized_mutation_sequence desc)`, and expiring leases.
+Required indexes cover owner-to-trip lookup, immutable plan history `(trip_id, plan_revision desc)`, proposal history `(trip_id, created_at desc)`, the one-pending-proposal partial uniqueness rule, pending outbox `(next_attempt_at, trip_id)`, command outcome `(trip_id, message_id)`, latest valid snapshots `(trip_id, covered_finalized_mutation_sequence desc)`, and expiring leases.
 
 ### Transaction isolation and lock order
 
 - Use PostgreSQL `READ COMMITTED` with explicit row locks; no transaction performs network I/O.
-- Every per-trip mutation transaction locks `trips` first with `SELECT ... FOR UPDATE`, then `command_intents`, then `planner_outbox`. Snapshot transactions lock `trips` before snapshot/outbox rows. This fixed order prevents application-level deadlocks.
+- Every per-trip mutation transaction locks `trips` first with `SELECT ... FOR UPDATE`, then existing `command_intents`, `planner_outbox`, `plan_proposals`, and `itinerary_plans` rows in that order and by UUID within a table. Proposal-persistence transactions lock the trip then proposals. Snapshot transactions lock the trip before snapshot/outbox rows. This fixed order prevents application-level deadlocks.
 - Serialization/deadlock errors are retried by the backend with bounded database-attempt backoff; the transaction body is idempotent.
 
-### Recording transaction
+### Runtime-first recording transaction
 
 1. Lock the trip and verify ownership/current revision.
 2. Look up `(trip_id, message_id)` and compare algorithm/digest.
 3. Reject mismatched reuse; return matching stored outcome without allocating another sequence.
-4. Require no other pending command for the trip.
+4. Require no unresolved runtime-first command or canonical-first mirror row for the trip.
 5. Allocate `next_mutation_sequence`, then increment the stored next value.
-6. Insert `command_intents` and lease-neutral `planner_outbox` rows.
+6. For `accept_proposal`, deterministically convert the stored proposal into a complete `CurrentPlan`, generate its id once, assign the next plan revision and one database timestamp, and store its exact payload/checksum/id in the intent plus field 6 of the outbox `PlanDecisionEvent`. Insert the `runtime_first` pending `command_intents` row and lease-neutral `planner_outbox` row.
 7. Commit, then emit `durable_recorded`.
+
+### Canonical-first user-edit transactions
+
+`create_trip` is one transaction:
+
+1. Require authentication; use the top-level client `trip_id` and the authenticated user as owner.
+2. If the trip exists, authorize without revealing another owner's data and compare the existing creation intent algorithm/digest. Return its stored result on an exact match; otherwise return `INVALID_ARGUMENT` without mutating either trip.
+3. Validate the complete trip/activity/current-plan draft and normalize payload bytes before writes.
+4. Insert the trip at `trip_revision = 1`, `next_mutation_sequence = 2`, `finalized_mutation_sequence = 1`, plus normalized activities/windows/delays and immutable `USER_AUTHORED` `CurrentPlan` revision 1. The deferred foreign key permits the trip and current plan to be inserted together.
+5. Insert an applied `canonical_first` command intent at mutation sequence 1 with expected trip revision 0, resulting revision 1, and `runtime_sync_state = 'not_required'`. No planner outbox exists because a new trip has no active C++ state.
+6. Commit, then emit `canonical_committed`. A later activation uses a full bootstrap that initializes both C++ watermarks to 1.
+
+`replace_current_plan` and `trip_edited` use the same transaction shape:
+
+1. Lock the trip; verify owner, expected trip revision, idempotency digest, no unresolved runtime-first command, and available bounded canonical-mirror capacity. Earlier pending canonical-first mirrors are allowed.
+2. For `trip_edited`, validate and apply the normalized activity operation in the transaction's post-edit model. Validate its complete `UserPlanDraft`; for `replace_current_plan`, validate the draft against the unchanged activity set. Assign the next plan revision under the trip lock and serialize an exact `USER_AUTHORED` `CurrentPlan`.
+3. Allocate mutation sequence `N`; apply any activity edit, insert the immutable plan, update `trips.current_plan_id`, trip revision, next mutation sequence, and finalized mutation watermark, and mark any pending proposal `superseded`.
+4. Insert an applied `canonical_first` command intent and a pending lease-neutral `TripEdited(N)` or `CurrentPlanReplaced(N)` outbox row with the prior expected trip revision. The mirror row is inserted even when the trip is inactive so a snapshot-based future activation cannot miss the canonical-first change.
+5. Set the intent `runtime_sync_state = 'pending'`, commit, then emit `canonical_committed`. Product success does not wait for C++.
+
+Mirror rows never expire logically and dispatch in mutation-sequence order. On C++ acknowledgement, lock trip/intent/outbox, verify the resulting revision/current-plan id and sequence, mark the row accepted and the intent runtime sync `synced`, commit, then send `ConfirmFinalizedMutations(N)` and emit `runtime_synced`. A full canonical bootstrap through `N` may resolve every pending canonical-first mirror row with sequence `<= N` identically after verifying the bootstrapped trip revision/current-plan id. Unexpected normalized-data rejection sets the affected outbox `paused_internal` and intent runtime sync `paused_internal`; it preserves PostgreSQL state and requires repair/rebootstrap.
+
+### Proposal persistence transaction
+
+Before publishing a C++ result, lock the trip and verify its runtime epoch, source planner version, source trip revision, source accepted mutation sequence at or below PostgreSQL finalization, and `base_current_plan_id` against current state. Serialize exact `StoredPlanProposal` bytes. If `(trip_id, proposal_id)` already exists, an exact source/schema/size/checksum/payload match returns that stored proposal idempotently; any difference is `INTERNAL` and never overwrites history. Otherwise mark any older pending proposal `superseded`, insert the new pending row, and commit without changing trip revision or mutation sequence. Only then emit `plan_proposal`. A source mismatch discards the result as stale. A database failure leaves at most one bounded unpublished result for retry and never changes the current plan.
+
+On higher-epoch acquisition, mark pending proposals from older epochs `stale` while retaining their payload/history. They are not bootstrapped as active proposals.
 
 ### Lease transactions
 
@@ -610,18 +708,18 @@ Required indexes cover owner-to-trip lookup, pending outbox `(next_attempt_at, t
 - A missing renewal response, transaction ambiguity, or local time disagreement is treated as loss of authority. Dispatch stops before the safety margin; local clocks never extend a lease.
 - The single-host Compose supervisor ensures only one configured backend replica, but the database lease rule remains the correctness boundary.
 
-### Finalization transaction
+### Runtime-first finalization transaction
 
 For C++ acceptance:
 
 1. Lock trip, intent, and outbox; verify the correlated event, expected revision, and sequence.
-2. Apply the normalized canonical trip/saved-plan mutation.
+2. Apply the normalized canonical trip mutation or proposal decision. Fresh proposal acceptance verifies the pre-recorded planned-current-plan checksum, metadata, and deterministic mapping from the still-pending stored proposal, inserts those exact bytes as the immutable `ACCEPTED_ENGINE_PROPOSAL` current-plan revision, updates `trips.current_plan_id`, and marks the proposal accepted in the same transaction. C++ installs the exact `CurrentPlan` carried in the accepted event after performing the same mapping validation. Proposal rejection only marks the proposal rejected.
 3. Increment trip revision by one.
 4. Set trip finalized mutation watermark to the command sequence.
 5. Mark intent `applied`, store outcome/versions, and mark outbox `accepted`.
 6. Commit; then emit `planner_applied` and send `ConfirmFinalizedMutations`.
 
-For terminal C++ rejection or logical expiry, do not change canonical trip data or trip revision; mark intent `rejected`/`expired`, advance the finalized mutation watermark, mark the outbox terminally rejected, commit, then report the terminal outcome and confirm the finalized watermark.
+For terminal C++ rejection or logical expiry, do not change canonical trip/current-plan data or trip revision; mark intent `rejected`/`expired`, advance the finalized mutation watermark, mark the outbox terminally rejected, commit, then report the terminal outcome and confirm the finalized watermark. A stale proposal decision also marks its still-pending proposal `stale` without making it current.
 
 If finalization fails, the trip admits no later durable command. Replay obtains C++'s duplicate outcome and retries the same finalization transaction.
 
@@ -631,7 +729,7 @@ If finalization fails, the trip admits no later durable command. Replay obtains 
 - A claim has a short PostgreSQL-time lease in `claim_expires_at`; process failure makes it reclaimable.
 - Each dispatch reads the currently valid trip lease and generates a new `request_id` and attempt expiry.
 - Full-jitter capped exponential scheduling uses `random(0, min(30 seconds, 250 milliseconds * 2^min(attempt_count, 7)))` after transient failures.
-- Durable rows do not stop after a fixed attempt count. A maximum count would silently abandon the durability guarantee. Retries stop only on applied/terminal outcome, trip deletion, or `paused_internal`; explicit administrative repair moves a paused row back to pending or terminally resolves it through an audited operation.
+- Durable rows do not stop after a fixed attempt count. A maximum count would silently abandon the durability guarantee. Runtime-first retries stop only on applied/terminal outcome, trip deletion, or `paused_internal`. A canonical-first mirror stops only after C++/bootstrap convergence, trip deletion, or `paused_internal`; it cannot be terminally rejected as a user-plan outcome. Explicit administrative repair moves a paused row back to pending or resolves it through an audited full bootstrap.
 - Attempt thresholds raise observable warnings, but do not delete or dead-letter the command automatically.
 
 Stream reconnection separately uses full-jitter backoff from 100 milliseconds capped at 10 seconds. Successful connection resets the stream backoff.
@@ -644,6 +742,7 @@ Stream reconnection separately uses full-jitter backoff from 100 milliseconds ca
 - `DEADLINE_EXCEEDED` or transport cancellation leaves durable work pending and schedules another attempt while logical time remains.
 - Once logical expiry passes before C++ acceptance, the backend still dispatches the event with a fresh attempt deadline; C++ resolves and consumes the sequence as terminal `COMMAND_EXPIRED`. Transport failure before that acknowledgement leaves it pending and retryable.
 - Already accepted C++ work is finalized even if the client disconnects or the logical deadline passes after acceptance.
+- Canonical-first `trip_edited`/`replace_current_plan` expiry is evaluated before its PostgreSQL transaction. After `canonical_committed`, the C++ mirror event carries no logical expiry and retries until synchronized; time cannot undo the user-selected trip/current-plan edit. `create_trip` is immediate and has no logical expiry.
 
 ### Snapshot validation, retention, and pruning
 
@@ -654,7 +753,7 @@ Stream reconnection separately uses full-jitter backoff from 100 milliseconds ca
 - The backend retains the two newest non-invalid compatible snapshots per trip. It may delete older compatible snapshots only in the same transaction that commits a new valid snapshot. Invalid rows retain metadata but may have payload purged by a later maintenance policy; V1 does not need such maintenance.
 - Snapshot commit and deletion of terminal outbox rows with `mutation_sequence <= covered_finalized_mutation_sequence` occur atomically.
 - `command_intents` are never pruned before trip deletion.
-- Recovery tries the newest compatible snapshot, then the previous compatible snapshot, then rebuilds from the fully normalized canonical trip/activity/window/travel-delay data at its finalized watermark and replays only newer uncovered outbox work. It never starts from a known-corrupt snapshot.
+- Recovery tries the newest compatible snapshot, then the previous compatible snapshot, then rebuilds from the fully normalized canonical trip/activity/window/travel-delay/current-plan data at its finalized watermark and replays only newer uncovered outbox work. A canonical-first mirror row newer than the snapshot must be replayed or resolved by choosing a full canonical bootstrap through its sequence. Proposal history is read separately from PostgreSQL and is never used as snapshot authority. Recovery never starts from a known-corrupt snapshot.
 
 ## GPS/Telemetry Coalescing and Boundary Detection
 
@@ -695,7 +794,7 @@ V1 accepts only IANA time-zone identifiers whose pinned tzdata `zone1970.tab` en
 - Authentication performs fixed-length validation, SHA-256, indexed digest lookup, expiry/revocation checks, and constant-time digest comparison.
 - The default local token has no automatic expiry but may be revoked/replaced; non-loopback deployment is not allowed to use this development-token mode without TLS.
 - The first non-ping message must be `authenticate`. Authentication must complete before the configured timeout.
-- Authorization checks the authenticated user against `trips.owner_user_id` for every subscribe, resync, command, and telemetry message, including messages on an already-authorized connection.
+- Authorization checks the authenticated user against `trips.owner_user_id` for every existing-trip subscribe, resync, command, and telemetry message, including messages on an already-authorized connection. `create_trip` instead assigns the authenticated user as owner atomically and reveals no existing trip owned by someone else.
 - Origin is matched exactly against a configured allowlist. Origin omission is allowed only when `allow_originless_local_clients=true` and the backend bind address is loopback.
 
 ## Configuration and Readiness
@@ -710,7 +809,7 @@ Hard protocol limits that affect schemas are fixed for V1:
 - snapshot payload: 2 MiB;
 - resynchronization outstanding command IDs: 128.
 
-Other initial values—shards, workers, queue capacities, database pool, OSRM concurrency, lease duration, heartbeat, attempt timeout, and shutdown deadline—are selected in the local config during the skeleton milestone and then tuned from tests. Startup rejects missing, zero, unbounded, overflow-prone, or mutually inconsistent values.
+Other initial values—shards, workers, queue capacities including unresolved canonical mirrors per trip, database pool, OSRM concurrency, lease duration, heartbeat, attempt timeout, and shutdown deadline—are selected in the local config during the skeleton milestone and then tuned from tests. Startup rejects missing, zero, unbounded, overflow-prone, or mutually inconsistent values.
 
 Readiness means dependency usability rather than mere process existence:
 
@@ -760,11 +859,21 @@ This is primarily an engineering fixture choice, not a product decision. V1 sele
 
 In addition to the existing planner/runtime/OSRM tests, V1 requires:
 
-- higher-epoch bootstrap discards old observations, proposals, provider jobs, and planning results;
+- higher-epoch bootstrap discards old observations, active proposals, provider jobs, and planning results while marking older pending PostgreSQL proposal rows stale and retaining their history;
 - same-epoch reconnect retains the observation watermark and rejects older observations as `STALE`;
 - backend restart resets observation sequencing under a higher epoch and accepts the first new sample;
 - crashes after intent commit, after C++ acceptance, after PostgreSQL finalization, after finalization confirmation, and before each client acknowledgement converge without double application;
-- a plan computed from an accepted-but-unfinalized mutation is never published; the latest still-current plan is released only after PostgreSQL finalization;
+- a proposal computed from an accepted-but-unfinalized mutation is never published; the latest still-current proposal is stored and released only after PostgreSQL finalization;
+- duplicate `create_trip`, `trip_edited`, and `replace_current_plan` messages return the stored canonical result without duplicate trips, activity edits, plan revisions, mutation sequences, or mirror rows;
+- a structurally valid user plan commits and remains current while C++ is unavailable; ordered mirror replay or full bootstrap later converges without rolling it back;
+- multiple canonical-first edits while C++ is unavailable remain bounded, receive consecutive revisions/sequences, preserve idempotency, and are all covered by ordered replay or one verified full canonical bootstrap before runtime-first dispatch resumes;
+- structurally malformed user plans are rejected, while travel-time/hours/reservation/deadline-infeasible but structurally valid plans remain current and produce warnings/proposals;
+- a canonical-first trip/current-plan edit supersedes pending proposals, preserves exact agreement between the activity set and current plan, blocks later runtime-first dispatch until its mirror converges, and cannot be undone by mirror deadline, transport failure, or unexpected C++ incompatibility;
+- every `plan_proposal` is committed as exact `StoredPlanProposal` bytes before WebSocket publication; persistence failure publishes nothing and leaves the current plan unchanged;
+- duplicate proposal delivery with identical identity/payload is idempotent, while changed bytes under one proposal id are `INTERNAL` and never overwrite history;
+- proposal generation alone never changes `trips.current_plan_id`; fresh acceptance atomically creates a separate current-plan revision and marks the proposal accepted, while rejection and stale acceptance leave the current plan unchanged;
+- proposal acceptance retry/crash windows install byte-identical pre-recorded current-plan id/revision/origin/source/creation metadata in C++ and PostgreSQL;
+- applying stale proposal contents through `replace_current_plan` records a new `USER_AUTHORED` plan instead of bypassing proposal freshness;
 - snapshot request racing an unresolved accepted mutation returns `SNAPSHOT_NOT_READY` and later succeeds after confirmation;
 - terminal rejection advances finalized/mutation watermarks without advancing trip revision;
 - concurrent/stale lease acquisition, renewal safety-margin expiry, and stale-holder dispatch are fenced;
@@ -777,7 +886,7 @@ In addition to the existing planner/runtime/OSRM tests, V1 requires:
 - OSRM null, `NoSegment`, `TooBig`, malformed JSON, wrong dimensions, nonfinite/negative/overflow numbers, timeout, cancellation, and byte limit map to exact statuses;
 - invalid/zero/unbounded/inconsistent configuration fails startup;
 - shutdown while a durable response, finalization confirmation, snapshot, provider request, and planner job are in flight either drains within the deadline or leaves recoverable outbox state;
-- Protobuf baseline, JSON schema digest/corpus, and previous database migration compatibility checks run in the standard check target.
+- Protobuf baseline and JSON corpus cover `CurrentPlan`, `PlanProposal`, canonical-first `TripEdited`/`CurrentPlanReplaced`, `create_trip`, `trip_edited`, `replace_current_plan`, and proposal decisions; JSON schema digest/corpus and previous database migration compatibility checks run in the standard check target.
 
 ## Implementation-Gate Policy
 

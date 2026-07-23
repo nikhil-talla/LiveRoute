@@ -9,7 +9,7 @@ V1 is:
 ```text
 WebSocket client <-> Backend gateway
                        |-- PostgreSQL
-                       |     users, trips, saved plans, snapshots,
+                       |     users, trips, current plans, engine proposals, snapshots,
                        |     command intents, planner outbox, active-trip leases
                        |
                        `-- bounded pool of bidirectional gRPC streams
@@ -32,9 +32,10 @@ The V1 backend uses Go 1.26 with `net/http`, `coder/websocket`, gRPC-Go, `pgx/v5
 
 - The WebSocket client owns its local presentation state, if any, and generates an idempotency key for every command.
 - The backend authenticates users, authorizes trip access, owns WebSocket sessions, assigns durable per-trip mutation sequence numbers, and is the only component that accesses PostgreSQL.
-- PostgreSQL is the durable source of truth for users, trip definitions, accepted/saved plans, planner recovery snapshots, uncheckpointed durable planner mutations, and active-trip lease epochs.
+- PostgreSQL is the durable source of truth for users, trip definitions, the user-selected current plan, engine-generated plan proposals and their decisions, planner recovery snapshots, uncheckpointed durable planner mutations, and active-trip lease epochs.
 - The single V1 backend holds the active-trip leases. Each lease carries a monotonically increasing `runtime_epoch`; stale epochs are rejected by the C++ service. This fencing remains mandatory across backend restarts even though horizontal backend scaling is deferred.
-- The C++ service owns mutable active trip state in memory. Each trip belongs to exactly one shard, and only that shard mutates the trip.
+- The user-selected current plan is authoritative. The backend validates and commits a user-authored initial or replacement plan to PostgreSQL without asking C++ to approve its optimality or feasibility. C++ mirrors that current plan for an active trip and may change it only in response to a user-authorized current-plan replacement or accepted proposal.
+- The C++ service owns the mutable in-memory mirror and live observations for active trips. Each trip belongs to exactly one shard, and only that shard mutates the in-memory state. Planner output is advisory until the user accepts it.
 - OSRM is an external provider from the planner's perspective. Only `OsrmTravelTimeProvider` performs OSRM HTTP and JSON work.
 - The planner receives immutable internal C++ inputs, including `TravelTimeMatrix`; it never sees Protobuf, WebSocket, PostgreSQL, HTTP, JSON, or OSRM types.
 
@@ -44,20 +45,23 @@ LiveRoute uses at-least-once delivery plus idempotency for durable commands. It 
 
 | Input class | Examples | PostgreSQL | Backend-to-C++ replay | Overload behavior |
 | --- | --- | --- | --- | --- |
-| Durable mutation | activity lifecycle, trip edit, reservation/deadline change, accepted/rejected plan | Record command intent/outbox before dispatch; finalize domain mutation after C++ acceptance | Retry until applied or rejected terminally | Return retryable overload; never silently drop |
+| Runtime-first durable mutation | activity lifecycle, reservation/deadline/hours change, accepted/rejected engine proposal | Record command intent/outbox before dispatch; finalize domain mutation after C++ acceptance | Retry until applied or rejected terminally | Return retryable overload; never silently drop |
+| Canonical-first user edit | create trip with user plan, replace user-selected current plan, edit the trip/activity set plus resulting user plan | Commit normalized trip/current-plan state, command outcome, revision, and finalized sequence first; post-creation edits always enqueue an ordered C++ mirror event | Deliver when active or resolve through a full canonical bootstrap; retry until covered | Preserve the committed user state; report bounded admission or runtime-sync state explicitly |
 | Telemetry/latest value | location, velocity, heading | Do not persist every sample | Do not replay obsolete samples | Coalesce or drop with explicit status |
 | Advisory | weather/crowd/recommendation refresh | Persist only if independently required by product data | Best effort | Delay or drop with explicit status |
 | Planner snapshot | state needed to rehydrate an active trip | Persist asynchronously with version metadata | Used as bootstrap base | Retain previous compatible snapshot on failure |
-| Saved/accepted plan | user-selected durable plan | Record intent, validate/apply in C++, then finalize saved plan | Retry mutation until applied | Reject command if durability is unavailable |
+| Engine proposal | C++-generated alternative itinerary | Persist separately before publishing; never change the current-plan pointer | Recompute or discard when its source tuple is stale | Keep the current user plan unchanged |
 
-Backend acknowledgements are two-stage:
+Runtime-first backend acknowledgements are two-stage:
 
 1. `durable_recorded`: the command intent and planner-outbox record committed atomically before dispatch.
 2. `planner_applied`: the C++ shard accepted the command and returned its resulting state version; the backend then finalized the durable domain mutation and outbox state atomically. A terminal C++ rejection instead finalizes the intent as rejected without changing canonical trip/plan data.
 
+Canonical-first user edits use `canonical_committed` after the PostgreSQL transaction makes the normalized trip/current-plan state authoritative. If an active runtime must be updated, a later `runtime_synced` acknowledgement reports that C++ mirrors the committed state. C++ unavailability never rolls back or rejects the canonical user edit; it leaves runtime sync pending and blocks later runtime-first mutations for that trip until ordered convergence or rebootstrap.
+
 Telemetry receives only an `accepted`, `coalesced`, `dropped`, or `overloaded` admission status. It has no durability guarantee.
 
-The backend reports a durable command as complete only after the second transaction commits. If either process crashes between the two stages, the recorded intent is replayed and the C++ idempotency result allows finalization. The backend keeps applied durable outbox rows until a persisted planner snapshot covers their mutation sequence. A snapshot transaction stores the new snapshot and prunes covered outbox rows atomically.
+The backend reports a runtime-first durable command as complete only after the second transaction commits. If either process crashes between the two stages, the recorded intent is replayed and the C++ idempotency result allows finalization. A canonical-first user edit is complete for product authority at `canonical_committed`, even if its active-runtime mirror remains pending. The backend keeps applied durable outbox rows until a persisted planner snapshot covers their mutation sequence. A snapshot transaction stores the new snapshot and prunes covered outbox rows atomically.
 
 `command_intents` is the durable idempotency and outcome history; it is separate from the prunable delivery outbox. V1 retains command-intent rows for the lifetime of the trip. Reusing a `message_id` with the same canonical payload returns the recorded pending or terminal outcome. Reusing it with a different payload is a terminal `IDEMPOTENCY_KEY_REUSED` error. Deleting a trip deletes its command-intent history in the same controlled lifecycle. Duplicate client commands, outbox deliveries, gRPC messages, and responses are therefore safe even after covered outbox rows have been pruned.
 
@@ -79,6 +83,7 @@ Every server message has `protocol_version`, `server_message_id`, `kind`, `statu
 Client-to-server message kinds are:
 
 - authenticate
+- create trip with its initial user-authored current plan
 - subscribe trip
 - unsubscribe trip
 - trip command
@@ -91,18 +96,18 @@ Server-to-client message kinds are:
 
 - connection ready
 - subscription state
-- command acknowledgement (`durable_recorded`, `planner_applied`, or terminal rejection)
+- command acknowledgement (`durable_recorded`, `planner_applied`, `canonical_committed`, `runtime_synced`, or terminal rejection)
 - telemetry admission status
 - planner notification
-- revised plan
+- persisted plan proposal
 - trip state resynchronization
 - structured error
 - ping
 - pong
 
-The first non-ping client message must be `authenticate`; normal messages are accepted only after `connection_ready`. There is no global WebSocket ordering guarantee. Clients use `message_id`, `trip_revision`, `planner_state_version`, and sequence watermarks rather than frame arrival order to determine freshness.
+The first non-ping client message must be `authenticate`; normal messages are accepted only after `connection_ready`. `create_trip` is the only trip-scoped command authorized before its `trip_id` exists: the authenticated user becomes its owner, and the initial current plan commits in the same transaction. There is no global WebSocket ordering guarantee. Clients use `message_id`, `trip_revision`, `planner_state_version`, and sequence watermarks rather than frame arrival order to determine freshness.
 
-Reconnect uses resynchronization, not an unbounded WebSocket replay log. The client reconnects, reauthenticates, supplies its last observed trip/planner versions and a configured-bounded list of outstanding command `message_id` values, and subscribes again. The backend returns the current durable trip, the durable outcome of each requested command intent, and the latest active planner state/plan. If the trip is not active, the backend first rehydrates it before reporting planner state. Repeated commands use `message_id` idempotency.
+Reconnect uses resynchronization, not an unbounded WebSocket replay log. The client reconnects, reauthenticates, supplies its last observed trip/planner versions and a configured-bounded list of outstanding command `message_id` values, and subscribes again. The backend returns the current durable trip and authoritative current plan, the latest stored pending proposal when one exists, runtime-sync state, and the durable outcome of each requested command intent. If the trip is not active, the backend may rehydrate it before reporting live planner state; PostgreSQL current-plan authority does not depend on activation. Repeated commands use `message_id` idempotency.
 
 Each connection has bounded inbound admission and a bounded outbound buffer. Replaceable progress/telemetry notifications may be coalesced. Durable acknowledgements and terminal errors are not silently dropped; if they cannot be delivered, the backend closes the connection with a retryable reason so the client resynchronizes. Protocol/authentication/authorization violations close with a non-retryable reason; capacity or transient service failures close with a retryable reason.
 
@@ -113,7 +118,7 @@ V1 is a local development/demo deployment, not an Internet production deployment
 - Docker Compose exposes only the backend on loopback by default; PostgreSQL, C++, and OSRM remain on the private network.
 - Plain `ws://` is allowed only on loopback. Any non-loopback deployment must terminate TLS and expose `wss://`; internal mTLS and production certificate automation are future deployment work.
 - The V1 `authenticate` payload carries an unpadded base64url encoding of exactly 32 random bytes. The raw token enters only through `/run/secrets/liveroute_dev_token`; PostgreSQL stores only its SHA-256 digest mapped to a seeded user. Exact validation, revocation, close-code, origin, and redaction rules are in `plans/LiveRouteV1ContractSpec.md`. User-facing login and external identity-provider integration arrive with or after the React V1.5 client.
-- The backend authorizes trip ownership on every subscribe, resynchronize, command, and telemetry message; authentication alone never grants trip access.
+- The backend authorizes trip ownership on every existing-trip subscribe, resynchronize, command, and telemetry message. `create_trip` is the sole exception: the authenticated user becomes owner of the new client-generated trip id in the same transaction. Authentication alone never grants access to an existing trip.
 - Browser-compatible connections enforce a configured origin allowlist. Non-browser CLI/load clients may omit `Origin` only in explicitly enabled local-development mode.
 - Frame size, decoded payload size, per-connection admission, and per-trip pending-command limits are enforced before expensive work. V1 uses local bounded admission rather than a distributed rate-limiting service.
 - Logs and error text exclude bearer tokens, precise location payloads, and raw PostgreSQL/OSRM responses. Safe identifiers and aggregate metrics may be recorded.
@@ -167,6 +172,7 @@ message PlannerStreamResponse {
     PlannerError error = 25;
     Pong pong = 26;
     FinalizedMutationsAcknowledged finalized_mutations_acknowledged = 27;
+    TripBootstrapped trip_bootstrapped = 28;
   }
 }
 ```
@@ -177,7 +183,8 @@ The envelope and payload field names, types, numbers, enum values, and validity 
 | --- | --- | --- |
 | `OpenStream` | Establish the backend-to-C++ stream and negotiate capabilities. | backend instance id, protocol version, supported capability flags |
 | `StreamReady` | Confirm that the C++ service accepted the stream and negotiated limits/capabilities. | C++ instance id, accepted protocol version/capabilities, configured message/resource limits safe to expose |
-| `BootstrapTrip` | Load or restore an active trip into the C++ runtime. | snapshot schema/version/checksum and bytes when available; otherwise full trip definition; checkpoint mutation watermark; current observation; backend trip revision |
+| `BootstrapTrip` | Load or restore an active trip into the C++ runtime. | snapshot schema/version/checksum and bytes when available; otherwise full trip definition plus authoritative current plan; checkpoint mutation watermark; current observation; backend trip revision |
+| `TripBootstrapped` | Confirm the exact bootstrap base C++ loaded. | status, retryability, current-plan id, accepted/finalized mutation watermarks |
 | `ApplyTripEvent` | Deliver one trip event or update to the C++ runtime. | event id, event occurrence time, and exactly one typed event delta; never a complete mutable trip |
 | `EventAcknowledged` | Report whether an event was accepted, duplicated, rejected, or otherwise resolved. | disposition, retryability, resolved mutation/observation sequence, resulting planner state/trip versions, whether replanning was scheduled |
 | `RequestSnapshot` | Ask C++ to serialize a checkpoint at or beyond a requested finalized watermark, only when accepted/finalized watermarks match. | reason and minimum planner/finalized mutation watermark requested |
@@ -185,7 +192,7 @@ The envelope and payload field names, types, numbers, enum values, and validity 
 | `ConfirmFinalizedMutations` | Report PostgreSQL's highest contiguous terminally finalized mutation sequence to C++. | cumulative finalized mutation watermark |
 | `FinalizedMutationsAcknowledged` | Confirm C++ advanced or already held that finalized watermark. | status, retryability, finalized watermark |
 | `DeactivateTrip` | Remove a trip from the active C++ runtime, optionally after producing a final snapshot. | reason and whether a final snapshot is required |
-| `ReplanResult` | Return a newly computed plan or explicitly report why no new plan exists. | plan id, source runtime epoch/state version/generation, preserved prefix, revised suffix, skipped/shortened/moved activities, notification decision, structured reasons, planner/provider stats, result-quality fields |
+| `ReplanResult` | Return a newly computed proposal or explicitly report why no new proposal exists. | proposal id, base current-plan id, source runtime epoch/state version, trip revision and accepted mutation sequence, preserved prefix, revised suffix, skipped/shortened/moved activities, notification decision, structured reasons, planner/provider stats, and result-quality fields; `planning_generation` remains internal C++ stale-result metadata and is checked before emission |
 | `PlannerError` | Report a structured planner or protocol failure and whether retrying is appropriate. | stable status enum, retryable flag, safe diagnostic text, related state/sequence versions |
 
 Envelope validity is message-specific:
@@ -212,16 +219,17 @@ Mutation and observation sequences start at 1; zero means not applicable. Option
 - operating hours changed
 - place found closed
 - travel delay
-- user accepted or rejected a proposed plan
+- user replaced the authoritative current plan
+- user accepted or rejected an engine proposal
 - recommendation refresh, weather, crowd, or social advisory update
 
 Event priority is derived by the C++ admission/domain layer from event type and current trip state; callers cannot promote their own work.
 
-Trip/bootstrap domain messages contain canonical UUIDs, coordinates, travel mode, activity ordering, completed prefix/current activity, fixed or flexible classification, user priority/utility, reservation data, normalized open windows, minimum/preferred/maximum duration, movable/shortenable/skippable/mandatory flags, and current plan/version metadata. V1 accepts IANA zones present for country `US` in the pinned tzdata. CLI/fixture/seed ingestion converts local input into signed UTC Unix-epoch milliseconds; the backend validates normalized ranges/order before C++ and the planner uses only UTC values. IANA zone names remain on durable activities and output segments for post-planning display conversion. DST gaps, folds, overnight windows, and exceptional closure rules are fixed in `plans/LiveRouteV1ContractSpec.md`.
+Trip/bootstrap domain messages contain canonical UUIDs, coordinates, travel mode, activity ordering, completed prefix/current activity, fixed or flexible classification, user priority/utility, reservation data, normalized open windows, minimum/preferred/maximum duration, movable/shortenable/skippable/mandatory flags, and the authoritative current plan/version metadata. The current plan contains the user-selected ordered schedule, not browser-supplied routing metrics or planner reason/quality fields. V1 accepts IANA zones present for country `US` in the pinned tzdata. CLI/fixture/seed ingestion converts local input into signed UTC Unix-epoch milliseconds; the backend validates normalized ranges/order before C++ and the planner uses only UTC values. IANA zone names remain on durable activities, current-plan segments, and proposal segments for post-planning display conversion. DST gaps, folds, overnight windows, and exceptional closure rules are fixed in `plans/LiveRouteV1ContractSpec.md`.
 
-Itinerary segments contain activity id, location, scheduled start/end, inbound route duration/distance/reachability, disposition, and structured reason codes. Metrics use integer durations with documented units. Protobuf messages are converted into validated internal C++ types before shard admission; generated message objects are not stored in `TripState` or passed to planner search.
+Current-plan segments contain activity id, scheduled/omitted state, and user-selected start/end only when scheduled; the repeated order is authoritative. Engine-proposal segments additionally contain location, IANA zone, optional inbound route duration/distance/reachability, disposition, and structured reason codes. Metrics use integer durations with documented units. Protobuf messages are converted into validated internal C++ types before shard admission; generated message objects are not stored in `TripState` or passed to planner search.
 
-Plan acceptance and rejection are durable trip events. A decision includes `source_runtime_epoch`, `plan_id`, and `source_planner_state_version`, and returns `STALE` with reason `PLAN_PROPOSAL` when the tuple no longer matches the active proposal.
+Proposal acceptance and rejection are runtime-first durable trip events. A decision includes `source_runtime_epoch`, `proposal_id`, `source_planner_state_version`, and `base_current_plan_id`, and returns `STALE` with reason `PLAN_PROPOSAL` when the tuple no longer matches the active proposal. For acceptance, the backend converts the stored proposal into a complete new `CurrentPlan` and durably records its id/revision/creation time/payload before C++ dispatch so C++ and PostgreSQL install byte-identical metadata across retries. Accepting a fresh proposal causes the backend finalization transaction to create that immutable current-plan revision with origin `accepted_engine_proposal`; rejecting it never changes the current plan. Applying a stale proposal anyway is a separate user-authored `replace_current_plan` command, not a stale-check bypass.
 
 Protocol rules:
 
@@ -230,11 +238,11 @@ Protocol rules:
 - `mutation_sequence` orders durable commands and must be contiguous after bootstrap.
 - A terminally rejected durable command still resolves and consumes its mutation sequence without incrementing planner state version, so later commands do not deadlock behind a gap.
 - `observation_sequence` is backend-owned in-memory state scoped to `(trip_id, runtime_epoch)` and starts at 1. Gaps are valid and older observations are ignored. It resets only on a higher epoch; same-epoch stream reconnect preserves it.
-- `trip_revision` changes only when a durable canonical mutation is accepted. The backend records the current value as `expected_trip_revision`; C++ accepts the event only when its mirrored revision matches, then advances its mirror by one. PostgreSQL advances to that same value during finalization. A terminal rejection leaves both revisions unchanged.
-- `planner_state_version` is scoped to the runtime epoch, starts at 0 after higher-epoch bootstrap, and increases for every accepted change to C++ trip state, including telemetry. Freshness compares `(runtime_epoch, planner_state_version)`; it is independent of durable `trip_revision`, which starts at 0.
+- `trip_revision` starts at 1 with atomic trip/current-plan creation. For runtime-first work, the backend records the current value as `expected_trip_revision`; C++ matches and advances its mirror before PostgreSQL advances during finalization. For a canonical-first user trip/current-plan edit, PostgreSQL advances first and the mirror event carries the prior expected revision so C++ reaches the same value later. A terminal runtime-first rejection leaves both revisions unchanged.
+- `planner_state_version` is scoped to the runtime epoch, starts at 0 after higher-epoch bootstrap, and increases for every accepted change to C++ trip state, including telemetry. Freshness compares `(runtime_epoch, planner_state_version)`; it is independent of durable `trip_revision`, which starts at 1.
 - `expected_planner_state_version` is present only for accepting/rejecting a specific proposal or another explicitly compare-and-set planner operation. Ordinary durable trip mutations do not set it, so intervening telemetry cannot create a false version conflict.
 - The C++ runtime has an internal `planning_generation` that increases whenever accepted input invalidates an in-flight plan.
-- A proposed plan is identified by `runtime_epoch`, `plan_id`, and `source_planner_state_version`; a plan decision must match all three against the current proposal.
+- An engine proposal is identified by `runtime_epoch`, `proposal_id`, `source_planner_state_version`, and `base_current_plan_id`; a proposal decision must match all four against the current proposal.
 - Per-message deadlines use `expires_at_unix_ms` because an RPC deadline cannot express independent deadlines on a long-lived stream. The C++ boundary rejects expired messages and converts remaining time to a monotonic internal deadline. Deployed hosts require synchronized clocks.
 - Message size limits are enforced before domain conversion. V1 hard limits are a 256 KiB WebSocket frame/decoded message, 4 MiB gRPC message, 2 MiB snapshot, and 128 resynchronization command IDs. Oversized work receives `RESOURCE_EXHAUSTED` or the contracted WebSocket close code.
 - One read and one write may be in flight per C++ callback reactor. Additional outbound messages wait in a bounded per-stream queue.
@@ -274,15 +282,15 @@ The stable status set is `OK`, `DUPLICATE`, `STALE`, `INVALID_ARGUMENT`, `UNAUTH
 7. A planner worker searches only in memory and returns best-so-far with the captured tags.
 8. The result returns to the owner shard. The shard commits it only when runtime epoch, trip identity, state version, and planning generation still match.
 9. A stale result is discarded. If newer accepted state still requires planning, the shard schedules one replacement using the latest coalesced trigger.
-10. The shard records the latest committed plan in `TripState` and emits it through the trip's current stream binding when one exists. The plan carries its source accepted-mutation watermark; the backend withholds it from WebSocket clients until PostgreSQL's finalized watermark covers that source.
+10. The shard records the latest committed engine proposal separately from the authoritative current plan in `TripState` and emits it through the trip's current stream binding when one exists. The proposal carries its base current-plan id and source accepted-mutation watermark; the backend withholds it from WebSocket clients until PostgreSQL's finalized watermark covers that source and the proposal is durably stored.
 
-State mutation is never rolled back because a plan became stale or OSRM failed. Provider/planner outcome is represented separately from whether the event was accepted. A proposed plan has a `runtime_epoch`, `plan_id`, and `source_planner_state_version`; acceptance is rejected if that tuple is no longer current.
+State mutation is never rolled back because a proposal became stale or OSRM failed. Provider/planner outcome is represented separately from whether the event was accepted. An engine proposal never replaces the authoritative current plan by itself. A proposal has a `runtime_epoch`, `proposal_id`, `source_planner_state_version`, and `base_current_plan_id`; acceptance is rejected if that tuple is no longer current.
 
-Durable acceptance and PostgreSQL finalization are distinct. C++ advances an accepted mutation watermark when it resolves a durable event. After the backend commits the corresponding canonical mutation or terminal rejection in PostgreSQL, it sends the cumulative `ConfirmFinalizedMutations` watermark. C++ advances that watermark idempotently only up to its accepted watermark. It returns `SNAPSHOT_NOT_READY` while accepted and finalized watermarks differ, so a persistable snapshot never contains a mutation whose PostgreSQL outcome is uncommitted. Bootstrap carries PostgreSQL's finalized watermark to recover lost confirmations. A snapshot's covered finalized mutation sequence is the highest contiguous PostgreSQL-finalized command sequence whose accepted effects, if any, are present in that snapshot.
+Durable acceptance and PostgreSQL finalization are distinct. Runtime-first work is accepted by C++ before PostgreSQL finalization; canonical-first user trip/current-plan edits are finalized in PostgreSQL before C++ mirror acceptance. In both cases C++ advances its accepted mutation watermark only when its in-memory state covers the event, and the backend sends cumulative `ConfirmFinalizedMutations` only up to that accepted watermark. C++ advances confirmation idempotently and returns `SNAPSHOT_NOT_READY` while accepted and finalized watermarks differ. Bootstrap carries PostgreSQL's current plan/finalized watermark and may converge both sides atomically. A snapshot's covered finalized mutation sequence is the highest contiguous PostgreSQL-finalized command sequence whose accepted effects, if any, are present in that snapshot.
 
-C++ may compute a plan speculatively after durable acceptance, but every plan carries `source_accepted_mutation_sequence`. The backend keeps only one bounded latest unpublished plan per trip and never publishes it until PostgreSQL's finalized watermark covers that source. This prevents clients from observing a plan based on a mutation that failed to become canonical. Finalization releases only a still-current epoch/state-version result.
+C++ may compute a proposal speculatively after durable acceptance, but every proposal carries `source_accepted_mutation_sequence`. The backend keeps only one bounded latest unpublished proposal per trip and never publishes it until PostgreSQL's finalized watermark covers that source and a `plan_proposals` row commits. The persistence transaction marks any older pending proposal superseded without changing the current plan or trip revision. This prevents clients from observing a proposal based on a mutation that failed to become canonical and guarantees that every published suggestion can be recovered alongside the unchanged user plan. Finalization releases only a still-current epoch/state-version/base-plan result.
 
-A stream is only a transport binding, not state ownership. Bootstrap binds the trip and epoch to the current stream; a stream break invalidates that binding. An in-flight result that commits after a reconnect uses the new binding. If no binding exists, C++ retains the latest committed plan in the bounded `TripState` and returns it during the next idempotent bootstrap/resynchronization.
+A stream is only a transport binding, not state ownership. Bootstrap binds the trip and epoch to the current stream; a stream break invalidates that binding. An in-flight result that commits after a reconnect uses the new binding. If no binding exists, C++ retains the latest proposal in the bounded `TripState`; the backend still persists it before client publication. PostgreSQL, not that retained result, supplies the authoritative current plan during bootstrap/resynchronization.
 
 Higher-priority state changes request cooperative cancellation of superseded work. Cancellation is an optimization; epoch/version/generation checking is the correctness mechanism.
 
@@ -362,28 +370,42 @@ Minimum logical tables are:
 - `users`
 - `development_auth_tokens`
 - `trips` and normalized trip/activity constraints
-- `saved_plans`
+- immutable `itinerary_plans` for user-selected current-plan history
+- durable `plan_proposals` for engine suggestions and their decision state
 - `command_intents`
 - `planner_snapshots`
 - `planner_outbox`
 - `trip_runtime_leases`
 
-The exact columns, checks, foreign keys, indexes, retention, and lock order are in `plans/LiveRouteV1ContractSpec.md`. Required constraints include unique client command/event id per trip in `command_intents`, RFC-8785/SHA-256 canonical payload digest metadata, unique durable mutation sequence per trip, monotonically increasing trip revision/finalized watermark/runtime epoch, one current lease holder, token digests rather than raw tokens, and snapshot metadata containing schema version, source epoch/state version, covered finalized mutation sequence, size, and SHA-256.
+The exact columns, checks, foreign keys, indexes, retention, and lock order are in `plans/LiveRouteV1ContractSpec.md`. Required constraints include one immutable current-plan revision selected by each trip, at most one pending engine proposal, separate retained proposal/current-plan payloads, unique client command/event id per trip in `command_intents`, RFC-8785/SHA-256 canonical payload digest metadata, unique durable mutation sequence per trip, monotonically increasing trip revision/finalized watermark/runtime epoch, one current lease holder, token digests rather than raw tokens, and snapshot metadata containing schema version, source epoch/state version, covered finalized mutation sequence, size, and SHA-256.
 
-The backend serializes durable commands per trip and allows at most one recorded unresolved durable mutation at a time. Later commands wait without a durability acknowledgement in a bounded in-memory per-trip queue; a full queue receives retryable overload, and a backend restart requires those unacknowledged clients to retry. Telemetry may continue under its independent observation sequence. This keeps PostgreSQL revision finalization and C++ mutation ordering identical.
+The backend serializes runtime-first durable commands per trip and allows at most one unresolved runtime-first mutation. A runtime-first command is admitted only when no canonical-first mirror is pending. Canonical-first user edits may continue while C++ is unavailable because PostgreSQL is authoritative, but their unresolved mirror rows are bounded by configured per-trip capacity and receive consecutive mutation sequences. A full mirror capacity returns retryable overload before commit. Later runtime-first commands wait without durability acknowledgement until all earlier canonical mirrors converge. Telemetry may continue under its independent observation sequence. Ordered mirror delivery or a full canonical bootstrap through the latest finalized sequence preserves identical C++ ordering without making user editing depend on C++ availability.
 
 Lease acquire/renew transactions use PostgreSQL server time and atomically set holder id, expiry, and a strictly higher epoch on acquisition. The backend renews before a configured safety margin; an uncertain or late renewal is treated as expired. On expiry it stops trip dispatch before attempting another acquisition. This simple fencing rule is retained for restart correctness even with one V1 backend process.
 
-Durable command recording transaction:
+Runtime-first durable command recording transaction:
 
 1. Lock/compare the trip revision.
 2. Detect duplicate client `message_id`. Compare the stored `rfc8785-sha256-v1` digest over validated `{protocol_version, kind, trip_id, payload, extensions-if-present}`; return the stored state/outcome on a match and reject `IDEMPOTENCY_KEY_REUSED` on a difference.
-3. Validate the command against durable backend rules without changing canonical trip/saved-plan state.
+3. Validate the command against durable backend rules without changing canonical trip/current-plan state.
 4. Allocate the next mutation sequence and record the current trip revision as `expected_trip_revision`.
 5. Insert the pending command intent and a lease-neutral planner outbox payload containing stable `event_id` (equal to client `message_id`), trip id, digest metadata, expected trip revision, mutation sequence, optional logical command expiry, and event data. Do not persist a reusable per-attempt `request_id` or epoch as future dispatch authority.
 6. Commit, then emit `durable_recorded` to the client.
 
-The outbox dispatcher claims bounded due batches using PostgreSQL-time claim leases and `FOR UPDATE SKIP LOCKED`, and adds the currently held runtime epoch plus a new per-attempt `request_id`/transport expiry to each dispatch. After a correlated C++ acceptance, one transaction applies the canonical trip/saved-plan mutation, advances trip revision and the finalized mutation watermark, and marks the intent/outbox entry applied. After a terminal C++ rejection/expiry, one transaction advances the finalized watermark and marks the intent terminal without changing canonical trip data or trip revision. Only then does the backend emit `planner_applied`, `rejected`, or `expired`, send cumulative `ConfirmFinalizedMutations`, and admit the next durable command. Resolved outbox rows remain replayable until a snapshot covering their finalized sequence commits; command-intent outcome rows remain for the trip lifetime.
+The outbox dispatcher claims bounded due batches using PostgreSQL-time claim leases and `FOR UPDATE SKIP LOCKED`, and adds the currently held runtime epoch plus a new per-attempt `request_id`/transport expiry to each dispatch. After a correlated C++ acceptance of runtime-first work, one transaction applies the canonical trip/current-plan/proposal-decision mutation, advances trip revision and the finalized mutation watermark, and marks the intent/outbox entry applied. After a terminal C++ rejection/expiry, one transaction advances the finalized watermark and marks the intent terminal without changing canonical trip/current-plan data or trip revision; a stale proposal may be marked `stale` as proposal metadata. Only then does the backend emit `planner_applied`, `rejected`, or `expired`, send cumulative `ConfirmFinalizedMutations`, and admit the next durable command. Resolved outbox rows remain replayable until a snapshot covering their finalized sequence commits; command-intent outcome rows remain for the trip lifetime.
+
+Canonical-first user-edit transactions are deliberately different:
+
+1. `create_trip` inserts the authenticated user's trip, normalized activities, command outcome, immutable user-authored plan revision 1, and `current_plan_id` in one transaction. It starts with trip revision 1 and finalized mutation sequence 1. An inactive trip needs no outbox row; its first bootstrap loads the complete authoritative state and watermark.
+2. `replace_current_plan` locks the trip, validates the idempotency digest and expected trip revision, stores a new immutable `user_authored` plan revision, advances the trip revision/mutation/finalized watermarks, updates `current_plan_id`, marks pending proposals superseded, and records the command as applied in one transaction.
+3. `trip_edited` uses the same canonical-first shape: atomically apply the normalized add/replace/remove/reorder operation and a complete user-authored resulting current plan over the post-edit activity set. This prevents an activity edit from leaving the immutable current plan structurally inconsistent.
+4. Each post-creation transaction inserts an ordered `CurrentPlanReplaced` or `TripEdited` outbox event carrying the prior expected trip revision, even when the trip is inactive. This lets a later snapshot-based activation replay the canonical-first change or resolve it through a full canonical bootstrap. The backend emits `canonical_committed` after commit; it does not wait for C++ approval.
+5. C++ treats a structurally valid canonical-first event as authoritative input, updates its mirror, invalidates older proposals/work, and acknowledges the sequence. The backend then marks delivery accepted, sends finalization confirmation, and emits `runtime_synced`. An unexpected C++ domain rejection is an `INTERNAL` compatibility fault: preserve the PostgreSQL trip/current plan, pause later runtime-first dispatch, and recover by corrected code/data plus full bootstrap rather than rolling back the user choice.
+6. If restart or stream loss occurs first, a full bootstrap from PostgreSQL may cover the already-finalized edit sequence; after verifying the returned watermark/current-plan id, the backend marks the mirror outbox row accepted idempotently.
+
+The backend validates user plan shape and safety boundaries before commit: canonical identifiers, ownership, finite/ranged values, allowed time zones, known activities exactly once, ordered non-overlapping segments, `start < end`, size limits, and optimistic trip revision. It does not reject the plan for being nonoptimal or for travel-time, operating-hours, reservation, or deadline infeasibility. Those conditions are retained as facts for C++ warnings and suggestions. The client never supplies trusted route duration/distance, provider quality, planner reasons, or planner source versions in a current-plan write.
+
+When C++ returns a still-current proposal whose source mutation sequence is finalized, the backend transactionally inserts its immutable `plan_proposals` row and marks any older pending proposal superseded before publishing `plan_proposal`. Accepting a fresh proposal uses the runtime-first path: after C++ freshness acknowledgement, finalization derives a new immutable `accepted_engine_proposal` current-plan revision from the stored proposal, updates the current pointer, and marks the proposal accepted atomically. Rejection marks the proposal rejected and leaves the current pointer unchanged. Proposal history and current-plan history are retained for the trip lifetime.
 
 Transient durable dispatch uses full-jitter capped exponential retry from 250 ms to 30 s and does not stop after a fixed attempt count. Attempts stop only on an acknowledged terminal/applied outcome, trip deletion, or an explicit paused-internal administrative repair state. Optional logical expiry is carried to C++ and becomes a terminal acknowledged `COMMAND_EXPIRED`; it is distinct from the fresh per-attempt gRPC deadline. Attempt timeout/cancellation never silently abandons recorded work.
 
@@ -398,7 +420,7 @@ Snapshot transaction:
 
 Snapshots occur after meaningful durable boundaries, before clean deactivation, and periodically according to configured time/event thresholds. They are not synchronously written for every GPS update.
 
-When PostgreSQL is unavailable, new durable commands, trip activation, lease changes, and plan acceptance return `DURABILITY_UNAVAILABLE`. Already-active trips continue bounded telemetry/replanning only while their lease is certainly valid; successful responses carry `recovery_state = NOT_ADVANCING`. When the lease expires, the backend stops dispatching that trip until PostgreSQL recovers.
+When PostgreSQL is unavailable, new durable commands, user trip/current-plan edits, trip activation, lease changes, and proposal decisions return `DURABILITY_UNAVAILABLE`. Unstored C++ proposals are not published. Already-active trips continue bounded telemetry/replanning only while their lease is certainly valid; successful non-proposal responses carry `recovery_state = NOT_ADVANCING`. When the lease expires, the backend stops dispatching that trip until PostgreSQL recovers. The last committed user plan remains authoritative throughout the outage.
 
 ## Failure Matrix
 
@@ -414,7 +436,9 @@ When PostgreSQL is unavailable, new durable commands, trip activation, lease cha
 | OSRM timeout/unavailable | Cancel provider work; use explicitly allowed labeled cache or return `PROVIDER_UNAVAILABLE` |
 | Planner deadline | Return `OK` + `BEST_SO_FAR` when a valid plan exists; otherwise `DEADLINE_EXCEEDED`/`INFEASIBLE` as appropriate |
 | Result superseded in flight | Discard by generation/version check; schedule one latest replacement if still required |
-| PostgreSQL unavailable | Return `DURABILITY_UNAVAILABLE`; continue `NOT_ADVANCING` telemetry only for already-active trips with a certainly valid lease, then stop at lease expiry |
+| PostgreSQL unavailable | Preserve the last committed current plan; reject new plan writes and do not publish unstored proposals; continue `NOT_ADVANCING` telemetry only for already-active trips with a certainly valid lease, then stop at lease expiry |
+| C++ unavailable during user edit | Commit the authoritative trip/current plan in PostgreSQL, report `canonical_committed` with runtime sync pending, and converge by ordered replay or full bootstrap; never roll back the user edit |
+| Proposal persistence fails | Keep the current plan unchanged, withhold the proposal from clients, and retain at most one still-current unpublished proposal for bounded retry |
 | Snapshot incompatible/corrupt | Reject snapshot; restore previous compatible snapshot and replay remaining durable mutations |
 | Graceful shutdown | Stop admission, cancel advisory/telemetry work, drain durable acknowledgements within shutdown deadline, checkpoint or leave replayable outbox |
 
@@ -428,7 +452,7 @@ Configuration must cover and validate:
 - per-profile OSRM endpoint, matrix limit, connect/total timeout, and response-byte limit
 - gRPC stream pool size, message limit, inbound/outbound capacities, reconnect backoff bounds
 - WebSocket frame/decoded-message limits, inbound/outbound capacities, per-connection admission rate, allowed origins, and heartbeat/idle timeouts
-- per-trip backend pending-command capacity
+- per-trip backend pending runtime-first command and unresolved canonical-mirror capacities
 - PostgreSQL pool, outbox batch/in-flight limits, lease duration/renewal/safety margin, and snapshot thresholds
 - planner deadline/candidate/search budgets
 - shutdown deadline
@@ -444,7 +468,7 @@ One agent may implement all V1 components in one continuous effort; numeric road
 1. Create the container-first workspace, transcribe the exact contract specification into Protobuf/JSON Schema/SQL/config artifacts, pin inputs, and pass schema/migration/compatibility/readiness checks.
 2. Implement internal C++ domain types, `TravelTimeMatrix`, seeded normalized hours, bounded sharded runtime, deterministic providers, and a planner stub; pass ordering, idempotency, epoch, generation-checked commit, cancellation, and overload tests.
 3. Implement the bidirectional gRPC stream, Go backend stream pool, bootstrap, finalization-watermark confirmation, reconnect, and replay; pass correlated-response and failure-injection tests.
-4. Implement PostgreSQL command-intent/outbox/snapshot/lease transactions and the WebSocket gateway; pass end-to-end durable command, authentication, telemetry, reconnect, and crash-window tests.
+4. Implement PostgreSQL current-plan/proposal/command-intent/outbox/snapshot/lease transactions and the WebSocket gateway; pass end-to-end user-plan authority, proposal isolation/decision, durable command, authentication, telemetry, reconnect, and crash-window tests.
 5. Implement OSRM and the deadline-bounded beam-search suffix replanner without changing planner interfaces; pass provider and planner correctness tests.
 6. Add GPS triggering/coalescing, notification decisions, observability, full failure/load tests, and measured configuration tuning.
 7. Add bounded caching and allocation/data-layout optimizations only with before/after evidence.
@@ -457,12 +481,14 @@ An agent may work ahead across gates locally, but completion of a later componen
 - Complete Protobuf and WebSocket JSON Schemas pass compatibility tests before handler implementation.
 - Generated schemas match every field number/type/status/close-code rule in `plans/LiveRouteV1ContractSpec.md`.
 - Durable commands survive backend/C++ restart without double application.
+- A structurally valid user-authored plan becomes and remains authoritative after PostgreSQL commit even when C++ is unavailable; C++ never replaces it without a user command.
+- Every published engine proposal is stored separately from the current plan, identifies its base current plan/source versions, and cannot change `current_plan_id` until a fresh user acceptance finalizes.
 - A command retry remains idempotent after its covered outbox row is pruned.
 - Lease-neutral outbox work replays under the backend's current epoch after restart.
 - Per-attempt deadlines may retry without expiring durable intent; only optional logical command expiry terminates it.
 - C++ snapshots only when accepted and PostgreSQL-finalized mutation watermarks match; finalization confirmation recovers idempotently after lost responses/restarts.
 - Telemetry bursts remain bounded and converge to the latest accepted observation.
-- Higher epochs discard all old telemetry/proposals/work and reset epoch-scoped observation/planner versions; same-epoch reconnect preserves them.
+- Higher epochs discard all old telemetry/active proposals/work, mark still-pending durable proposal records stale, and reset epoch-scoped observation/planner versions; same-epoch reconnect preserves them.
 - Same-trip mutations are ordered; different trips progress concurrently.
 - Shards never block on OSRM, planner execution, PostgreSQL, WebSocket, or gRPC writes.
 - Stale planning results cannot overwrite newer trip state.
