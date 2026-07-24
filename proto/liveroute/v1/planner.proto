@@ -1,0 +1,585 @@
+syntax = "proto3";
+
+package liveroute.v1;
+
+option cc_enable_arenas = true;
+option go_package = "github.com/liveroute/liveroute/gen/go/liveroute/v1;liveroutev1";
+
+service LiveRoutePlanner {
+  rpc PlanTrips(stream PlannerStreamRequest)
+      returns (stream PlannerStreamResponse);
+}
+
+enum StatusCode {
+  STATUS_CODE_UNSPECIFIED = 0;
+  STATUS_CODE_OK = 1;
+  STATUS_CODE_DUPLICATE = 2;
+  STATUS_CODE_STALE = 3;
+  STATUS_CODE_INVALID_ARGUMENT = 4;
+  STATUS_CODE_UNAUTHENTICATED = 5;
+  STATUS_CODE_PERMISSION_DENIED = 6;
+  STATUS_CODE_NOT_FOUND = 7;
+  STATUS_CODE_IDEMPOTENCY_KEY_REUSED = 8;
+  STATUS_CODE_INACTIVE_TRIP = 9;
+  STATUS_CODE_RESOURCE_EXHAUSTED = 10;
+  STATUS_CODE_DEADLINE_EXCEEDED = 11;
+  STATUS_CODE_COMMAND_EXPIRED = 12;
+  STATUS_CODE_CANCELLED = 13;
+  STATUS_CODE_INFEASIBLE = 14;
+  STATUS_CODE_PROVIDER_UNAVAILABLE = 15;
+  STATUS_CODE_DURABILITY_UNAVAILABLE = 16;
+  STATUS_CODE_UNAVAILABLE = 17;
+  STATUS_CODE_UNSUPPORTED_VERSION = 18;
+  STATUS_CODE_SNAPSHOT_NOT_READY = 19;
+  STATUS_CODE_SNAPSHOT_INCOMPATIBLE = 20;
+  STATUS_CODE_INTERNAL = 21;
+}
+
+enum StaleReason {
+  STALE_REASON_UNSPECIFIED = 0;
+  STALE_REASON_EPOCH = 1;
+  STALE_REASON_MUTATION_SEQUENCE = 2;
+  STALE_REASON_OBSERVATION_SEQUENCE = 3;
+  STALE_REASON_TRIP_REVISION = 4;
+  STALE_REASON_PLANNER_STATE_VERSION = 5;
+  STALE_REASON_PLAN_PROPOSAL = 6;
+}
+
+enum EventDisposition {
+  EVENT_DISPOSITION_UNSPECIFIED = 0;
+  EVENT_DISPOSITION_ACCEPTED = 1;
+  EVENT_DISPOSITION_DUPLICATE = 2;
+  EVENT_DISPOSITION_STALE = 3;
+  EVENT_DISPOSITION_REJECTED = 4;
+}
+
+enum TravelMode {
+  TRAVEL_MODE_UNSPECIFIED = 0;
+  TRAVEL_MODE_WALKING = 1;
+  TRAVEL_MODE_DRIVING = 2;
+}
+
+enum ActivityClass {
+  ACTIVITY_CLASS_UNSPECIFIED = 0;
+  ACTIVITY_CLASS_FIXED = 1;
+  ACTIVITY_CLASS_FLEXIBLE = 2;
+}
+
+enum ActivityState {
+  ACTIVITY_STATE_UNSPECIFIED = 0;
+  ACTIVITY_STATE_PLANNED = 1;
+  ACTIVITY_STATE_STARTED = 2;
+  ACTIVITY_STATE_COMPLETED = 3;
+  ACTIVITY_STATE_SKIPPED = 4;
+}
+
+enum PlanDecision {
+  PLAN_DECISION_UNSPECIFIED = 0;
+  PLAN_DECISION_ACCEPT = 1;
+  PLAN_DECISION_REJECT = 2;
+}
+
+enum PlanOrigin {
+  PLAN_ORIGIN_UNSPECIFIED = 0;
+  PLAN_ORIGIN_USER_AUTHORED = 1;
+  PLAN_ORIGIN_ACCEPTED_ENGINE_PROPOSAL = 2;
+}
+
+enum PlanEntryState {
+  PLAN_ENTRY_STATE_UNSPECIFIED = 0;
+  PLAN_ENTRY_STATE_SCHEDULED = 1;
+  PLAN_ENTRY_STATE_OMITTED = 2;
+}
+
+enum SegmentDisposition {
+  SEGMENT_DISPOSITION_UNSPECIFIED = 0;
+  SEGMENT_DISPOSITION_PRESERVED = 1;
+  SEGMENT_DISPOSITION_MOVED = 2;
+  SEGMENT_DISPOSITION_SHORTENED = 3;
+  SEGMENT_DISPOSITION_SKIPPED = 4;
+  SEGMENT_DISPOSITION_ADDED = 5;
+}
+
+enum NotificationType {
+  NOTIFICATION_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_TYPE_NONE = 1;
+  NOTIFICATION_TYPE_LOW_SLACK_WARNING = 2;
+  NOTIFICATION_TYPE_CRITICAL_LATENESS = 3;
+  NOTIFICATION_TYPE_PLAN_CHANGE_SUGGESTED = 4;
+  NOTIFICATION_TYPE_INFEASIBLE_SCHEDULE = 5;
+}
+
+enum PlanReasonCode {
+  PLAN_REASON_CODE_UNSPECIFIED = 0;
+  PLAN_REASON_CODE_LATE_DEPARTURE = 1;
+  PLAN_REASON_CODE_ACTIVITY_DELAY = 2;
+  PLAN_REASON_CODE_ROUTE_DEVIATION = 3;
+  PLAN_REASON_CODE_HOURS_CHANGED = 4;
+  PLAN_REASON_CODE_PLACE_CLOSED = 5;
+  PLAN_REASON_CODE_RESERVATION_AT_RISK = 6;
+  PLAN_REASON_CODE_TRAVEL_DELAY = 7;
+  PLAN_REASON_CODE_USER_EDIT = 8;
+  PLAN_REASON_CODE_DEADLINE_BUDGET = 9;
+  PLAN_REASON_CODE_NO_FEASIBLE_PLAN = 10;
+}
+
+enum PlanQuality {
+  PLAN_QUALITY_UNSPECIFIED = 0;
+  PLAN_QUALITY_COMPLETE = 1;
+  PLAN_QUALITY_BEST_SO_FAR = 2;
+  PLAN_QUALITY_NO_NEW_PROPOSAL = 3;
+}
+
+enum RoutingQuality {
+  ROUTING_QUALITY_UNSPECIFIED = 0;
+  ROUTING_QUALITY_FRESH = 1;
+  ROUTING_QUALITY_STALE_CACHE = 2;
+  ROUTING_QUALITY_UNAVAILABLE = 3;
+}
+
+enum RecoveryState {
+  RECOVERY_STATE_UNSPECIFIED = 0;
+  RECOVERY_STATE_CURRENT = 1;
+  RECOVERY_STATE_NOT_ADVANCING = 2;
+}
+
+enum SnapshotReason {
+  SNAPSHOT_REASON_UNSPECIFIED = 0;
+  SNAPSHOT_REASON_PERIODIC = 1;
+  SNAPSHOT_REASON_DURABLE_BOUNDARY = 2;
+  SNAPSHOT_REASON_DEACTIVATION = 3;
+  SNAPSHOT_REASON_SHUTDOWN = 4;
+}
+
+enum DeactivationReason {
+  DEACTIVATION_REASON_UNSPECIFIED = 0;
+  DEACTIVATION_REASON_BACKEND_REQUEST = 1;
+  DEACTIVATION_REASON_IDLE_EVICTION = 2;
+  DEACTIVATION_REASON_TRIP_DELETED = 3;
+  DEACTIVATION_REASON_SHUTDOWN = 4;
+}
+
+enum AdvisoryKind {
+  ADVISORY_KIND_UNSPECIFIED = 0;
+  ADVISORY_KIND_RECOMMENDATION_REFRESH = 1;
+  ADVISORY_KIND_WEATHER_CHANGED = 2;
+  ADVISORY_KIND_CROWD_CHANGED = 3;
+  ADVISORY_KIND_SOCIAL_UPDATE = 4;
+}
+
+message Location {
+  double latitude = 1;
+  double longitude = 2;
+}
+
+message TimeWindow {
+  int64 opens_at_unix_ms = 1;
+  int64 closes_at_unix_ms = 2;
+}
+
+message ActivityTiming {
+  repeated TimeWindow open_windows = 1;
+  optional int64 reservation_start_unix_ms = 2;
+  uint32 reservation_grace_seconds = 3;
+  uint32 min_duration_seconds = 4;
+  uint32 preferred_duration_seconds = 5;
+  uint32 max_duration_seconds = 6;
+  bool mandatory = 7;
+  bool can_shorten = 8;
+  bool can_move = 9;
+  bool can_skip = 10;
+  optional int64 mandatory_deadline_unix_ms = 11;
+}
+
+message Activity {
+  string activity_id = 1;
+  string place_id = 2;
+  string display_name = 3;
+  Location location = 4;
+  string time_zone_name = 5;
+  TravelMode inbound_travel_mode = 6;
+  ActivityClass activity_class = 7;
+  ActivityState activity_state = 8;
+  int32 priority_rank = 9;
+  int32 utility_score = 10;
+  ActivityTiming timing = 11;
+  uint32 activity_delay_seconds = 12;
+  optional int64 found_closed_at_unix_ms = 13;
+}
+
+message TravelDelayState {
+  string from_activity_id = 1;
+  string to_activity_id = 2;
+  uint32 additional_seconds = 3;
+  int64 observed_at_unix_ms = 4;
+}
+
+message TripDefinition {
+  string trip_id = 1;
+  string owner_user_id = 2;
+  string default_time_zone_name = 3;
+  repeated Activity activities = 4;
+  uint32 completed_prefix_count = 5;
+  string current_activity_id = 6;
+  string current_plan_id = 7;
+  repeated TravelDelayState travel_delays = 8;
+}
+
+message CurrentObservation {
+  Location location = 1;
+  int64 observed_at_unix_ms = 2;
+  optional double velocity_meters_per_second = 3;
+  optional double heading_degrees = 4;
+}
+
+message CurrentPlanSegment {
+  string activity_id = 1;
+  PlanEntryState state = 2;
+  optional int64 scheduled_start_unix_ms = 3;
+  optional int64 scheduled_end_unix_ms = 4;
+}
+
+message CurrentPlan {
+  string plan_id = 1;
+  uint64 plan_revision = 2;
+  PlanOrigin origin = 3;
+  repeated CurrentPlanSegment segments = 4;
+  int64 created_at_unix_ms = 5;
+  optional string source_proposal_id = 6;
+}
+
+message RouteLeg {
+  uint32 duration_seconds = 1;
+  uint32 distance_meters = 2;
+  bool reachable = 3;
+}
+
+message ProposalSegment {
+  string activity_id = 1;
+  Location location = 2;
+  string time_zone_name = 3;
+  optional int64 scheduled_start_unix_ms = 4;
+  optional int64 scheduled_end_unix_ms = 5;
+  optional RouteLeg inbound_route = 6;
+  SegmentDisposition disposition = 7;
+  repeated PlanReasonCode reasons = 8;
+}
+
+message PlanProposal {
+  string proposal_id = 1;
+  uint64 source_runtime_epoch = 2;
+  uint64 source_planner_state_version = 3;
+  string base_current_plan_id = 4;
+  uint64 source_trip_revision = 5;
+  uint64 source_accepted_mutation_sequence = 6;
+  repeated ProposalSegment preserved_prefix = 7;
+  repeated ProposalSegment revised_suffix = 8;
+  int64 created_at_unix_ms = 9;
+}
+
+message PlannerStats {
+  uint64 candidates_evaluated = 1;
+  uint64 candidates_pruned = 2;
+  uint32 search_depth = 3;
+  uint32 queue_wait_microseconds = 4;
+  uint32 provider_microseconds = 5;
+  uint32 planner_microseconds = 6;
+  uint32 serialization_microseconds = 7;
+  bool deadline_hit = 8;
+}
+
+message ResultQuality {
+  PlanQuality plan_quality = 1;
+  RoutingQuality routing_quality = 2;
+  RecoveryState recovery_state = 3;
+}
+
+message StoredPlanProposal {
+  PlanProposal proposal = 1;
+  NotificationType notification = 2;
+  repeated PlanReasonCode reasons = 3;
+  PlannerStats stats = 4;
+  ResultQuality quality = 5;
+}
+
+message OpenStream {
+  string backend_instance_id = 1;
+  string protocol_version = 2;
+  repeated string capabilities = 3;
+}
+
+message StreamReady {
+  string cpp_instance_id = 1;
+  string protocol_version = 2;
+  repeated string capabilities = 3;
+  uint32 max_message_bytes = 4;
+  uint32 max_snapshot_bytes = 5;
+  uint32 max_active_trips = 6;
+  StatusCode status = 7;
+}
+
+message SnapshotBlob {
+  uint32 snapshot_schema_version = 1;
+  uint64 source_runtime_epoch = 2;
+  uint64 source_planner_state_version = 3;
+  uint64 trip_revision = 4;
+  uint64 covered_finalized_mutation_sequence = 5;
+  uint32 payload_size_bytes = 6;
+  bytes checksum_sha256 = 7;
+  bytes payload = 8;
+}
+
+message BootstrapTrip {
+  oneof base {
+    SnapshotBlob snapshot = 1;
+    TripDefinition full_trip = 2;
+  }
+  uint64 finalized_mutation_sequence = 3;
+  uint64 trip_revision = 4;
+  optional CurrentObservation current_observation = 5;
+  uint64 current_observation_sequence = 6;
+  optional CurrentPlan current_plan = 7;
+}
+
+message TripBootstrapped {
+  StatusCode status = 1;
+  bool retryable = 2;
+  string current_plan_id = 3;
+  uint64 accepted_mutation_sequence = 4;
+  uint64 finalized_mutation_sequence = 5;
+  string safe_message = 6;
+}
+
+message ConfirmFinalizedMutations {
+  uint64 finalized_mutation_sequence = 1;
+}
+
+message FinalizedMutationsAcknowledged {
+  StatusCode status = 1;
+  bool retryable = 2;
+  uint64 finalized_mutation_sequence = 3;
+}
+
+message RequestSnapshot {
+  SnapshotReason reason = 1;
+  uint64 minimum_finalized_mutation_sequence = 2;
+  uint64 minimum_planner_state_version = 3;
+}
+
+message TripSnapshot {
+  StatusCode status = 1;
+  bool retryable = 2;
+  SnapshotBlob snapshot = 3;
+}
+
+message DeactivateTrip {
+  DeactivationReason reason = 1;
+  bool final_snapshot_required = 2;
+}
+
+message TripDeactivated {
+  StatusCode status = 1;
+  bool retryable = 2;
+  bool final_snapshot_produced = 3;
+}
+
+message Ping {
+  string nonce = 1;
+  int64 sent_at_unix_ms = 2;
+}
+
+message Pong {
+  string nonce = 1;
+  int64 received_at_unix_ms = 2;
+}
+
+message LocationUpdated { Location location = 1; }
+message VelocityUpdated { double meters_per_second = 1; }
+message HeadingUpdated { double degrees = 1; }
+
+message ActivityStatusChanged {
+  string activity_id = 1;
+  ActivityState state = 2;
+}
+
+message ActivityDelayed {
+  string activity_id = 1;
+  uint32 delay_seconds = 2;
+}
+
+message AddActivity {
+  Activity activity = 1;
+  uint32 ordinal = 2;
+}
+
+message ReplaceActivity { Activity activity = 1; }
+message RemoveActivity { string activity_id = 1; }
+message ReorderActivities { repeated string activity_ids = 1; }
+
+message TripEdited {
+  oneof operation {
+    AddActivity add = 1;
+    ReplaceActivity replace = 2;
+    RemoveActivity remove = 3;
+    ReorderActivities reorder = 4;
+  }
+  CurrentPlan resulting_current_plan = 5;
+}
+
+message ReservationChanged {
+  string activity_id = 1;
+  optional int64 reservation_start_unix_ms = 2;
+  uint32 reservation_grace_seconds = 3;
+}
+
+message MandatoryDeadlineChanged {
+  string activity_id = 1;
+  int64 latest_finish_unix_ms = 2;
+}
+
+message RouteDeviationDetected {
+  Location location = 1;
+  uint32 distance_from_route_meters = 2;
+}
+
+message OperatingHoursChanged {
+  string activity_id = 1;
+  repeated TimeWindow open_windows = 2;
+}
+
+message PlaceFoundClosed {
+  string activity_id = 1;
+  int64 observed_at_unix_ms = 2;
+}
+
+message TravelDelay {
+  string from_activity_id = 1;
+  string to_activity_id = 2;
+  uint32 additional_seconds = 3;
+}
+
+message PlanDecisionEvent {
+  PlanDecision decision = 1;
+  string proposal_id = 2;
+  uint64 source_runtime_epoch = 3;
+  uint64 source_planner_state_version = 4;
+  string base_current_plan_id = 5;
+  optional CurrentPlan resulting_current_plan = 6;
+}
+
+message AdvisoryUpdate {
+  AdvisoryKind kind = 1;
+  string source = 2;
+  bytes opaque_payload = 3;
+}
+
+message CurrentPlanReplaced { CurrentPlan current_plan = 1; }
+
+message ApplyTripEvent {
+  string event_id = 1;
+  int64 occurred_at_unix_ms = 2;
+  optional int64 command_expires_at_unix_ms = 3;
+
+  oneof event {
+    LocationUpdated location_updated = 20;
+    VelocityUpdated velocity_updated = 21;
+    HeadingUpdated heading_updated = 22;
+    ActivityStatusChanged activity_status_changed = 23;
+    ActivityDelayed activity_delayed = 24;
+    TripEdited trip_edited = 25;
+    ReservationChanged reservation_changed = 26;
+    MandatoryDeadlineChanged mandatory_deadline_changed = 27;
+    RouteDeviationDetected route_deviation_detected = 28;
+    OperatingHoursChanged operating_hours_changed = 29;
+    PlaceFoundClosed place_found_closed = 30;
+    TravelDelay travel_delay = 31;
+    PlanDecisionEvent plan_decision = 32;
+    AdvisoryUpdate advisory_update = 33;
+    CurrentPlanReplaced current_plan_replaced = 34;
+  }
+}
+
+message EventAcknowledged {
+  EventDisposition disposition = 1;
+  StatusCode status = 2;
+  bool retryable = 3;
+  StaleReason stale_reason = 4;
+  string event_id = 5;
+  uint64 resolved_mutation_sequence = 6;
+  uint64 resolved_observation_sequence = 7;
+  bool replan_scheduled = 8;
+  string safe_message = 9;
+}
+
+message ReplanResult {
+  StatusCode status = 1;
+  bool retryable = 2;
+  PlanProposal proposal = 3;
+  NotificationType notification = 4;
+  repeated PlanReasonCode reasons = 5;
+  PlannerStats stats = 6;
+  ResultQuality quality = 7;
+  string safe_message = 8;
+}
+
+message PlannerError {
+  StatusCode status = 1;
+  bool retryable = 2;
+  StaleReason stale_reason = 3;
+  string safe_message = 4;
+  uint64 related_mutation_sequence = 5;
+  uint64 related_observation_sequence = 6;
+  uint64 related_planner_state_version = 7;
+}
+
+message TripStateSnapshot {
+  TripDefinition trip = 1;
+  uint64 trip_revision = 2;
+  uint64 accepted_mutation_sequence = 3;
+  uint64 finalized_mutation_sequence = 4;
+  CurrentPlan current_plan = 5;
+  uint32 snapshot_schema_version = 6;
+}
+
+message PlannerStreamRequest {
+  string request_id = 1;
+  string trip_id = 2;
+  uint64 runtime_epoch = 3;
+  uint64 mutation_sequence = 4;
+  uint64 observation_sequence = 5;
+  optional uint64 expected_planner_state_version = 6;
+  int64 expires_at_unix_ms = 7;
+  optional uint64 expected_trip_revision = 8;
+
+  oneof payload {
+    OpenStream open_stream = 20;
+    BootstrapTrip bootstrap_trip = 21;
+    ApplyTripEvent apply_event = 22;
+    RequestSnapshot request_snapshot = 23;
+    DeactivateTrip deactivate_trip = 24;
+    Ping ping = 25;
+    ConfirmFinalizedMutations confirm_finalized_mutations = 26;
+  }
+}
+
+message PlannerStreamResponse {
+  string request_id = 1;
+  string trip_id = 2;
+  uint64 runtime_epoch = 3;
+  uint64 accepted_mutation_sequence = 4;
+  uint64 accepted_observation_sequence = 5;
+  uint64 planner_state_version = 6;
+  uint64 trip_revision = 7;
+
+  oneof payload {
+    StreamReady stream_ready = 20;
+    EventAcknowledged event_acknowledged = 21;
+    ReplanResult replan_result = 22;
+    TripSnapshot trip_snapshot = 23;
+    TripDeactivated trip_deactivated = 24;
+    PlannerError error = 25;
+    Pong pong = 26;
+    FinalizedMutationsAcknowledged finalized_mutations_acknowledged = 27;
+    TripBootstrapped trip_bootstrapped = 28;
+  }
+}

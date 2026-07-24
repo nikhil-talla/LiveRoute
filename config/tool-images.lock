@@ -1,0 +1,10 @@
+# Resolved image identities used by checked-in tooling. Service-image locks are
+# added with their implementation slices; no mutable tag is used at execution.
+images:
+  cpp_skeleton_builder:
+    source_tag: debian:bookworm-slim
+    digest: sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+  buf:
+    source_tag: bufbuild/buf:latest
+    resolved_version: 1.72.0
+    digest: sha256:65bd496a89c762ad7151ca9e7d885a45dacb3671a8e8ec39738b9f844d3405ea
