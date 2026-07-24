@@ -1,0 +1,10 @@
+{
+  "protocol_version": "liveroute.v1", "server_message_id": "550e8400-e29b-41d4-a716-446655440021", "kind": "resynchronization_state", "status": "OK", "retryable": false,
+  "trip_id": "550e8400-e29b-41d4-a716-446655440002", "trip_revision": "1", "runtime_epoch": "0", "planner_state_version": "0", "accepted_mutation_sequence": "0", "accepted_observation_sequence": "0",
+  "payload": {
+    "trip": { "trip_id": "550e8400-e29b-41d4-a716-446655440002", "owner_user_id": "550e8400-e29b-41d4-a716-446655440005", "default_time_zone_name": "America/New_York", "activities": [], "completed_prefix_count": 0, "current_activity_id": "550e8400-e29b-41d4-a716-446655440012", "current_plan_id": "550e8400-e29b-41d4-a716-446655440013", "travel_delays": [] },
+    "current_plan": { "plan_id": "550e8400-e29b-41d4-a716-446655440013", "plan_revision": "1", "origin": "user_authored", "segments": [], "created_at_unix_ms": 0 },
+    "runtime_sync_state": "not_required",
+    "outcomes": [{ "message_id": "550e8400-e29b-41d4-a716-446655440011", "phase": "canonical_committed", "status": "OK", "retryable": false, "mutation_sequence": "1", "recovery_state": "not_advancing" }]
+  }
+}

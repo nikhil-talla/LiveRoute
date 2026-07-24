@@ -1,0 +1,14 @@
+{
+  "protocol_version": "liveroute.v1",
+  "message_id": "550e8400-e29b-41d4-a716-446655440001",
+  "kind": "subscribe_trip",
+  "trip_id": "550e8400-e29b-41d4-a716-446655440002",
+  "payload": {
+    "last_runtime_epoch": "1",
+    "last_planner_state_version": "0",
+    "last_trip_revision": "1"
+  },
+  "extensions": {
+    "example.client": { "trace": true }
+  }
+}

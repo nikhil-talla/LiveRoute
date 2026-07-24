@@ -1,0 +1,4 @@
+{
+  "protocol_version": "liveroute.v1", "message_id": "550e8400-e29b-41d4-a716-446655440011", "kind": "create_trip", "trip_id": "550e8400-e29b-41d4-a716-446655440002",
+  "payload": { "default_time_zone_name": "America/New_York", "activities": [], "current_plan": { "plan_id": "550e8400-e29b-41d4-a716-446655440013", "segments": [{ "activity_id": "550e8400-e29b-41d4-a716-446655440012", "state": "scheduled", "scheduled_start_unix_ms": 0 }] } }
+}

@@ -1,0 +1,13 @@
+{
+  "protocol_version": "liveroute.v1",
+  "server_message_id": "550e8400-e29b-41d4-a716-446655440004",
+  "kind": "plan_proposal",
+  "status": "OK",
+  "retryable": false,
+  "trip_id": "550e8400-e29b-41d4-a716-446655440002",
+  "trip_revision": "1",
+  "runtime_epoch": "1",
+  "planner_state_version": "0",
+  "accepted_mutation_sequence": "1",
+  "payload": {}
+}

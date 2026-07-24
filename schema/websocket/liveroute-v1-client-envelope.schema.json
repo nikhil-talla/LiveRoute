@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liveroute.dev/schema/liveroute.v1/client-envelope",
+  "title": "LiveRoute V1 client WebSocket envelope",
+  "description": "Strict transport envelope only. Kind-specific payload schemas are composed separately before handler implementation.",
+  "oneOf": [
+    { "$ref": "#/$defs/connectionMessage" },
+    { "$ref": "#/$defs/tripMessage" }
+  ],
+  "$defs": {
+    "protocolVersion": {
+      "const": "liveroute.v1"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "uint64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)+$"
+      },
+      "additionalProperties": true
+    },
+    "baseProperties": {
+      "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+      "message_id": { "$ref": "#/$defs/uuid" },
+      "payload": { "type": "object" },
+      "extensions": { "$ref": "#/$defs/extensions" }
+    },
+    "connectionMessage": {
+      "type": "object",
+      "required": ["protocol_version", "message_id", "kind", "payload"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "kind": { "enum": ["authenticate", "ping", "pong"] },
+        "payload": { "type": "object" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "not": { "required": ["trip_id"] },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "authenticate" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/authenticatePayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "ping" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/pingPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "pong" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/pongPayload" } } }
+        }
+      ]
+    },
+    "tripMessage": {
+      "type": "object",
+      "required": ["protocol_version", "message_id", "kind", "trip_id", "payload"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "kind": {
+          "enum": [
+            "create_trip",
+            "subscribe_trip",
+            "unsubscribe_trip",
+            "trip_command",
+            "telemetry_update",
+            "resynchronize_trip"
+          ]
+        },
+        "trip_id": { "$ref": "#/$defs/uuid" },
+        "payload": { "type": "object" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "subscribe_trip" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/subscribeTripPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "unsubscribe_trip" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/emptyPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "resynchronize_trip" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/resynchronizeTripPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "telemetry_update" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/telemetryPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "create_trip" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/createTripPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "trip_command" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/tripCommandPayload" } } }
+        }
+      ]
+    },
+    "authenticatePayload": {
+      "type": "object",
+      "required": ["token"],
+      "properties": { "token": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" } },
+      "additionalProperties": false
+    },
+    "pingPayload": {
+      "type": "object",
+      "required": ["nonce", "sent_at_unix_ms"],
+      "properties": {
+        "nonce": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sent_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
+    "pongPayload": {
+      "type": "object",
+      "required": ["nonce", "received_at_unix_ms"],
+      "properties": {
+        "nonce": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "received_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
+    "emptyPayload": {
+      "type": "object",
+      "maxProperties": 0
+    },
+    "subscribeTripPayload": {
+      "type": "object",
+      "properties": {
+        "last_runtime_epoch": { "$ref": "#/$defs/uint64" },
+        "last_planner_state_version": { "$ref": "#/$defs/uint64" },
+        "last_trip_revision": { "$ref": "#/$defs/uint64" }
+      },
+      "additionalProperties": false
+    },
+    "resynchronizeTripPayload": {
+      "type": "object",
+      "required": ["last_runtime_epoch", "last_planner_state_version", "last_trip_revision", "outstanding_message_ids"],
+      "properties": {
+        "last_runtime_epoch": { "$ref": "#/$defs/uint64" },
+        "last_planner_state_version": { "$ref": "#/$defs/uint64" },
+        "last_trip_revision": { "$ref": "#/$defs/uint64" },
+        "outstanding_message_ids": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/uuid" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "location": {
+      "type": "object",
+      "required": ["latitude", "longitude"],
+      "properties": {
+        "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+      },
+      "additionalProperties": false
+    },
+    "telemetryPayload": {
+      "type": "object",
+      "required": ["observation_kind", "observed_at_unix_ms", "observation"],
+      "properties": {
+        "observation_kind": { "enum": ["location", "velocity", "heading", "route_deviation"] },
+        "observed_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "observation": { "type": "object" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "observation_kind": { "const": "location" } } },
+          "then": { "properties": { "observation": { "$ref": "#/$defs/location" } } }
+        },
+        {
+          "if": { "properties": { "observation_kind": { "const": "velocity" } } },
+          "then": {
+            "properties": {
+              "observation": {
+                "type": "object",
+                "required": ["meters_per_second"],
+                "properties": { "meters_per_second": { "type": "number", "minimum": 0 } },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "observation_kind": { "const": "heading" } } },
+          "then": {
+            "properties": {
+              "observation": {
+                "type": "object",
+                "required": ["degrees"],
+                "properties": { "degrees": { "type": "number", "minimum": 0, "maximum": 360 } },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "observation_kind": { "const": "route_deviation" } } },
+          "then": {
+            "properties": {
+              "observation": {
+                "type": "object",
+                "required": ["location", "distance_from_route_meters"],
+                "properties": {
+                  "location": { "$ref": "#/$defs/location" },
+                  "distance_from_route_meters": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "timeWindow": {
+      "type": "object",
+      "required": ["opens_at_unix_ms", "closes_at_unix_ms"],
+      "properties": {
+        "opens_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "closes_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
+    "activityTiming": {
+      "type": "object",
+      "required": ["open_windows", "reservation_grace_seconds", "min_duration_seconds", "preferred_duration_seconds", "max_duration_seconds", "mandatory", "can_shorten", "can_move", "can_skip"],
+      "properties": {
+        "open_windows": { "type": "array", "items": { "$ref": "#/$defs/timeWindow" } },
+        "reservation_start_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "reservation_grace_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "min_duration_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "preferred_duration_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "max_duration_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "mandatory": { "type": "boolean" }, "can_shorten": { "type": "boolean" },
+        "can_move": { "type": "boolean" }, "can_skip": { "type": "boolean" },
+        "mandatory_deadline_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
+    "activity": {
+      "type": "object",
+      "required": ["activity_id", "place_id", "display_name", "location", "time_zone_name", "inbound_travel_mode", "activity_class", "activity_state", "priority_rank", "utility_score", "timing", "activity_delay_seconds"],
+      "properties": {
+        "activity_id": { "$ref": "#/$defs/uuid" }, "place_id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": "string", "minLength": 1 }, "location": { "$ref": "#/$defs/location" },
+        "time_zone_name": { "type": "string", "minLength": 1 },
+        "inbound_travel_mode": { "enum": ["walking", "driving"] },
+        "activity_class": { "enum": ["fixed", "flexible"] },
+        "activity_state": { "enum": ["planned", "started", "completed", "skipped"] },
+        "priority_rank": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "utility_score": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "timing": { "$ref": "#/$defs/activityTiming" },
+        "activity_delay_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "found_closed_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
+    "currentPlanSegment": {
+      "oneOf": [
+        { "type": "object", "required": ["activity_id", "state", "scheduled_start_unix_ms", "scheduled_end_unix_ms"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "state": { "const": "scheduled" }, "scheduled_start_unix_ms": { "type": "integer" }, "scheduled_end_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["activity_id", "state"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "state": { "const": "omitted" } }, "additionalProperties": false }
+      ]
+    },
+    "userPlanDraft": {
+      "type": "object", "required": ["plan_id", "segments"],
+      "properties": { "plan_id": { "$ref": "#/$defs/uuid" }, "segments": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/currentPlanSegment" } } },
+      "additionalProperties": false
+    },
+    "createTripPayload": {
+      "type": "object", "required": ["default_time_zone_name", "activities", "current_plan"],
+      "properties": {
+        "default_time_zone_name": { "type": "string", "minLength": 1 },
+        "activities": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/activity" } },
+        "current_plan": { "$ref": "#/$defs/userPlanDraft" }
+      },
+      "additionalProperties": false
+    },
+    "proposalIdentity": {
+      "type": "object", "required": ["proposal_id", "source_runtime_epoch", "source_planner_state_version", "base_current_plan_id"],
+      "properties": { "proposal_id": { "$ref": "#/$defs/uuid" }, "source_runtime_epoch": { "$ref": "#/$defs/uint64" }, "source_planner_state_version": { "$ref": "#/$defs/uint64" }, "base_current_plan_id": { "$ref": "#/$defs/uuid" } },
+      "additionalProperties": false
+    },
+    "tripCommandPayload": {
+      "oneOf": [
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "activity_status_changed" }, "command": { "$ref": "#/$defs/activityStatusCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "activity_delayed" }, "command": { "$ref": "#/$defs/activityDelayedCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "trip_edited" }, "command": { "$ref": "#/$defs/tripEditedCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "reservation_changed" }, "command": { "$ref": "#/$defs/reservationChangedCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "mandatory_deadline_changed" }, "command": { "$ref": "#/$defs/mandatoryDeadlineCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "operating_hours_changed" }, "command": { "$ref": "#/$defs/operatingHoursCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "place_found_closed" }, "command": { "$ref": "#/$defs/placeClosedCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "travel_delay" }, "command": { "$ref": "#/$defs/travelDelayCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "replace_current_plan" }, "command": { "$ref": "#/$defs/replaceCurrentPlanCommand" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "accept_proposal" }, "command": { "$ref": "#/$defs/proposalIdentity" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+        { "type": "object", "required": ["command_kind", "command"], "properties": { "command_kind": { "const": "reject_proposal" }, "command": { "$ref": "#/$defs/proposalIdentity" }, "command_expires_at_unix_ms": { "type": "integer" } }, "additionalProperties": false }
+      ]
+    },
+    "activityStatusCommand": {
+      "type": "object", "required": ["activity_id", "state"],
+      "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "state": { "enum": ["planned", "started", "completed", "skipped"] } }, "additionalProperties": false
+    },
+    "activityDelayedCommand": {
+      "type": "object", "required": ["activity_id", "delay_seconds"],
+      "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "delay_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 } }, "additionalProperties": false
+    },
+    "tripEditedCommand": { "type": "object", "required": ["expected_trip_revision", "operation", "current_plan"], "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "operation": { "$ref": "#/$defs/tripEditOperation" }, "current_plan": { "$ref": "#/$defs/userPlanDraft" } }, "additionalProperties": false },
+    "tripEditOperation": { "oneOf": [
+      { "type": "object", "required": ["add"], "properties": { "add": { "type": "object", "required": ["activity", "ordinal"], "properties": { "activity": { "$ref": "#/$defs/activity" }, "ordinal": { "type": "integer", "minimum": 0 } }, "additionalProperties": false } }, "additionalProperties": false },
+      { "type": "object", "required": ["replace"], "properties": { "replace": { "$ref": "#/$defs/activity" } }, "additionalProperties": false },
+      { "type": "object", "required": ["remove"], "properties": { "remove": { "type": "object", "required": ["activity_id"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" } }, "additionalProperties": false } }, "additionalProperties": false },
+      { "type": "object", "required": ["reorder"], "properties": { "reorder": { "type": "object", "required": ["activity_ids"], "properties": { "activity_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" }, "uniqueItems": true } }, "additionalProperties": false } }, "additionalProperties": false }
+    ] },
+    "reservationChangedCommand": { "type": "object", "required": ["activity_id", "reservation_grace_seconds"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "reservation_start_unix_ms": { "type": "integer" }, "reservation_grace_seconds": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+    "mandatoryDeadlineCommand": { "type": "object", "required": ["activity_id", "latest_finish_unix_ms"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "latest_finish_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+    "operatingHoursCommand": { "type": "object", "required": ["activity_id", "open_windows"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "open_windows": { "type": "array", "items": { "$ref": "#/$defs/timeWindow" } } }, "additionalProperties": false },
+    "placeClosedCommand": { "type": "object", "required": ["activity_id", "observed_at_unix_ms"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "observed_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+    "travelDelayCommand": { "type": "object", "required": ["from_activity_id", "to_activity_id", "additional_seconds"], "properties": { "from_activity_id": { "$ref": "#/$defs/uuid" }, "to_activity_id": { "$ref": "#/$defs/uuid" }, "additional_seconds": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+    "replaceCurrentPlanCommand": {
+      "type": "object", "required": ["expected_trip_revision", "current_plan"],
+      "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "current_plan": { "$ref": "#/$defs/userPlanDraft" } }, "additionalProperties": false
+    }
+  }
+}

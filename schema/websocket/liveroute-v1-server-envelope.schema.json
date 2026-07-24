@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liveroute.dev/schema/liveroute.v1/server-envelope",
+  "title": "LiveRoute V1 server WebSocket envelope",
+  "description": "Strict transport envelope only. Kind-specific payload schemas are composed separately before handler implementation.",
+  "oneOf": [
+    { "$ref": "#/$defs/connectionMessage" },
+    { "$ref": "#/$defs/tripMessage" }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "uint64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "status": {
+      "enum": ["OK", "DUPLICATE", "STALE", "INVALID_ARGUMENT", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND", "IDEMPOTENCY_KEY_REUSED", "INACTIVE_TRIP", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED", "COMMAND_EXPIRED", "CANCELLED", "INFEASIBLE", "PROVIDER_UNAVAILABLE", "DURABILITY_UNAVAILABLE", "UNAVAILABLE", "UNSUPPORTED_VERSION", "SNAPSHOT_NOT_READY", "SNAPSHOT_INCOMPATIBLE", "INTERNAL"]
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)+$" },
+      "additionalProperties": true
+    },
+    "connectionMessage": {
+      "type": "object",
+      "required": ["protocol_version", "server_message_id", "kind", "status", "retryable", "payload"],
+      "properties": {
+        "protocol_version": { "const": "liveroute.v1" },
+        "server_message_id": { "$ref": "#/$defs/uuid" },
+        "kind": { "enum": ["connection_ready", "error", "ping", "pong"] },
+        "status": { "$ref": "#/$defs/status" },
+        "retryable": { "type": "boolean" },
+        "payload": { "type": "object" },
+        "in_reply_to_message_id": { "$ref": "#/$defs/uuid" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "not": { "required": ["trip_id"] },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "connection_ready" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/connectionReadyPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "ping" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/pingPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "pong" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/pongPayload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "error" } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/errorPayload" } } }
+        }
+      ]
+    },
+    "tripMessage": {
+      "type": "object",
+      "required": ["protocol_version", "server_message_id", "kind", "status", "retryable", "trip_id", "trip_revision", "runtime_epoch", "planner_state_version", "accepted_mutation_sequence", "accepted_observation_sequence", "payload"],
+      "properties": {
+        "protocol_version": { "const": "liveroute.v1" },
+        "server_message_id": { "$ref": "#/$defs/uuid" },
+        "kind": { "enum": ["subscription_state", "command_acknowledgement", "telemetry_status", "planner_notification", "plan_proposal", "resynchronization_state", "error"] },
+        "status": { "$ref": "#/$defs/status" },
+        "retryable": { "type": "boolean" },
+        "trip_id": { "$ref": "#/$defs/uuid" },
+        "trip_revision": { "$ref": "#/$defs/uint64" },
+        "runtime_epoch": { "$ref": "#/$defs/uint64" },
+        "planner_state_version": { "$ref": "#/$defs/uint64" },
+        "accepted_mutation_sequence": { "$ref": "#/$defs/uint64" },
+        "accepted_observation_sequence": { "$ref": "#/$defs/uint64" },
+        "payload": { "type": "object" },
+        "in_reply_to_message_id": { "$ref": "#/$defs/uuid" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "telemetry_status" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/telemetryStatusPayload" } } } },
+        { "if": { "properties": { "kind": { "const": "command_acknowledgement" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/commandAcknowledgementPayload" } } } },
+        { "if": { "properties": { "kind": { "const": "planner_notification" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/plannerNotificationPayload" } } } },
+        { "if": { "properties": { "kind": { "const": "plan_proposal" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/storedPlanProposal" } } } },
+        { "if": { "properties": { "kind": { "const": "subscription_state" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/subscriptionStatePayload" } } } },
+        { "if": { "properties": { "kind": { "const": "resynchronization_state" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/resynchronizationStatePayload" } } } },
+        { "if": { "properties": { "kind": { "const": "error" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/errorPayload" } } } }
+      ]
+    },
+    "connectionReadyPayload": {
+      "type": "object",
+      "required": ["user_id", "backend_instance_id", "heartbeat_interval_ms", "idle_timeout_ms", "max_frame_bytes", "max_outstanding_resync_ids"],
+      "properties": {
+        "user_id": { "$ref": "#/$defs/uuid" },
+        "backend_instance_id": { "$ref": "#/$defs/uuid" },
+        "heartbeat_interval_ms": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "idle_timeout_ms": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "max_frame_bytes": { "type": "integer", "minimum": 1, "maximum": 262144 },
+        "max_outstanding_resync_ids": { "type": "integer", "minimum": 1, "maximum": 128 }
+      },
+      "additionalProperties": false
+    },
+    "pingPayload": {
+      "type": "object",
+      "required": ["nonce", "sent_at_unix_ms"],
+      "properties": {
+        "nonce": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sent_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
+    "pongPayload": {
+      "type": "object",
+      "required": ["nonce", "received_at_unix_ms"],
+      "properties": {
+        "nonce": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "received_at_unix_ms": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
+    "telemetryStatusPayload": {
+      "type": "object",
+      "required": ["message_id", "disposition"],
+      "properties": {
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "disposition": { "enum": ["accepted", "coalesced", "dropped", "rejected"] },
+        "observation_sequence": { "$ref": "#/$defs/uint64" }
+      },
+      "additionalProperties": false
+    },
+    "commandAcknowledgementPayload": {
+      "type": "object",
+      "required": ["phase", "message_id", "recovery_state"],
+      "properties": {
+        "phase": { "enum": ["durable_recorded", "planner_applied", "canonical_committed", "runtime_synced", "rejected", "expired"] },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "mutation_sequence": { "$ref": "#/$defs/uint64" },
+        "outcome": { "type": "object" },
+        "recovery_state": { "enum": ["current", "not_advancing"] }
+      },
+      "additionalProperties": false
+    },
+    "errorPayload": {
+      "type": "object",
+      "properties": {
+        "stale_reason": { "enum": ["epoch", "mutation_sequence", "observation_sequence", "trip_revision", "planner_state_version", "plan_proposal"] },
+        "safe_message": { "type": "string" },
+        "field_violations": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
+    "resultQuality": {
+      "type": "object", "required": ["plan_quality", "routing_quality", "recovery_state"],
+      "properties": {
+        "plan_quality": { "enum": ["complete", "best_so_far", "no_new_proposal"] },
+        "routing_quality": { "enum": ["fresh", "stale_cache", "unavailable"] },
+        "recovery_state": { "enum": ["current", "not_advancing"] }
+      }, "additionalProperties": false
+    },
+    "plannerNotificationPayload": {
+      "type": "object", "required": ["notification", "reasons", "quality"],
+      "properties": {
+        "notification": { "enum": ["none", "low_slack_warning", "critical_lateness", "plan_change_suggested", "infeasible_schedule"] },
+        "reasons": { "type": "array", "items": { "enum": ["late_departure", "activity_delay", "route_deviation", "hours_changed", "place_closed", "reservation_at_risk", "travel_delay", "user_edit", "deadline_budget", "no_feasible_plan"] } },
+        "quality": { "$ref": "#/$defs/resultQuality" }
+      }, "additionalProperties": false
+    },
+    "location": { "type": "object", "required": ["latitude", "longitude"], "properties": { "latitude": { "type": "number", "minimum": -90, "maximum": 90 }, "longitude": { "type": "number", "minimum": -180, "maximum": 180 } }, "additionalProperties": false },
+    "routeLeg": { "type": "object", "required": ["duration_seconds", "distance_meters", "reachable"], "properties": { "duration_seconds": { "type": "integer", "minimum": 0 }, "distance_meters": { "type": "integer", "minimum": 0 }, "reachable": { "type": "boolean" } }, "additionalProperties": false },
+    "proposalSegment": {
+      "type": "object", "required": ["activity_id", "location", "time_zone_name", "disposition", "reasons"],
+      "properties": {
+        "activity_id": { "$ref": "#/$defs/uuid" }, "location": { "$ref": "#/$defs/location" }, "time_zone_name": { "type": "string", "minLength": 1 },
+        "scheduled_start_unix_ms": { "type": "integer" }, "scheduled_end_unix_ms": { "type": "integer" }, "inbound_route": { "$ref": "#/$defs/routeLeg" },
+        "disposition": { "enum": ["preserved", "moved", "shortened", "skipped", "added"] },
+        "reasons": { "type": "array", "items": { "enum": ["late_departure", "activity_delay", "route_deviation", "hours_changed", "place_closed", "reservation_at_risk", "travel_delay", "user_edit", "deadline_budget", "no_feasible_plan"] } }
+      }, "additionalProperties": false
+    },
+    "planProposal": {
+      "type": "object", "required": ["proposal_id", "source_runtime_epoch", "source_planner_state_version", "base_current_plan_id", "source_trip_revision", "source_accepted_mutation_sequence", "preserved_prefix", "revised_suffix", "created_at_unix_ms"],
+      "properties": {
+        "proposal_id": { "$ref": "#/$defs/uuid" }, "source_runtime_epoch": { "$ref": "#/$defs/uint64" }, "source_planner_state_version": { "$ref": "#/$defs/uint64" }, "base_current_plan_id": { "$ref": "#/$defs/uuid" }, "source_trip_revision": { "$ref": "#/$defs/uint64" }, "source_accepted_mutation_sequence": { "$ref": "#/$defs/uint64" },
+        "preserved_prefix": { "type": "array", "items": { "$ref": "#/$defs/proposalSegment" } }, "revised_suffix": { "type": "array", "items": { "$ref": "#/$defs/proposalSegment" } }, "created_at_unix_ms": { "type": "integer" }
+      }, "additionalProperties": false
+    },
+    "plannerStats": { "type": "object", "required": ["candidates_evaluated", "candidates_pruned", "search_depth", "queue_wait_microseconds", "provider_microseconds", "planner_microseconds", "serialization_microseconds", "deadline_hit"], "properties": { "candidates_evaluated": { "$ref": "#/$defs/uint64" }, "candidates_pruned": { "$ref": "#/$defs/uint64" }, "search_depth": { "type": "integer", "minimum": 0 }, "queue_wait_microseconds": { "type": "integer", "minimum": 0 }, "provider_microseconds": { "type": "integer", "minimum": 0 }, "planner_microseconds": { "type": "integer", "minimum": 0 }, "serialization_microseconds": { "type": "integer", "minimum": 0 }, "deadline_hit": { "type": "boolean" } }, "additionalProperties": false },
+    "storedPlanProposal": { "type": "object", "required": ["proposal", "notification", "reasons", "stats", "quality"], "properties": { "proposal": { "$ref": "#/$defs/planProposal" }, "notification": { "enum": ["none", "low_slack_warning", "critical_lateness", "plan_change_suggested", "infeasible_schedule"] }, "reasons": { "type": "array", "items": { "type": "string" } }, "stats": { "$ref": "#/$defs/plannerStats" }, "quality": { "$ref": "#/$defs/resultQuality" } }, "additionalProperties": false }
+    ,"currentPlanSegment": { "oneOf": [ { "type": "object", "required": ["activity_id", "state", "scheduled_start_unix_ms", "scheduled_end_unix_ms"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "state": { "const": "scheduled" }, "scheduled_start_unix_ms": { "type": "integer" }, "scheduled_end_unix_ms": { "type": "integer" } }, "additionalProperties": false }, { "type": "object", "required": ["activity_id", "state"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "state": { "const": "omitted" } }, "additionalProperties": false } ] }
+    ,"currentPlan": { "type": "object", "required": ["plan_id", "plan_revision", "origin", "segments", "created_at_unix_ms"], "properties": { "plan_id": { "$ref": "#/$defs/uuid" }, "plan_revision": { "$ref": "#/$defs/uint64" }, "origin": { "enum": ["user_authored", "accepted_engine_proposal"] }, "segments": { "type": "array", "items": { "$ref": "#/$defs/currentPlanSegment" } }, "created_at_unix_ms": { "type": "integer" }, "source_proposal_id": { "$ref": "#/$defs/uuid" } }, "additionalProperties": false }
+    ,"activityTiming": { "type": "object", "required": ["open_windows", "reservation_grace_seconds", "min_duration_seconds", "preferred_duration_seconds", "max_duration_seconds", "mandatory", "can_shorten", "can_move", "can_skip"], "properties": { "open_windows": { "type": "array", "items": { "type": "object", "required": ["opens_at_unix_ms", "closes_at_unix_ms"], "properties": { "opens_at_unix_ms": { "type": "integer" }, "closes_at_unix_ms": { "type": "integer" } }, "additionalProperties": false } }, "reservation_start_unix_ms": { "type": "integer" }, "reservation_grace_seconds": { "type": "integer", "minimum": 0 }, "min_duration_seconds": { "type": "integer", "minimum": 0 }, "preferred_duration_seconds": { "type": "integer", "minimum": 0 }, "max_duration_seconds": { "type": "integer", "minimum": 0 }, "mandatory": { "type": "boolean" }, "can_shorten": { "type": "boolean" }, "can_move": { "type": "boolean" }, "can_skip": { "type": "boolean" }, "mandatory_deadline_unix_ms": { "type": "integer" } }, "additionalProperties": false }
+    ,"activity": { "type": "object", "required": ["activity_id", "place_id", "display_name", "location", "time_zone_name", "inbound_travel_mode", "activity_class", "activity_state", "priority_rank", "utility_score", "timing", "activity_delay_seconds"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "place_id": { "type": "string", "minLength": 1 }, "display_name": { "type": "string", "minLength": 1 }, "location": { "$ref": "#/$defs/location" }, "time_zone_name": { "type": "string", "minLength": 1 }, "inbound_travel_mode": { "enum": ["walking", "driving"] }, "activity_class": { "enum": ["fixed", "flexible"] }, "activity_state": { "enum": ["planned", "started", "completed", "skipped"] }, "priority_rank": { "type": "integer" }, "utility_score": { "type": "integer" }, "timing": { "$ref": "#/$defs/activityTiming" }, "activity_delay_seconds": { "type": "integer", "minimum": 0 }, "found_closed_at_unix_ms": { "type": "integer" } }, "additionalProperties": false }
+    ,"durableTrip": { "type": "object", "required": ["trip_id", "owner_user_id", "default_time_zone_name", "activities", "completed_prefix_count", "current_activity_id", "current_plan_id", "travel_delays"], "properties": { "trip_id": { "$ref": "#/$defs/uuid" }, "owner_user_id": { "$ref": "#/$defs/uuid" }, "default_time_zone_name": { "type": "string", "minLength": 1 }, "activities": { "type": "array", "items": { "$ref": "#/$defs/activity" } }, "completed_prefix_count": { "type": "integer", "minimum": 0 }, "current_activity_id": { "$ref": "#/$defs/uuid" }, "current_plan_id": { "$ref": "#/$defs/uuid" }, "travel_delays": { "type": "array", "items": { "type": "object", "required": ["from_activity_id", "to_activity_id", "additional_seconds", "observed_at_unix_ms"], "properties": { "from_activity_id": { "$ref": "#/$defs/uuid" }, "to_activity_id": { "$ref": "#/$defs/uuid" }, "additional_seconds": { "type": "integer", "minimum": 0 }, "observed_at_unix_ms": { "type": "integer" } }, "additionalProperties": false } } }, "additionalProperties": false }
+    ,"subscriptionStatePayload": { "type": "object", "required": ["subscribed", "trip", "current_plan", "runtime_sync_state"], "properties": { "subscribed": { "type": "boolean" }, "trip": { "$ref": "#/$defs/durableTrip" }, "current_plan": { "$ref": "#/$defs/currentPlan" }, "latest_pending_proposal": { "$ref": "#/$defs/storedPlanProposal" }, "runtime_sync_state": { "enum": ["not_required", "pending", "synced", "paused_internal"] } }, "additionalProperties": false }
+    ,"commandOutcome": { "type": "object", "required": ["message_id", "phase", "status", "retryable", "recovery_state"], "properties": { "message_id": { "$ref": "#/$defs/uuid" }, "phase": { "enum": ["durable_recorded", "planner_applied", "canonical_committed", "runtime_synced", "rejected", "expired"] }, "status": { "$ref": "#/$defs/status" }, "retryable": { "type": "boolean" }, "mutation_sequence": { "$ref": "#/$defs/uint64" }, "outcome": { "type": "object" }, "recovery_state": { "enum": ["current", "not_advancing"] } }, "additionalProperties": false }
+    ,"resynchronizationStatePayload": { "type": "object", "required": ["trip", "current_plan", "runtime_sync_state", "outcomes"], "properties": { "trip": { "$ref": "#/$defs/durableTrip" }, "current_plan": { "$ref": "#/$defs/currentPlan" }, "latest_pending_proposal": { "$ref": "#/$defs/storedPlanProposal" }, "runtime_sync_state": { "enum": ["not_required", "pending", "synced", "paused_internal"] }, "outcomes": { "type": "array", "items": { "$ref": "#/$defs/commandOutcome" } } }, "additionalProperties": false }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "protocol_version": "liveroute.v1",
+  "message_id": "550e8400-e29b-41d4-a716-446655440007",
+  "kind": "resynchronize_trip",
+  "trip_id": "550e8400-e29b-41d4-a716-446655440002",
+  "payload": {
+    "last_runtime_epoch": "1",
+    "last_planner_state_version": "0",
+    "last_trip_revision": "1",
+    "outstanding_message_ids": [
+      "550e8400-e29b-41d4-a716-446655440008",
+      "550e8400-e29b-41d4-a716-446655440008"
+    ]
+  }
+}

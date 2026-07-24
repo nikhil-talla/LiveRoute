@@ -1,0 +1,19 @@
+{
+  "protocol_version": "liveroute.v1",
+  "server_message_id": "550e8400-e29b-41d4-a716-446655440004",
+  "kind": "plan_proposal",
+  "status": "OK",
+  "retryable": false,
+  "trip_id": "550e8400-e29b-41d4-a716-446655440002",
+  "trip_revision": "1",
+  "runtime_epoch": "1",
+  "planner_state_version": "0",
+  "accepted_mutation_sequence": "1",
+  "accepted_observation_sequence": "0",
+  "payload": {
+    "proposal": { "proposal_id": "550e8400-e29b-41d4-a716-446655440019", "source_runtime_epoch": "1", "source_planner_state_version": "0", "base_current_plan_id": "550e8400-e29b-41d4-a716-446655440013", "source_trip_revision": "1", "source_accepted_mutation_sequence": "1", "preserved_prefix": [], "revised_suffix": [], "created_at_unix_ms": 0 },
+    "notification": "none", "reasons": [],
+    "stats": { "candidates_evaluated": "0", "candidates_pruned": "0", "search_depth": 0, "queue_wait_microseconds": 0, "provider_microseconds": 0, "planner_microseconds": 0, "serialization_microseconds": 0, "deadline_hit": false },
+    "quality": { "plan_quality": "no_new_proposal", "routing_quality": "fresh", "recovery_state": "current" }
+  }
+}

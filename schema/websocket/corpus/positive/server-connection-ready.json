@@ -1,0 +1,15 @@
+{
+  "protocol_version": "liveroute.v1",
+  "server_message_id": "550e8400-e29b-41d4-a716-446655440003",
+  "kind": "connection_ready",
+  "status": "OK",
+  "retryable": false,
+  "payload": {
+    "user_id": "550e8400-e29b-41d4-a716-446655440005",
+    "backend_instance_id": "550e8400-e29b-41d4-a716-446655440006",
+    "heartbeat_interval_ms": 15000,
+    "idle_timeout_ms": 45000,
+    "max_frame_bytes": 262144,
+    "max_outstanding_resync_ids": 128
+  }
+}

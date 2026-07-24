@@ -1,0 +1,4 @@
+{
+  "protocol_version": "liveroute.v1", "server_message_id": "550e8400-e29b-41d4-a716-446655440018", "kind": "error", "status": "INVALID_ARGUMENT", "retryable": false,
+  "payload": { "safe_message": "invalid input", "raw_database_error": "forbidden" }
+}
