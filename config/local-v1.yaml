@@ -1,0 +1,60 @@
+# Local-development configuration. Secrets are supplied only through Docker
+# secrets and are intentionally absent from this file.
+protocol_version: liveroute.v1
+
+limits:
+  websocket_frame_bytes: 262144
+  websocket_decoded_message_bytes: 262144
+  grpc_message_bytes: 4194304
+  snapshot_payload_bytes: 2097152
+  resynchronization_outstanding_command_ids: 128
+
+runtime:
+  shard_count: 2
+  max_active_trips: 128
+  max_activities_per_trip: 64
+  critical_queue_capacity: 64
+  high_queue_capacity: 64
+  normal_queue_capacity: 128
+  advisory_queue_capacity: 32
+  completion_queue_capacity: 128
+  priority_fairness_burst: 16
+
+executors:
+  provider_workers: 2
+  provider_queue_capacity: 32
+  planner_workers: 2
+  planner_queue_capacity: 32
+
+stream:
+  pool_size: 1
+  inbound_queue_capacity: 128
+  outbound_queue_capacity: 128
+  reconnect_initial_backoff_ms: 100
+  reconnect_max_backoff_ms: 10000
+
+websocket:
+  inbound_queue_capacity: 64
+  outbound_queue_capacity: 64
+  heartbeat_interval_ms: 15000
+  idle_timeout_ms: 45000
+  authentication_timeout_ms: 10000
+  allow_originless_local_clients: true
+  allowed_origins:
+    - http://localhost
+
+database:
+  pool_max_connections: 8
+  outbox_claim_batch_size: 32
+  outbox_max_in_flight: 32
+  lease_duration_ms: 30000
+  lease_renewal_margin_ms: 10000
+  lease_safety_margin_ms: 5000
+
+planner:
+  attempt_timeout_ms: 1000
+  max_candidates: 4096
+  beam_width: 32
+  max_expansions: 16384
+
+shutdown_deadline_ms: 10000

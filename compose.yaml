@@ -1,0 +1,12 @@
+name: liveroute
+
+# This initial skeleton builds the C++ service in a container. The backend,
+# PostgreSQL, OSRM, and their dependency-aware readiness checks are added only
+# after their exact contract artifacts and migrations are in place.
+services:
+  planner-skeleton:
+    build:
+      context: .
+      dockerfile: docker/cpp/Dockerfile
+    command: ["--self-check"]
+    profiles: ["skeleton"]

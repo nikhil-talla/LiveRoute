@@ -1,0 +1,5 @@
+.git
+.agents
+build
+out
+**/.DS_Store
