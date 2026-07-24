@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+"$repo_root/scripts/check-cpp-proto-toolchain.sh"
+
 buf_image="bufbuild/buf@sha256:65bd496a89c762ad7151ca9e7d885a45dacb3671a8e8ec39738b9f844d3405ea"
 docker_args=(--rm --user "$(id -u):$(id -g)" --env HOME=/tmp)
 

@@ -21,7 +21,9 @@ function(liveroute_configure_target target)
 endfunction()
 
 add_library(liveroute_domain
+  src/domain/hours.cpp
   src/domain/travel_time_matrix.cpp
+  src/routing/travel_time_provider.cpp
 )
 target_include_directories(liveroute_domain PUBLIC include)
 liveroute_configure_target(liveroute_domain)
@@ -41,10 +43,29 @@ target_link_libraries(liveroute_domain_matrix_test PRIVATE liveroute_domain)
 liveroute_configure_target(liveroute_domain_matrix_test)
 add_test(NAME liveroute_domain_matrix_test COMMAND liveroute_domain_matrix_test)
 
+add_executable(liveroute_hours_test tests/hours_test.cpp)
+target_link_libraries(liveroute_hours_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_hours_test)
+add_test(NAME liveroute_hours_test COMMAND liveroute_hours_test)
+
+add_executable(liveroute_travel_time_provider_test
+  tests/travel_time_provider_test.cpp
+)
+target_link_libraries(liveroute_travel_time_provider_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_travel_time_provider_test)
+add_test(NAME liveroute_travel_time_provider_test
+  COMMAND liveroute_travel_time_provider_test
+)
+
 add_executable(liveroute_bounded_queue_test tests/bounded_queue_test.cpp)
 target_include_directories(liveroute_bounded_queue_test PRIVATE include)
 liveroute_configure_target(liveroute_bounded_queue_test)
 add_test(NAME liveroute_bounded_queue_test COMMAND liveroute_bounded_queue_test)
+
+add_executable(liveroute_priority_lanes_test tests/priority_lanes_test.cpp)
+target_include_directories(liveroute_priority_lanes_test PRIVATE include)
+liveroute_configure_target(liveroute_priority_lanes_test)
+add_test(NAME liveroute_priority_lanes_test COMMAND liveroute_priority_lanes_test)
 
 add_executable(liveroute_sharded_executor_test tests/sharded_executor_test.cpp)
 target_include_directories(liveroute_sharded_executor_test PRIVATE include)

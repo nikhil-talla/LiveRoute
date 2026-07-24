@@ -107,6 +107,39 @@ BEGIN
       id, trip_id, base_current_plan_id, source_runtime_epoch,
       source_planner_state_version, source_trip_revision,
       source_accepted_mutation_sequence, schema_version, payload,
+      payload_size_bytes, checksum_sha256, state, created_at, decided_at
+    ) VALUES (
+      '14141414-1414-1414-1414-141414141414', trip_id, plan_id, 1, 0, 1, 1, 1,
+      convert_to('{}', 'UTF8'), 2, decode(repeat('00', 32), 'hex'), 'accepted',
+      clock_timestamp(), clock_timestamp()
+    );
+    RAISE EXCEPTION 'expected accepted proposal without resulting plan to be rejected';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO plan_proposals (
+      id, trip_id, base_current_plan_id, source_runtime_epoch,
+      source_planner_state_version, source_trip_revision,
+      source_accepted_mutation_sequence, schema_version, payload,
+      payload_size_bytes, checksum_sha256, state, resulting_current_plan_id,
+      created_at, decided_at
+    ) VALUES (
+      '15151515-1515-1515-1515-151515151515', trip_id, plan_id, 1, 0, 1, 1, 1,
+      convert_to('{}', 'UTF8'), 2, decode(repeat('00', 32), 'hex'), 'rejected',
+      plan_id, clock_timestamp(), clock_timestamp()
+    );
+    RAISE EXCEPTION 'expected non-accepted proposal with resulting plan to be rejected';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO plan_proposals (
+      id, trip_id, base_current_plan_id, source_runtime_epoch,
+      source_planner_state_version, source_trip_revision,
+      source_accepted_mutation_sequence, schema_version, payload,
       payload_size_bytes, checksum_sha256, state, created_at
     ) VALUES (
       '13131313-1313-1313-1313-131313131313', trip_id, plan_id, 1, 0, 1, 1, 1,

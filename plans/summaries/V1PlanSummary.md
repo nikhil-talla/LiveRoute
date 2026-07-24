@@ -124,7 +124,7 @@ Each activity-set edit includes the complete resulting user plan, so canonical a
 
 The client supplies activity names, coordinates, hours, reservations, durations, priorities, and an ordered initial schedule. The backend validates structural invariants and atomically persists the trip plus user-authored current plan. C++ receives the normalized trip/current plan during bootstrap and treats it as the baseline for suggested replanning.
 
-V1 hours come from manual or seed-file data. A frontend destination-search or geocoding API is not currently defined in the contract. Adding place lookup would be a separate V1/V1.5 provider decision.
+V1 hours come from the versioned seed shape and pinned tzdata defined in `plans/LiveRouteV1ContractSpec.md`; C++ receives only normalized UTC windows. A frontend destination-search or geocoding API is not currently defined in the contract. Adding place lookup would be a separate V1/V1.5 provider decision.
 
 ## Lease Ownership
 

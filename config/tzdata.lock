@@ -1,0 +1,6 @@
+# IANA data used for all V1 local-time validation and hours expansion.
+# Download by this immutable release URL and verify SHA-512 before use.
+release: 2026c
+artifact:
+  url: https://data.iana.org/time-zones/releases/tzdata2026c.tar.gz
+  sha512: e0b4b7044b66fbc27bc21d13d18063abcdf78ab58d5ba5fd64bd1a88d86e9d495f45add4d8e65bb6c40249f9c94ca29b72c8ebba8d0e4c468f2965ac77932ef0

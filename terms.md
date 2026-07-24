@@ -119,4 +119,7 @@ Concise definitions for the v1 architecture.
 - **`trip_id`:** A canonical lowercase UUID identifying one trip.
 - **`expires_at_unix_ms`:** A signed Unix-epoch timestamp in milliseconds defining one gRPC dispatch attempt's expiry. It is regenerated on retry and is distinct from optional durable logical command expiry.
 - **Result quality:** Successful lower-quality output uses `OK` plus `plan_quality`, `routing_quality`, and `recovery_state`; `degraded` is not a status.
+- **`MATRIX_TOO_LARGE`:** A non-retryable V1 status meaning the requested travel-time matrix exceeds the fixed location/request bound. It is distinct from a full queue (`RESOURCE_EXHAUSTED`) and an unavailable route provider.
+- **Local date range:** A half-open `[start_date_inclusive, end_date_exclusive)` range of at most 32 place-local calendar dates used only at the hours-provider boundary.
+- **Hours info:** A successful hours-provider value containing its place/zone/range, normalized sorted UTC open windows, seed/provider source version, and tzdata release. Planner search sees only the normalized windows.
 - **Readiness:** A service can serve its contracted dependency path, not merely that its process exists. Backend readiness covers migrations/PostgreSQL, a ready planner stream, and both OSRM profiles.

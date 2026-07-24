@@ -103,6 +103,13 @@ enum class TravelMode : std::uint8_t {
   kDriving,
 };
 
+enum class EventPriority : std::uint8_t {
+  kCritical,
+  kHigh,
+  kNormal,
+  kAdvisory,
+};
+
 using Deadline = std::chrono::steady_clock::time_point;
 
 }  // namespace liveroute::domain

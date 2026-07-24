@@ -19,7 +19,8 @@ V1 uses this backend stack:
 - `github.com/jackc/pgx/v5` and `pgxpool` for PostgreSQL; use explicit SQL and transaction functions rather than an ORM.
 - `github.com/pressly/goose/v3` with sequential, transactional SQL migrations. Embedded migrations may be used by a dedicated migrator command, but the serving backend never performs an implicit schema upgrade on startup.
 - `github.com/santhosh-tekuri/jsonschema/v6` with JSON Schema draft 2020-12 for WebSocket validation.
-- Buf CLI, pinned in the container toolchain, for Protobuf lint, code generation, descriptor images, and breaking-change checks.
+- Buf CLI, pinned in its own container, for Protobuf lint, descriptor images, and breaking-change checks. Buf is not the C++ generator.
+- C++ Protobuf/gRPC generation uses the `linux/amd64` image `bmigeri/devcon-cpp@sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4`, which contains `protoc` 31.1, Protobuf C++ 31.1.0, gRPC C++ 1.78.1, and `/opt/grpc/bin/grpc_cpp_plugin`. The same Protobuf/gRPC versions compile and link the generated C++ code.
 - Go standard `log/slog` for structured logs. Tokens, raw location payloads, and raw provider/database bodies are always redacted.
 - Go standard tests plus container-backed PostgreSQL/gRPC/WebSocket integration tests. The C++ project continues to use CMake/CTest initially.
 
@@ -105,6 +106,7 @@ The same names and numeric values are used by Protobuf and WebSocket JSON:
 | 19 | `SNAPSHOT_NOT_READY` | true | Accepted and PostgreSQL-finalized mutation watermarks do not yet match. |
 | 20 | `SNAPSHOT_INCOMPATIBLE` | false | Snapshot schema/checksum/metadata cannot be used. |
 | 21 | `INTERNAL` | false | Invariant violation or non-classified defect; operators investigate instead of automatically retrying forever. |
+| 22 | `MATRIX_TOO_LARGE` | false | The requested route matrix cannot be served within the fixed V1 location/request limit. Normal preflight rejects before I/O; OSRM `TooBig` maps identically if configured limits drift. |
 
 All old/late ownership and version cases use `STALE`. A structured stale reason preserves diagnostics:
 
@@ -120,6 +122,7 @@ Examples:
 
 - A deadline returns a valid partial proposal: `OK` + `BEST_SO_FAR`.
 - OSRM fails and no proposal can be computed: `PROVIDER_UNAVAILABLE`.
+- The requested matrix exceeds the fixed V1 limit: `MATRIX_TOO_LARGE`; retrying the same points unchanged cannot succeed.
 - A future explicitly allowed stale cache produces a proposal: `OK` + `STALE_CACHE`.
 - PostgreSQL is down but still-valid-lease telemetry is accepted: `OK` + `NOT_ADVANCING`.
 
@@ -774,6 +777,8 @@ Transient boundary crossings that must never be lost must arrive as an explicit 
 
 V1 accepts only IANA time-zone identifiers whose pinned tzdata `zone1970.tab` entry includes country code `US`. This covers United States DST/non-DST exceptions without maintaining a hand-written offset table.
 
+The normative data lock is `config/tzdata.lock`: IANA release `2026c`, artifact `tzdata2026c.tar.gz`, SHA-512 `e0b4b7044b66fbc27bc21d13d18063abcdf78ab58d5ba5fd64bd1a88d86e9d495f45add4d8e65bb6c40249f9c94ca29b72c8ebba8d0e4c468f2965ac77932ef0`. Images and fixture tools must install or compile this artifact after checking the digest; an operating-system package whose embedded release cannot be proven equal is not accepted. The release string is exposed in readiness/build metadata.
+
 - Durable trip/activity input retains the IANA zone name for display and audit.
 - The V1 WebSocket/domain fields above carry already-normalized UTC Unix milliseconds plus the relevant IANA zone name. CLI/fixture and seeded-hours adapters accept local wall time, apply the rules below, and send/store normalized UTC. The backend independently validates the allowed zone, UTC ranges, ordering, and duration constraints before C++ admission.
 - A local timestamp is converted with the pinned IANA tzdata version to signed UTC Unix epoch milliseconds.
@@ -785,6 +790,35 @@ V1 accepts only IANA time-zone identifiers whose pinned tzdata `zone1970.tab` en
 - Planner search, deadlines, comparisons, and output scheduling use only UTC Unix epoch values.
 - Every output segment also carries its IANA `time_zone_name`; the backend/client converts UTC to display-local time after replanning. The planner never performs display conversion.
 - The tzdata version is recorded in the build/deployment manifest. A tzdata change invalidates normalized seed fixtures and requires their regeneration/tests, but not a planner API change.
+
+### Operating-hours provider boundary
+
+The internal transport-independent types are:
+
+- `LocalDate`: a valid proleptic-Gregorian date formatted externally as exactly `YYYY-MM-DD`, from `1970-01-01` through `9999-12-31`.
+- `LocalDateRange`: `start_date_inclusive` and `end_date_exclusive`; start must precede end and the range contains at most 32 local dates.
+- `HoursInfo`: `PlaceId place_id`, canonical US `time_zone_name`, exact `LocalDateRange covered_range`, sorted/nonoverlapping UTC `TimeWindow open_windows`, `string source_version`, and `string tzdata_release`.
+- `HoursProviderError`: `NOT_FOUND`, `INVALID_SOURCE`, `DEADLINE_EXCEEDED`, `CANCELLED`, or `UNAVAILABLE`.
+- `HoursLookupResult`: a tagged union containing exactly one `HoursInfo` or `HoursProviderError`.
+
+`PlaceHoursProvider::get_hours(PlaceId, LocalDateRange, Deadline, std::stop_token)` returns `HoursLookupResult`. It performs no planner search and never exposes local civil-time or provider payload types to the planner. The successful `open_windows` are the union of intervals whose local opening date is in the requested half-open range. They are converted with the place's zone, sorted, and coalesced when they overlap or touch; each returned window has `opens_at_unix_ms < closes_at_unix_ms`.
+
+The V1 seeded provider loads `schema/hours/liveroute-v1-hours-seed.schema.json` once at startup. Additional semantic validation is mandatory:
+
+- top-level `tzdata_release` exactly equals `config/tzdata.lock`;
+- `places` are strictly sorted by `place_id` and contain no duplicate place id;
+- each zone is allowed by the pinned US-zone rule, and the activity zone must equal the seed place zone;
+- weekday and exception intervals are in ascending local-open order and do not overlap; exception dates are strictly increasing and unique;
+- local times are exact `HH:MM:SS`; `closes_day_offset` is 0 or 1, with offset 0 requiring close later than open and offset 1 limiting the interval to at most 24 hours;
+- an exception replaces the recurring weekday completely for its local date; an empty exception interval list means closed;
+- recurring intervals carry no UTC-offset choice. If a recurring endpoint is nonexistent or ambiguous on an expanded date, that date requires an exception rather than a guessed conversion;
+- a nonexistent exception endpoint is invalid. An ambiguous exception endpoint requires the matching `opens_utc_offset_seconds` or `closes_utc_offset_seconds`; an optional offset on an unambiguous endpoint must equal its sole valid offset.
+
+Any schema or semantic error prevents seeded-hours readiness; it is not treated as a closed place. A missing requested `place_id` returns `NOT_FOUND`. Cancellation/deadline errors preserve their names; a later remote-provider failure maps to `UNAVAILABLE`.
+
+For a seeded success, `source_version` is `seed-v1:` followed by lowercase SHA-256 hex over the ASCII bytes `liveroute-hours-seed-v1`, one LF byte, the UTF-8 `tzdata_release`, one LF byte, and the RFC-8785 canonical bytes of the complete place object, in that order.
+
+This version changes when either the place rules or tzdata release changes and is suitable for bounded hours-cache keys.
 
 ## Authentication Artifacts
 
@@ -833,6 +867,37 @@ This is primarily an engineering fixture choice, not a product decision. V1 sele
 - Record OSRM release, image digest, profile digests, extract digest, preprocessing flags, and dataset version in readiness output and cache keys.
 - A different demo/service geography changes the dataset lock, not the planner or provider contract. Selecting that broader geography is a later product/demo choice.
 
+## Exact OSRM Result Mapping
+
+The adapter validates and maps in this order. It does not retry within the live request, and it never passes OSRM text or JSON through a public error.
+
+| Condition | LiveRoute result | Retryable | Required behavior |
+| --- | --- | --- | --- |
+| Non-finite/out-of-range coordinate, unsupported mode, or invalid source/destination index before I/O | `INVALID_ARGUMENT` | false | Do not call OSRM. |
+| Location count, matrix cells, or encoded request exceeds a configured V1 limit | `MATRIX_TOO_LARGE` | false | Do not call OSRM; report the configured limit safely. |
+| Provider admission/concurrency queue is full | `RESOURCE_EXHAUSTED` | true | Do not mutate state or start HTTP work. |
+| Caller/supersession stop requested | `CANCELLED` | false for replaceable work | Cancel libcurl work cooperatively. Durable event delivery remains governed by its separate acknowledgement. |
+| Request deadline expires | `DEADLINE_EXCEEDED` | context-specific | Cancel the attempt; do not perform an in-request retry. |
+| DNS/connect/TLS/reset failure or HTTP 5xx | `PROVIDER_UNAVAILABLE` | true | Mark the profile probe unhealthy after the configured threshold. |
+| HTTP 429 | `RESOURCE_EXHAUSTED` | true | Do not retry inside the request. |
+| Complete recognized OSRM error body | mapping below | mapping below | The recognized OSRM code takes precedence over a generic HTTP 4xx mapping. |
+| Other HTTP 4xx, including a missing fixed endpoint | `INTERNAL` | false | Treat as adapter/configuration incompatibility and fail the profile readiness probe. |
+| Decompressed response exceeds the byte limit | `RESOURCE_EXHAUSTED` | false for the same request | Abort parsing and record only bounded metadata. |
+| Malformed JSON, wrong/missing dimensions, mismatched null duration/distance cells, or nonfinite/negative/overflow values | `PROVIDER_UNAVAILABLE` | true | Discard the entire response; never publish a partial matrix. |
+| Unknown OSRM `code` or `NotImplemented` | `INTERNAL` | false | Pinned provider/API mismatch; fail readiness. |
+
+Recognized OSRM codes map exactly:
+
+| OSRM `code` | LiveRoute result | Retryable | Meaning |
+| --- | --- | --- | --- |
+| `Ok` | successful `TravelTimeMatrix` | false | Require exact dimensions. Matching null duration/distance cells become `reachable = false`; numeric duration and distance are rounded upward to whole seconds/meters before checked `uint32` conversion. |
+| `NoTable` | successful all-unreachable `TravelTimeMatrix` | false | The provider answered but no route exists. Diagonal cells are zero/reachable; all other requested cells are unreachable. Planner feasibility decides the resulting proposal status. |
+| `NoSegment` | `PROVIDER_UNAVAILABLE` | false for unchanged coordinates/dataset | At least one coordinate cannot be snapped to the pinned dataset/profile. |
+| `TooBig` | `MATRIX_TOO_LARGE` | false | Same public result as the LiveRoute preflight limit. If preflight admitted it, also mark the profile unready because configured limits disagree. |
+| `InvalidUrl`, `InvalidService`, `InvalidVersion`, `InvalidOptions`, `InvalidQuery`, or `InvalidValue` | `INTERNAL` | false | The validated adapter generated an invalid request for the pinned endpoint. |
+
+OSRM `fallback_speed` is forbidden in V1, so unreachable cells are never fabricated. A stale route cache, once implemented, may replace a provider error only under the separately configured cache policy and must return `OK` with `routing_quality = STALE_CACHE`.
+
 ## Compatibility Mechanism
 
 ### Protobuf
@@ -840,15 +905,22 @@ This is primarily an engineering fixture choice, not a product decision. V1 sele
 - Pin Buf CLI in the tool container.
 - Use `buf lint` and the `FILE` breaking category, which is stricter than binary-wire-only compatibility and protects generated Go/C++ APIs.
 - Check in `proto/baseline/liveroute-v1.binpb` after the initial schema review.
-- CI runs `buf build`, `buf breaking --against proto/baseline/liveroute-v1.binpb`, regenerates Go/C++ outputs, and fails on a dirty generated-code diff.
+- Buf performs lint, descriptor construction, and breaking checks only; its image is not assumed to contain `protoc`.
+- C++ generation runs on `linux/amd64` from the exact `cpp_grpc_toolchain` digest in `config/tool-images.lock`. It first asserts `protoc --version` is `libprotoc 31.1`, `pkg-config --modversion protobuf` is `31.1.0`, and `pkg-config --modversion grpc++` is `1.78.1`.
+- From the repository root, invoke `/opt/grpc/bin/protoc -I proto --cpp_out=gen/cpp --grpc_out=gen/cpp --plugin=protoc-gen-grpc=/opt/grpc/bin/grpc_cpp_plugin` with input files sorted by UTF-8 repository-relative path. Generated `*.pb.h`, `*.pb.cc`, `*.grpc.pb.h`, and `*.grpc.pb.cc` are checked in. No host compiler/plugin is permitted.
+- CI runs Buf checks, regenerates C++ outputs in a clean temporary tree with that image, byte-compares them with `gen/cpp`, compiles them against the same Protobuf/gRPC runtime versions, and fails on any difference.
 - Removed fields/enums are deprecated and their names/numbers reserved; no number is reused. An incompatible change creates package `liveroute.v2`.
 
 ### WebSocket JSON
 
-- Check in the draft-2020-12 schema and its canonical SHA-256 after review.
+- `schema/websocket/liveroute-v1-schema-manifest.json` is the sole V1 schema-bundle baseline. Its file list contains the client and server envelope schemas in ascending UTF-8 repository-relative path order.
+- Parse every schema as UTF-8 JSON while rejecting duplicate object names, non-integer JSON numbers, integers outside `[-9007199254740991, 9007199254740991]`, unpaired surrogates, and non-ASCII object member names. These restrictions make the checked-in schema language an exact subset of RFC 8785.
+- Canonicalize each parsed schema using RFC 8785: no insignificant whitespace, UTF-8 output, minimal JSON escapes, and lexicographically sorted object names. SHA-256 those canonical bytes and store the lowercase 64-hex digest beside the path.
+- Compute the bundle digest by concatenating, for each manifest entry, `UTF8(path)`, one NUL byte, the ASCII lowercase file digest, and one LF byte; SHA-256 the concatenation. The algorithm identifiers are `rfc8785-json-schema-integer-subset-v1` and `sha256-path-nul-file-digest-lf-v1`.
+- `scripts/check-websocket-envelope.py --print-manifest` prints the only valid replacement manifest. Normal checker execution fails on a missing/extra/reordered path, changed canonical file digest, changed bundle digest, duplicate key, or forbidden number/string/key.
 - Tests validate a checked-in positive/negative corpus with both the Go validator and the CLI/integration client decoder.
 - The v1 schema is frozen except for new namespaced `extensions` keys, which do not alter standard validation. Any standard-field change creates `liveroute.v2`.
-- CI recomputes the canonical schema digest; an intentional v1 baseline replacement requires explicit contract review and regenerated corpus, not an unnoticed edit.
+- An intentional V1 baseline replacement requires explicit contract review plus a regenerated manifest and corpus, not an unnoticed edit.
 
 ### Database and snapshots
 
@@ -882,11 +954,12 @@ In addition to the existing planner/runtime/OSRM tests, V1 requires:
 - checksum mismatch, unknown snapshot version, metadata mismatch, newest-snapshot corruption, and fallback to the second snapshot/full rebuild work;
 - WebSocket unknown standard fields, extension fields, unsupported versions, every close code, auth timeout, heartbeat timeout, origin denial, oversized frame, and full essential buffer behave as contracted;
 - development token is never present in logs/errors and raw tokens are absent from PostgreSQL;
-- US DST nonexistent/ambiguous time, explicit fall-back offset, Arizona/Hawaii non-DST behavior, overnight hours, and exceptional closures normalize correctly;
-- OSRM null, `NoSegment`, `TooBig`, malformed JSON, wrong dimensions, nonfinite/negative/overflow numbers, timeout, cancellation, and byte limit map to exact statuses;
+- `LocalDateRange` rejects empty/reversed/over-32-day ranges; seeded hours reject duplicate/unsorted places and exceptions, wrong tzdata, invalid interval order, recurring DST ambiguity without an exception, and nonexistent/incorrect-offset exception endpoints;
+- US DST nonexistent/ambiguous time, explicit fall-back offset, Arizona/Hawaii non-DST behavior, overnight hours, exceptional closures, source-version changes, and exact UTC window coalescing normalize correctly;
+- OSRM `Ok`/null, `NoTable`, `NoSegment`, `TooBig`, every invalid-request code, `NotImplemented`, unknown code, HTTP 429/4xx/5xx, malformed JSON, wrong dimensions, mismatched nulls, nonfinite/negative/overflow numbers, timeout, cancellation, queue/byte/location limits map to the exact table above;
 - invalid/zero/unbounded/inconsistent configuration fails startup;
 - shutdown while a durable response, finalization confirmation, snapshot, provider request, and planner job are in flight either drains within the deadline or leaves recoverable outbox state;
-- Protobuf baseline and JSON corpus cover `CurrentPlan`, `PlanProposal`, canonical-first `TripEdited`/`CurrentPlanReplaced`, `create_trip`, `trip_edited`, `replace_current_plan`, and proposal decisions; JSON schema digest/corpus and previous database migration compatibility checks run in the standard check target.
+- Protobuf baseline and JSON corpus cover `CurrentPlan`, `PlanProposal`, canonical-first `TripEdited`/`CurrentPlanReplaced`, `create_trip`, `trip_edited`, `replace_current_plan`, proposal decisions, and `MATRIX_TOO_LARGE`; pinned generated C++ output, JSON schema manifest/digest/corpus, hours-seed schema/semantics, and previous database migration compatibility checks run in the standard check target.
 
 ## Implementation-Gate Policy
 

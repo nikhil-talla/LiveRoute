@@ -1,0 +1,16 @@
+{
+  "manifest_version": 1,
+  "canonicalization": "rfc8785-json-schema-integer-subset-v1",
+  "bundle_algorithm": "sha256-path-nul-file-digest-lf-v1",
+  "files": [
+    {
+      "path": "schema/websocket/liveroute-v1-client-envelope.schema.json",
+      "sha256": "b967889ff3515f7210ceb87e47dbdfab286a2297a9732f6e86b3698dd840a7fb"
+    },
+    {
+      "path": "schema/websocket/liveroute-v1-server-envelope.schema.json",
+      "sha256": "ab4ee3959ca834ab2e294323a6098676703e2b4c9bdafb27ad83ab97cb5dfba3"
+    }
+  ],
+  "bundle_sha256": "3a1c21857917ea26939705cae84976e8647a57f36ec0d08f85b7f18973658392"
+}

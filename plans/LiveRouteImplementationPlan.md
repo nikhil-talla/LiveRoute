@@ -78,7 +78,7 @@ Response fields:
 - `FinalizedMutationsAcknowledged` confirms the cumulative watermark idempotently
 - `TripBootstrapped` confirms the exact current-plan id and accepted/finalized watermarks loaded, allowing verified canonical-mirror convergence
 
-Transcribe the exact fields/numbers/enums in `plans/LiveRouteV1ContractSpec.md` into checked-in `.proto` definitions and WebSocket JSON Schemas before handlers. Buf `FILE` breaking checks, a descriptor baseline, frozen JSON schema digest, and positive/negative corpus prevent contract drift.
+Transcribe the exact fields/numbers/enums in `plans/LiveRouteV1ContractSpec.md` into checked-in `.proto` definitions and WebSocket JSON Schemas before handlers. Buf performs lint/descriptor/`FILE` breaking checks; the separately pinned `protoc` 31.1/gRPC C++ 1.78.1 image generates checked-in bindings. The exact WebSocket schema manifest procedure and positive/negative corpus prevent contract drift.
 
 Keep the hot path transport-independent:
 
@@ -165,7 +165,7 @@ class PlaceHoursProvider {
 public:
     virtual ~PlaceHoursProvider() = default;
 
-    virtual HoursInfo get_hours(
+    virtual HoursLookupResult get_hours(
         PlaceId place_id,
         LocalDateRange date_range,
         Deadline deadline,
@@ -173,9 +173,9 @@ public:
 };
 ```
 
-The provider returns normalized time windows and activity timing constraints. The planner only sees in-memory constraints such as open windows, reservation start/grace, min/preferred/max duration, and whether an activity is mandatory, movable, skippable, or shorten-able. The planner must not call Google Places, Yelp, OpenStreetMap, scrape websites, or parse provider responses while evaluating candidates.
+`LocalDateRange`, `HoursInfo`, `HoursProviderError`, `HoursLookupResult`, the seeded-hours JSON shape/source digest, and the 32-day bound are exact in `plans/LiveRouteV1ContractSpec.md`. A success returns normalized UTC windows; errors remain internal provider-domain values until the service boundary maps them. The planner only sees in-memory constraints such as open windows, reservation start/grace, min/preferred/max duration, and whether an activity is mandatory, movable, skippable, or shorten-able. The planner must not call Google Places, Yelp, OpenStreetMap, scrape websites, or parse provider responses while evaluating candidates.
 
-V1 accepts IANA zones whose pinned tzdata entry includes country `US`. CLI/fixture/seed ingestion rejects DST gaps, requires an explicit valid offset for DST folds, expands overnight/exception hours, and converts local input to UTC Unix milliseconds. The backend revalidates normalized values; the planner operates only on UTC, and output carries the activity IANA zone for display conversion after replanning.
+V1 accepts IANA zones whose pinned IANA tzdata 2026c entry includes country `US`. The seed file must validate against `schema/hours/liveroute-v1-hours-seed.schema.json` and `config/tzdata.lock`. CLI/fixture/seed ingestion rejects DST gaps, requires explicit valid offsets for exceptional DST folds, expands overnight/exception hours, and converts local input to UTC Unix milliseconds. The backend revalidates normalized values; the planner operates only on UTC, and output carries the activity IANA zone for display conversion after replanning.
 
 Operating-hours provider progression:
 
@@ -300,6 +300,7 @@ Implement OSRM integration:
 - Convert OSRM JSON into an immutable dense `TravelTimeMatrix`.
 - Support walking and driving only.
 - Handle timeout, cancellation, unreachable routes, malformed responses, oversized responses, and partial failures.
+- Use the exact precedence and OSRM-code table in `plans/LiveRouteV1ContractSpec.md`; `MATRIX_TOO_LARGE` is distinct from general resource exhaustion/provider unavailability.
 - Initially use OSRM directly; add caching only after the uncached path works.
 
 Implement runtime systems:
