@@ -11,6 +11,7 @@ RUN apt-get update \
 
 WORKDIR /workspace
 COPY CMakeLists.txt ./
+COPY include ./include
 COPY src ./src
 COPY tests ./tests
 COPY bench ./bench

@@ -8,3 +8,6 @@ images:
     source_tag: bufbuild/buf:latest
     resolved_version: 1.72.0
     digest: sha256:65bd496a89c762ad7151ca9e7d885a45dacb3671a8e8ec39738b9f844d3405ea
+  postgres:
+    source_tag: postgres:18-bookworm
+    digest: sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
