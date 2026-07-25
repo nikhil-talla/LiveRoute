@@ -320,6 +320,44 @@ Payload fields:
 
 Field 3 is present exactly when `status = OK` and `plan_quality` is `COMPLETE` or `BEST_SO_FAR`. It is absent for `NO_NEW_PROPOSAL` and every error status. Only a present proposal is eligible for durable proposal persistence/publication.
 
+### V1 planner feasibility and deterministic objective
+
+The fixed V1 objective identifier is `liveroute-v1-lexicographic-1`. V1 has no scalar objective weights and none of these criteria are runtime-tunable. `priority_rank` is a signed 32-bit user rank where a lower numeric value is more important; equal ranks are allowed. `utility_score` is a signed 32-bit value where a higher value is preferred. Candidate score arithmetic uses checked signed 64-bit integer counts or milliseconds only; it never uses floating point. The configured 64-activity/current-day V1 bounds make the worst-case accepted sums safe; startup must reject future limit changes that cannot prove the same, and any request conversion that would overflow is `INVALID_ARGUMENT` before search.
+
+A candidate is feasible only when all of these hard constraints hold:
+
+- the completed prefix and any started activity are unchanged;
+- every remaining activity appears exactly once as scheduled or skipped;
+- `mandatory = true` or `can_skip = false` forbids skipping;
+- a scheduled duration is within `[min_duration_seconds, max_duration_seconds]`; `can_shorten = false` additionally requires at least `preferred_duration_seconds`;
+- `can_move = false` preserves the current plan's exact scheduled interval, or preserves omission when no interval exists;
+- subject to the preceding `can_move` rule, a `FIXED` activity uses its exact current-plan interval when one exists. Without one, it can be scheduled only when `reservation_start_unix_ms` supplies an anchor; otherwise it remains omitted and is infeasible if it cannot be skipped;
+- when a reservation exists, scheduled start is in the inclusive interval `[reservation_start_unix_ms, reservation_start_unix_ms + reservation_grace_seconds * 1000]`. Starting before the reservation is not permitted;
+- any `mandatory_deadline_unix_ms` is an inclusive latest finish;
+- the complete scheduled interval lies within one normalized operating-hours window; an empty window set makes the activity unschedulable, and a present `found_closed_at_unix_ms` makes it unschedulable for the current planning day;
+- scheduled intervals do not overlap, every required current-location/activity and activity/activity travel-matrix cell is reachable, and arrival plus checked travel time does not exceed the next start;
+- every scheduled interval lies inside the normalized current-day planning horizon.
+
+Hours, reachability, overlap, mandatory/deadline, fixed/movement, minimum-duration, and reservation-window violations are never soft penalties. A candidate containing one is pruned. If exhaustive search proves no complete feasible candidate exists, `ReplanResult` is `status = INFEASIBLE`, `retryable = false`, proposal absent, `notification = INFEASIBLE_SCHEDULE`, reasons containing `NO_FEASIBLE_PLAN`, and `plan_quality = NO_NEW_PROPOSAL`. If the deadline/cancellation budget stops search before any complete feasible candidate is found, the result is `DEADLINE_EXCEEDED`/`CANCELLED` rather than a false infeasibility claim. If at least one complete candidate was found first, budget expiration returns the best one as `OK` + `BEST_SO_FAR`. The planner never emits a knowingly invalid proposal, and the user-authored current plan remains authoritative even when it violates these proposal constraints.
+
+Complete feasible candidates are compared by the following tuple, in this exact order:
+
+1. Minimize `skips_by_priority`: for each distinct `priority_rank` present in the remaining suffix, ordered from lowest rank value to highest, count skipped optional activities at that rank and compare the count vectors lexicographically. This means one additional skip at a more important rank is never exchanged for any number of less-important activities.
+2. Maximize `scheduled_utility`, the checked signed 64-bit sum of `utility_score` for scheduled remaining activities. This selects among activities sharing the same skip-rank counts.
+3. Minimize `total_lateness_ms`. Per scheduled activity, lateness is `max(0, start - reservation_start)` when a reservation exists, otherwise `max(0, start - current_plan_start)` when the activity is currently scheduled, otherwise zero.
+4. Minimize `total_preferred_shortfall_ms`, the sum of `max(0, preferred_duration - scheduled_duration)`.
+5. Minimize `total_travel_ms`, including travel from the current location to the first scheduled suffix activity and between scheduled suffix activities.
+6. Minimize `changed_activity_count`, counting each remaining activity whose scheduled/omitted state, relative scheduled order, start, or end differs from the authoritative current plan.
+7. Minimize `total_start_shift_ms`, the sum of absolute start-time differences for activities scheduled in both plans.
+8. Minimize the final scheduled suffix end time.
+9. Minimize the canonical plan key lexicographically: scheduled activities' original trip ordinals in proposed order, then each scheduled entry's `(ordinal, start_unix_ms, end_unix_ms)`, then skipped activities' original ordinals in ascending order.
+
+All maximization/minimization comparisons above are exact; generated proposal ids, creation time, container iteration order, pointer values, thread scheduling, and random numbers never participate. If the entire tuple is equal, the candidates are user-visibly identical under V1 and either serialized result must use the same canonical segment order.
+
+Beam retention is deterministic as well. At a common search depth, a partial candidate is compared using the same tuple projected optimistically: every undecided activity is assumed scheduled, its utility is included, and its future lateness, preferred shortfall, travel, and change costs are zero. Realized skips and costs remain in the tuple. Equal projected tuples are ordered by the canonical sequence of expansion decisions `(activity_ordinal, decision, start_unix_ms, end_unix_ms)`, where `decision` is `0` for scheduled and `1` for skipped and a skipped decision uses zero for both times. Beam truncation retains the first `beam_width` candidates under that total order. The best-so-far result is the best complete feasible candidate actually reached under the same complete-candidate comparator; partial or hard-infeasible candidates are never returned.
+
+Changing criterion order, semantics, or tie-breaking is a user-visible planner-policy change: it requires a new objective identifier and new deterministic golden fixtures rather than a configuration-only deployment change.
+
 `PlannerError`: 1 `StatusCode status`, 2 `bool retryable`, 3 `StaleReason stale_reason`, 4 `string safe_message`, 5 `uint64 related_mutation_sequence`, 6 `uint64 related_observation_sequence`, 7 `uint64 related_planner_state_version`.
 
 ### Snapshot payload
@@ -811,10 +849,14 @@ The V1 seeded provider loads `schema/hours/liveroute-v1-hours-seed.schema.json` 
 - weekday and exception intervals are in ascending local-open order and do not overlap; exception dates are strictly increasing and unique;
 - local times are exact `HH:MM:SS`; `closes_day_offset` is 0 or 1, with offset 0 requiring close later than open and offset 1 limiting the interval to at most 24 hours;
 - an exception replaces the recurring weekday completely for its local date; an empty exception interval list means closed;
-- recurring intervals carry no UTC-offset choice. If a recurring endpoint is nonexistent or ambiguous on an expanded date, that date requires an exception rather than a guessed conversion;
+- recurring intervals carry no UTC-offset choice. If a recurring endpoint is nonexistent or ambiguous on any date in the readiness-validation domain, its local opening date requires an exception rather than a guessed conversion;
 - a nonexistent exception endpoint is invalid. An ambiguous exception endpoint requires the matching `opens_utc_offset_seconds` or `closes_utc_offset_seconds`; an optional offset on an unambiguous endpoint must equal its sole valid offset.
 
-Any schema or semantic error prevents seeded-hours readiness; it is not treated as a closed place. A missing requested `place_id` returns `NOT_FOUND`. Cancellation/deadline errors preserve their names; a later remote-provider failure maps to `UNAVAILABLE`.
+Seeded-hours DST validation is eager over an exact, non-clock-relative domain. It covers every recurring interval whose local opening date can occur in a valid `LocalDateRange`: `[1970-01-01, 9999-12-31)`, through `9999-12-30` inclusive, plus any next-local-day closing endpoint produced by `closes_day_offset = 1`. Every explicit exception is validated regardless of its date. There is no configurable rolling horizon and no first-request/lazy semantic validation.
+
+This validation must be transition-directed rather than implemented as day-by-day expansion. At startup, for each distinct seed zone, the provider enumerates every UTC-offset transition from pinned TZif data whose skipped or repeated local-time interval can intersect the validation domain. This includes explicit TZif transitions and recurrences derived from its POSIX footer through the upper bound. It then compares those finite gap/fold intervals with that zone's distinct recurring opening and closing endpoint tuples. A next-day close remains associated with its interval's local opening date; an exception for that opening date replaces the recurring interval before endpoint validation. The transition enumeration is cached once per distinct zone and reused across places. An equivalent implementation is allowed only if it proves the same complete-domain result before readiness; an implementation must not trade correctness for an arbitrary startup timeout.
+
+Any schema or semantic error, including one found by the complete-domain transition scan, prevents seeded-hours readiness; it is not treated as a closed place. Once the provider reports ready, every structurally valid request range is guaranteed not to discover a new seed DST gap/fold error. A defensive post-readiness detection of source corruption or a violated validation invariant returns `INVALID_SOURCE`, returns no partial windows, and immediately marks seeded-hours and the base planner service not ready until restart with valid inputs. A missing requested `place_id` returns `NOT_FOUND`. Cancellation/deadline errors preserve their names; a later remote-provider failure maps to `UNAVAILABLE`.
 
 For a seeded success, `source_version` is `seed-v1:` followed by lowercase SHA-256 hex over the ASCII bytes `liveroute-hours-seed-v1`, one LF byte, the UTF-8 `tzdata_release`, one LF byte, and the RFC-8785 canonical bytes of the complete place object, in that order.
 
@@ -849,7 +891,7 @@ Readiness means dependency usability rather than mere process existence:
 
 - PostgreSQL liveness: container process; readiness: `pg_isready` plus expected Goose migration version.
 - OSRM car/foot readiness: fixed small Table request succeeds with expected dimensions.
-- C++ liveness/readiness: standard gRPC health service reports `liveroute.v1.LiveRoutePlanner` as `SERVING` after queues/executors/config initialize, and separately reports `liveroute.v1.LiveRoutePlanner/osrm-car` and `/osrm-foot` as `SERVING` only after their fixed Table probes pass.
+- C++ liveness/readiness: standard gRPC health service reports `liveroute.v1.LiveRoutePlanner` as `SERVING` only after queues/executors/config initialize and seeded hours completes its full-domain semantic/DST validation. A defensive post-readiness seeded-source invariant failure changes the base service to `NOT_SERVING`. The service separately reports `liveroute.v1.LiveRoutePlanner/osrm-car` and `/osrm-foot` as `SERVING` only after their fixed Table probes pass.
 - Backend `/healthz`: event loop/process is alive; it does not query dependencies.
 - Backend `/readyz`: migrations are current, PostgreSQL ping succeeds, at least one planner stream is `StreamReady`, and both named OSRM profile health services report `SERVING`.
 - A backend that loses readiness may keep existing connections long enough to emit bounded transient errors, but Compose/test admission waits for `/readyz`.
@@ -954,7 +996,11 @@ In addition to the existing planner/runtime/OSRM tests, V1 requires:
 - checksum mismatch, unknown snapshot version, metadata mismatch, newest-snapshot corruption, and fallback to the second snapshot/full rebuild work;
 - WebSocket unknown standard fields, extension fields, unsupported versions, every close code, auth timeout, heartbeat timeout, origin denial, oversized frame, and full essential buffer behave as contracted;
 - development token is never present in logs/errors and raw tokens are absent from PostgreSQL;
-- `LocalDateRange` rejects empty/reversed/over-32-day ranges; seeded hours reject duplicate/unsorted places and exceptions, wrong tzdata, invalid interval order, recurring DST ambiguity without an exception, and nonexistent/incorrect-offset exception endpoints;
+- planner objective tests prove each hard violation is pruned rather than scored, lower-rank skip counts dominate every later criterion, utility/lateness/compression/travel/current-plan-disruption criteria apply in their exact order, signed utility and duplicate ranks behave deterministically, and checked arithmetic rejects overflow;
+- beam tests vary candidate insertion order and equal-score branches, exercise the exact optimistic partial key/canonical decision key, and produce byte-identical visible proposal schedules and the same valid best-so-far candidate for equal input and budget;
+- exhaustive infeasibility, deadline/cancellation before any complete candidate, and deadline after a complete candidate produce the exact `INFEASIBLE`, terminal attempt status, and `OK/BEST_SO_FAR` result shapes respectively;
+- `LocalDateRange` rejects empty/reversed/over-32-day ranges; seeded hours reject duplicate/unsorted places and exceptions, wrong tzdata, invalid interval order, recurring DST gaps/folds without an opening-date exception anywhere in the complete readiness-validation domain, and nonexistent/incorrect-offset exception endpoints;
+- seeded-hours readiness tests cover a gap/fold beyond the last explicit TZif transition via POSIX-footer recurrence, an ambiguous next-day close resolved by the preceding opening-date exception, the upper requestable-date boundary, and defensive post-readiness `INVALID_SOURCE`/`NOT_SERVING` behavior;
 - US DST nonexistent/ambiguous time, explicit fall-back offset, Arizona/Hawaii non-DST behavior, overnight hours, exceptional closures, source-version changes, and exact UTC window coalescing normalize correctly;
 - OSRM `Ok`/null, `NoTable`, `NoSegment`, `TooBig`, every invalid-request code, `NotImplemented`, unknown code, HTTP 429/4xx/5xx, malformed JSON, wrong dimensions, mismatched nulls, nonfinite/negative/overflow numbers, timeout, cancellation, queue/byte/location limits map to the exact table above;
 - invalid/zero/unbounded/inconsistent configuration fails startup;

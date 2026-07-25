@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "tzdata_release": "2026c",
+  "places": [
+    {
+      "place_id": "fixture-place",
+      "time_zone_name": "America/New_York",
+      "weekly": {
+        "monday": [
+          {
+            "opens_at_local": "00:00:00",
+            "closes_at_local": "00:00:00",
+            "closes_day_offset": 1
+          }
+        ],
+        "tuesday": [
+          {
+            "opens_at_local": "00:00:00",
+            "closes_at_local": "00:00:00",
+            "closes_day_offset": 1
+          }
+        ],
+        "wednesday": [
+          {
+            "opens_at_local": "00:00:00",
+            "closes_at_local": "00:00:00",
+            "closes_day_offset": 1
+          }
+        ],
+        "thursday": [
+          {
+            "opens_at_local": "00:00:00",
+            "closes_at_local": "00:00:00",
+            "closes_day_offset": 1
+          }
+        ],
+        "friday": [
+          {
+            "opens_at_local": "00:00:00",
+            "closes_at_local": "00:00:00",
+            "closes_day_offset": 1
+          }
+        ],
+        "saturday": [
+          {
+            "opens_at_local": "00:00:00",
+            "closes_at_local": "00:00:00",
+            "closes_day_offset": 1
+          }
+        ],
+        "sunday": [
+          {
+            "opens_at_local": "00:00:00",
+            "closes_at_local": "00:00:00",
+            "closes_day_offset": 1
+          }
+        ]
+      },
+      "exceptions": []
+    }
+  ]
+}

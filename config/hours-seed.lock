@@ -1,0 +1,7 @@
+# Immutable local V1 operating-hours seed. This is fixture data, not a claim
+# about a real place's published hours.
+schema_version: 1
+artifact:
+  repository_path: data/hours/liveroute-v1-hours-seed.json
+  container_path: /opt/liveroute/share/hours/liveroute-v1-hours-seed.json
+  sha256: 3582832ac46c1b841d684bcf6ae9751830d819b8ee14f88bcaac7c541b25e0d7

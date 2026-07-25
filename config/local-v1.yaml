@@ -57,4 +57,10 @@ planner:
   beam_width: 32
   max_expansions: 16384
 
+hours:
+  seed_file_path: /opt/liveroute/share/hours/liveroute-v1-hours-seed.json
+  seed_file_sha256: 3582832ac46c1b841d684bcf6ae9751830d819b8ee14f88bcaac7c541b25e0d7
+  tzdata_release: 2026c
+  tzdata_zoneinfo_path: /opt/liveroute/share/tzdata/2026c/zoneinfo
+
 shutdown_deadline_ms: 10000

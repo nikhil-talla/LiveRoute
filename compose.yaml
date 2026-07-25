@@ -1,8 +1,9 @@
 name: liveroute
 
-# This initial skeleton builds the C++ service in a container. The backend,
-# PostgreSQL, OSRM, and their dependency-aware readiness checks are added only
-# after their exact contract artifacts and migrations are in place.
+# The skeleton builds the C++ service. The hours-assets check builds the exact
+# local seed plus pinned tzdata used by the future seeded-hours adapter. The
+# backend, PostgreSQL, OSRM, and dependency-aware readiness checks are added
+# with their implementation slices.
 services:
   planner-skeleton:
     build:
@@ -10,3 +11,9 @@ services:
       dockerfile: docker/cpp/Dockerfile
     command: ["--self-check"]
     profiles: ["skeleton"]
+
+  hours-assets-check:
+    build:
+      context: .
+      dockerfile: docker/hours/Dockerfile
+    profiles: ["hours"]

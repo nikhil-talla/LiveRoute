@@ -175,7 +175,7 @@ public:
 
 `LocalDateRange`, `HoursInfo`, `HoursProviderError`, `HoursLookupResult`, the seeded-hours JSON shape/source digest, and the 32-day bound are exact in `plans/LiveRouteV1ContractSpec.md`. A success returns normalized UTC windows; errors remain internal provider-domain values until the service boundary maps them. The planner only sees in-memory constraints such as open windows, reservation start/grace, min/preferred/max duration, and whether an activity is mandatory, movable, skippable, or shorten-able. The planner must not call Google Places, Yelp, OpenStreetMap, scrape websites, or parse provider responses while evaluating candidates.
 
-V1 accepts IANA zones whose pinned IANA tzdata 2026c entry includes country `US`. The seed file must validate against `schema/hours/liveroute-v1-hours-seed.schema.json` and `config/tzdata.lock`. CLI/fixture/seed ingestion rejects DST gaps, requires explicit valid offsets for exceptional DST folds, expands overnight/exception hours, and converts local input to UTC Unix milliseconds. The backend revalidates normalized values; the planner operates only on UTC, and output carries the activity IANA zone for display conversion after replanning.
+V1 accepts IANA zones whose pinned IANA tzdata 2026c entry includes country `US`. The seed file must validate against `schema/hours/liveroute-v1-hours-seed.schema.json` and `config/tzdata.lock`. Before reporting ready, the seeded provider validates recurring endpoints over every requestable opening date from `1970-01-01` through `9999-12-30` plus next-day closes. It does this by caching each distinct zone's finite TZif gap/fold transitions, including POSIX-footer recurrences through the upper bound, and comparing recurring endpoint tuples; it does not expand every date and must not defer semantic validation until lookup. CLI/fixture/seed ingestion rejects DST gaps, requires explicit valid offsets for exceptional DST folds, expands overnight/exception hours, and converts local input to UTC Unix milliseconds. The backend revalidates normalized values; the planner operates only on UTC, and output carries the activity IANA zone for display conversion after replanning.
 
 Operating-hours provider progression:
 
@@ -203,7 +203,7 @@ Replanning behavior:
 - V1 uses deadline-bounded beam search with pruning from the first functional planner implementation.
 - Replanning inputs include current location, travel-time estimates, event operating hours, min/max desired event duration, reservation/fixed-time constraints, and user-provided event priority rank.
 - The planner should consider whether lower-priority events can be cut, compressed, moved, or skipped.
-- Reservations and explicitly fixed events should not move in v1 when feasible.
+- Reservation windows, explicit movement flags, and fixed anchors are hard V1 proposal constraints; if they cannot be satisfied, the planner returns no feasible proposal rather than moving them.
 - Reservation rebooking is a v2 feature.
 - ML/profile-specific behavior, such as learning which event types a user prefers to move, is v2.
 - Multi-day route planning is v2: users provide many events with constraints, and the planner can use TSP-style heuristics plus time-window scheduling.
@@ -216,7 +216,7 @@ location or ETA-risk event arrives
   -> update progress and compute slack to next fixed/important event
   -> if slack is healthy, no full replan
   -> if slack is low, notify user and compute alternative suffix plans
-  -> rank alternatives by event priority, lateness, travel time, and amount cut/compressed
+  -> rank alternatives by the exact liveroute-v1-lexicographic-1 objective
   -> persist and return notification payload plus best proposal, or up to three proposals in v1.5
 ```
 
@@ -285,13 +285,13 @@ Implement incremental planning:
 
 - Implement a bounded beam-search planner over the remaining suffix as the first functional V1 replanner.
 - Treat the current plan as the baseline chosen by the user. Planner output is a proposal and cannot update that baseline without a later user command.
-- Preserve completed activities and fixed reservations when feasible.
+- Preserve completed activities and enforce fixed/reservation constraints, returning no feasible proposal rather than violating them.
 - Allow flexible activities to be moved, shortened, skipped, or reordered according to explicit activity constraints.
-- Score candidates using utility, lateness penalties, skipped-activity penalties, reservation protection, travel feasibility, and operating-hours feasibility.
+- Implement the exact `liveroute-v1-lexicographic-1` hard-feasibility rules, complete-candidate tuple, optimistic partial-candidate tuple, and canonical tie-breaker in `plans/LiveRouteV1ContractSpec.md`. Do not add scalar weights or runtime score tuning.
 - Use `PlannerScratch` with reusable vectors, candidate pools, and parent indices to avoid copying entire plans.
 - Add `ReplanBudget` containing deadline, max candidates, beam width, max expansions, and stop token.
 - Return best-so-far if the deadline or cancellation token fires.
-- Enforce normalized time-window constraints in memory: activity start must fall inside an open window, finish must occur before close, reservations must be protected when feasible, and flexible activities may be shortened, moved, or skipped.
+- Enforce normalized time-window constraints in memory: activity start must fall inside an open window, finish must occur before close, reservation windows are hard, and flexible activities may be shortened, moved, or skipped only when their flags allow it.
 
 Implement OSRM integration:
 
@@ -386,7 +386,7 @@ Correctness tests:
 - Duplicate event does not duplicate state transitions.
 - Stale event is rejected or ignored.
 - Completed activities are never replanned.
-- Mandatory reservations remain protected when feasible.
+- A reservation/fixed constraint is either satisfied exactly as contracted or no feasible proposal is returned.
 - Flexible activities may be moved, shortened, or skipped.
 - No returned engine proposal has overlapping activities.
 - No returned engine proposal violates operating-hours windows.
