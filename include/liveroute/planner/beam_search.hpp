@@ -2,13 +2,16 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <vector>
 
 #include "liveroute/domain/activity.hpp"
 #include "liveroute/domain/current_plan.hpp"
 #include "liveroute/domain/travel_time_matrix.hpp"
+#include "liveroute/planner/candidate_score.hpp"
 
 namespace liveroute::planner {
 
@@ -36,8 +39,10 @@ struct ReplanBudget {
   }
 };
 
-// Matrix index zero is the current location; remaining activity i is matrix
-// index i + 1. All values are already normalized UTC/in-memory constraints.
+// remaining_activities is in exact authoritative CurrentPlan suffix order,
+// including omitted entries; original_trip_ordinal is a separate stable trip
+// identity. Matrix index zero is the current location and remaining activity i
+// is matrix index i + 1. All values are normalized UTC/in-memory constraints.
 struct BeamSearchInput {
   domain::UnixTimeMilliseconds current_time;
   domain::UnixTimeMilliseconds planning_horizon_start;
@@ -48,5 +53,77 @@ struct BeamSearchInput {
 
   [[nodiscard]] bool is_valid() const noexcept;
 };
+
+enum class CandidateAlternativeKind : std::uint8_t {
+  kScheduled,
+  kSkipped,
+};
+
+// An alternative for one activity in the exact order in which a parent must
+// consider it. Scheduled alternatives precede a possible skip alternative.
+// The generator uses only normalized domain data; reachability is supplied as
+// the already-checked arrival time by the beam traversal.
+struct CandidateAlternative {
+  CandidateAlternativeKind kind;
+  std::size_t activity_ordinal{};
+  domain::UnixTimeMilliseconds start{0};
+  domain::UnixTimeMilliseconds end{0};
+  bool is_exact_current_plan{};
+
+  [[nodiscard]] bool is_valid() const noexcept {
+    return kind == CandidateAlternativeKind::kSkipped
+               ? start == domain::UnixTimeMilliseconds{0} &&
+                     end == domain::UnixTimeMilliseconds{0} &&
+                     !is_exact_current_plan
+               : start < end;
+  }
+};
+
+// Generates the finite, boundary-derived V1 proposal set for one activity.
+// It deliberately does not search a time grid or derive new durations.
+[[nodiscard]] std::vector<CandidateAlternative> generate_candidate_alternatives(
+    const BeamSearchInput& input, const PlanningActivity& activity,
+    domain::UnixTimeMilliseconds arrival);
+
+// Scores a unique expansion-decision prefix under
+// liveroute-v1-lexicographic-1. Undecided activities retain optimistic utility
+// and contribute no future costs. A full decision sequence produces the exact
+// complete-candidate score. Invalid, hard-infeasible, non-generated, or
+// overflow-prone sequences return nullopt.
+[[nodiscard]] std::optional<CandidateScore> score_candidate(
+    const BeamSearchInput& input,
+    std::span<const ExpansionDecision> decisions);
+
+enum class BeamSearchOutcome : std::uint8_t {
+  kComplete,
+  kBestSoFar,
+  kExhaustiveInfeasible,
+  kSearchLimited,
+  kDeadlineExceeded,
+  kCancelled,
+  kInvalidInput,
+};
+
+// Transport-independent search result. The RPC/domain adapter maps
+// kSearchLimited to OK/NO_NEW_PROPOSAL and kExhaustiveInfeasible to
+// INFEASIBLE; the planner itself does not depend on wire status types.
+struct BeamSearchResult {
+  BeamSearchOutcome outcome;
+  std::optional<std::vector<ExpansionDecision>> best_decisions;
+  std::optional<CandidateScore> best_score;
+  std::size_t expansion_count{};
+  std::size_t candidate_count{};
+  bool search_was_truncated{};
+
+  [[nodiscard]] bool has_complete_candidate() const noexcept {
+    return best_decisions.has_value() && best_score.has_value();
+  }
+};
+
+// Runs the deterministic finite V1 beam traversal. A bounded search that
+// discarded feasible partials or exhausted a candidate budget never reports
+// exhaustive infeasibility.
+[[nodiscard]] BeamSearchResult run_beam_search(
+    const BeamSearchInput& input, const ReplanBudget& budget);
 
 }  // namespace liveroute::planner

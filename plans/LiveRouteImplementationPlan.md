@@ -288,10 +288,13 @@ Implement incremental planning:
 - Preserve completed activities and enforce fixed/reservation constraints, returning no feasible proposal rather than violating them.
 - Allow flexible activities to be moved, shortened, skipped, or reordered according to explicit activity constraints.
 - Implement the exact `liveroute-v1-lexicographic-1` hard-feasibility rules, complete-candidate tuple, optimistic partial-candidate tuple, and canonical tie-breaker in `plans/LiveRouteV1ContractSpec.md`. Do not add scalar weights or runtime score tuning.
+- Implement its exact finite candidate generator and generation order: beam branches choose activity order/skip; scheduled alternatives are limited to legal current-plan and earliest-reachable window boundaries with the contracted preferred/capped and minimum duration choices. Do not add time-grid sampling, continuous optimization, or unversioned intermediate-duration heuristics.
+- Apply the zero-travel protected-activity lower-bound check before candidate accounting/beam retention, track every beam-width or candidate-budget truncation, and reserve `INFEASIBLE` for an untruncated exhaustive proof. A bounded search with no complete result maps to `OK/NO_NEW_PROPOSAL`.
+- Assemble `BeamSearchInput.remaining_activities` in authoritative current-plan suffix order, including omitted entries; retain `original_trip_ordinal` separately. Compute `changed_activity_count` with the exact common-scheduled-sequence rule so adding/removing one activity does not mark every later activity reordered.
 - Use `PlannerScratch` with reusable vectors, candidate pools, and parent indices to avoid copying entire plans.
-- Add `ReplanBudget` containing deadline, max candidates, beam width, max expansions, and stop token.
+- Add `ReplanBudget` containing deadline, max candidates, beam width, max expansions, and stop token. Count one expansion per actual parent/activity generator invocation, including a zero-result invocation, but never enumerate or count hypothetical alternatives rejected before generator emission.
 - Return best-so-far if the deadline or cancellation token fires.
-- Enforce normalized time-window constraints in memory: activity start must fall inside an open window, finish must occur before close, reservation windows are hard, and flexible activities may be shortened, moved, or skipped only when their flags allow it.
+- Enforce normalized time-window constraints in memory: activity start must fall inside an open window, finish must occur at or before close, reservation windows are hard, and flexible activities may be shortened, moved, or skipped only when their flags allow it.
 
 Implement OSRM integration:
 

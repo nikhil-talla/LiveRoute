@@ -69,6 +69,33 @@ target_link_libraries(liveroute_beam_search_input_test PRIVATE liveroute_domain)
 liveroute_configure_target(liveroute_beam_search_input_test)
 add_test(NAME liveroute_beam_search_input_test COMMAND liveroute_beam_search_input_test)
 
+add_executable(liveroute_candidate_generation_test
+  tests/candidate_generation_test.cpp
+)
+target_link_libraries(liveroute_candidate_generation_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_candidate_generation_test)
+add_test(NAME liveroute_candidate_generation_test
+  COMMAND liveroute_candidate_generation_test
+)
+
+add_executable(liveroute_beam_search_scoring_test
+  tests/beam_search_scoring_test.cpp
+)
+target_link_libraries(liveroute_beam_search_scoring_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_beam_search_scoring_test)
+add_test(NAME liveroute_beam_search_scoring_test
+  COMMAND liveroute_beam_search_scoring_test
+)
+
+add_executable(liveroute_beam_search_traversal_test
+  tests/beam_search_traversal_test.cpp
+)
+target_link_libraries(liveroute_beam_search_traversal_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_beam_search_traversal_test)
+add_test(NAME liveroute_beam_search_traversal_test
+  COMMAND liveroute_beam_search_traversal_test
+)
+
 add_executable(liveroute_checked_int_test tests/checked_int_test.cpp)
 target_include_directories(liveroute_checked_int_test PRIVATE include)
 liveroute_configure_target(liveroute_checked_int_test)
