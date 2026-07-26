@@ -286,6 +286,7 @@ Implement incremental planning:
 - Implement a bounded beam-search planner over the remaining suffix as the first functional V1 replanner.
 - Treat the current plan as the baseline chosen by the user. Planner output is a proposal and cannot update that baseline without a later user command.
 - Preserve completed activities and enforce fixed/reservation constraints, returning no feasible proposal rather than violating them.
+- Preserve every completed/skipped prefix entry and any started activity unchanged. Begin suffix travel/scheduling at the later of current time and the last scheduled preserved-prefix end.
 - Allow flexible activities to be moved, shortened, skipped, or reordered according to explicit activity constraints.
 - Implement the exact `liveroute-v1-lexicographic-1` hard-feasibility rules, complete-candidate tuple, optimistic partial-candidate tuple, and canonical tie-breaker in `plans/LiveRouteV1ContractSpec.md`. Do not add scalar weights or runtime score tuning.
 - Implement its exact finite candidate generator and generation order: beam branches choose activity order/skip; scheduled alternatives are limited to legal current-plan and earliest-reachable window boundaries with the contracted preferred/capped and minimum duration choices. Do not add time-grid sampling, continuous optimization, or unversioned intermediate-duration heuristics.

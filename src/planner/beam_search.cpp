@@ -209,11 +209,6 @@ void add_exact_current_plan(const BeamSearchInput& input,
       });
 }
 
-struct BeamNode {
-  std::vector<ExpansionDecision> decisions;
-  CandidateScore score;
-};
-
 [[nodiscard]] std::optional<std::pair<std::size_t, std::int64_t>>
 last_scheduled_state(const BeamSearchInput& input,
                      std::span<const ExpansionDecision> decisions) noexcept {
@@ -227,7 +222,8 @@ last_scheduled_state(const BeamSearchInput& input,
                                                 decision->end_unix_ms};
   }
   return std::pair<std::size_t, std::int64_t>{
-      std::numeric_limits<std::size_t>::max(), input.current_time.value()};
+      std::numeric_limits<std::size_t>::max(),
+      input.suffix_start_time().value()};
 }
 
 [[nodiscard]] std::optional<UnixTimeMilliseconds> actual_arrival(
@@ -297,14 +293,32 @@ last_scheduled_state(const BeamSearchInput& input,
   };
 }
 
+void reconstruct_decisions(const PlannerScratch& scratch,
+                           const BeamScratchCandidate& candidate,
+                           std::vector<ExpansionDecision>* decisions) {
+  decisions->resize(candidate.depth);
+  auto path_index = candidate.path_index;
+  for (std::size_t position = candidate.depth; position > 0; --position) {
+    const auto& path = scratch.path_nodes.at(*path_index);
+    (*decisions)[position - 1] = path.decision;
+    path_index = path.parent_path_index;
+  }
+}
+
 [[nodiscard]] BeamSearchResult interrupted_result(
-    BeamSearchOutcome outcome, const std::optional<BeamNode>& best,
+    BeamSearchOutcome outcome,
+    const std::optional<BeamScratchCandidate>& best,
+    const PlannerScratch& scratch,
     std::size_t expansion_count, std::size_t candidate_count,
     bool search_was_truncated) {
   if (best.has_value()) {
+    std::vector<ExpansionDecision> decisions;
+    reconstruct_decisions(scratch, *best, &decisions);
     return {
-        .outcome = BeamSearchOutcome::kBestSoFar,
-        .best_decisions = best->decisions,
+        .outcome = outcome == BeamSearchOutcome::kComplete
+                       ? BeamSearchOutcome::kComplete
+                       : BeamSearchOutcome::kBestSoFar,
+        .best_decisions = std::move(decisions),
         .best_score = best->score,
         .expansion_count = expansion_count,
         .candidate_count = candidate_count,
@@ -326,18 +340,52 @@ last_scheduled_state(const BeamSearchInput& input,
 bool BeamSearchInput::is_valid() const noexcept {
   if (planning_horizon_start >= planning_horizon_end ||
       current_time < planning_horizon_start || current_time > planning_horizon_end ||
-      remaining_activities.size() > 64 || travel_time_matrix == nullptr ||
+      preserved_prefix.size() > 64 ||
+      remaining_activities.size() > 64 - preserved_prefix.size() ||
+      travel_time_matrix == nullptr ||
       travel_time_matrix->location_count() != remaining_activities.size() + 1) {
     return false;
   }
+  std::vector<domain::ActivityId> activity_ids;
+  activity_ids.reserve(preserved_prefix.size() + remaining_activities.size());
+  std::optional<UnixTimeMilliseconds> prior_preserved_end;
+  for (const auto& segment : preserved_prefix) {
+    if (!segment.is_valid()) return false;
+    activity_ids.push_back(segment.activity_id);
+    if (segment.state == domain::PlanEntryState::kScheduled) {
+      if (prior_preserved_end.has_value() &&
+          *segment.scheduled_start < *prior_preserved_end) {
+        return false;
+      }
+      prior_preserved_end = segment.scheduled_end;
+    }
+  }
+
   std::vector<std::size_t> ordinals;
   ordinals.reserve(remaining_activities.size());
   for (const auto& activity : remaining_activities) {
     if (!activity.is_valid()) return false;
+    activity_ids.push_back(activity.activity.activity_id);
     ordinals.push_back(activity.original_trip_ordinal);
+  }
+  std::sort(activity_ids.begin(), activity_ids.end());
+  if (std::adjacent_find(activity_ids.begin(), activity_ids.end()) !=
+      activity_ids.end()) {
+    return false;
   }
   std::sort(ordinals.begin(), ordinals.end());
   return std::adjacent_find(ordinals.begin(), ordinals.end()) == ordinals.end();
+}
+
+UnixTimeMilliseconds BeamSearchInput::suffix_start_time() const noexcept {
+  auto start = current_time;
+  for (const auto& segment : preserved_prefix) {
+    if (segment.state == domain::PlanEntryState::kScheduled &&
+        segment.scheduled_end.has_value() && *segment.scheduled_end > start) {
+      start = *segment.scheduled_end;
+    }
+  }
+  return start;
 }
 
 std::vector<CandidateAlternative> generate_candidate_alternatives(
@@ -452,7 +500,7 @@ std::optional<CandidateScore> score_candidate(
       .total_travel_ms = 0,
       .changed_activity_count = 0,
       .total_start_shift_ms = 0,
-      .final_scheduled_end_unix_ms = input.current_time.value(),
+      .final_scheduled_end_unix_ms = input.suffix_start_time().value(),
       .canonical_plan_key = {},
   };
   score.canonical_plan_key.scheduled_ordinals_in_order.reserve(decisions.size());
@@ -460,7 +508,7 @@ std::optional<CandidateScore> score_candidate(
   score.canonical_plan_key.skipped_ordinals.reserve(decisions.size());
 
   std::optional<std::size_t> prior_scheduled_activity_index;
-  std::int64_t prior_scheduled_end = input.current_time.value();
+  std::int64_t prior_scheduled_end = input.suffix_start_time().value();
 
   for (const auto& decision : decisions) {
     const auto activity_index =
@@ -623,6 +671,14 @@ std::optional<CandidateScore> score_candidate(
 
 BeamSearchResult run_beam_search(const BeamSearchInput& input,
                                  const ReplanBudget& budget) {
+  PlannerScratch scratch;
+  return run_beam_search(input, budget, scratch);
+}
+
+BeamSearchResult run_beam_search(const BeamSearchInput& input,
+                                 const ReplanBudget& budget,
+                                 PlannerScratch& scratch) {
+  scratch.reset();
   if (!input.is_valid() || !budget.is_valid()) {
     return {.outcome = BeamSearchOutcome::kInvalidInput,
             .best_decisions = std::nullopt,
@@ -653,126 +709,148 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
     };
   }
 
-  std::vector<BeamNode> beam{
-      BeamNode{.decisions = {}, .score = *initial_score}};
-  std::optional<BeamNode> best_complete;
+  scratch.beam.push_back(
+      {.path_index = std::nullopt, .depth = 0, .score = *initial_score});
+  std::optional<BeamScratchCandidate> best_complete;
   std::size_t expansion_count = 0;
   std::size_t candidate_count = 0;
   bool search_was_truncated = false;
 
-  std::vector<std::size_t> activity_order(
-      input.remaining_activities.size());
-  for (std::size_t index = 0; index < activity_order.size(); ++index) {
-    activity_order[index] = index;
+  scratch.activity_order.resize(input.remaining_activities.size());
+  for (std::size_t index = 0; index < scratch.activity_order.size(); ++index) {
+    scratch.activity_order[index] = index;
   }
-  std::sort(activity_order.begin(), activity_order.end(),
+  std::sort(scratch.activity_order.begin(), scratch.activity_order.end(),
             [&input](std::size_t left, std::size_t right) {
               return input.remaining_activities[left].original_trip_ordinal <
                      input.remaining_activities[right].original_trip_ordinal;
             });
+  scratch.decided.resize(input.remaining_activities.size());
 
   for (std::size_t depth = 0;
        depth < input.remaining_activities.size(); ++depth) {
-    std::vector<BeamNode> children;
-    for (const auto& parent : beam) {
-      std::vector<bool> decided(input.remaining_activities.size(), false);
-      for (const auto& decision : parent.decisions) {
+    scratch.children.clear();
+    for (const auto& parent : scratch.beam) {
+      reconstruct_decisions(scratch, parent, &scratch.working_decisions);
+      std::fill(scratch.decided.begin(), scratch.decided.end(),
+                std::uint8_t{0});
+      for (const auto& decision : scratch.working_decisions) {
         const auto index =
             activity_index_for_ordinal(input, decision.activity_ordinal);
         if (!index) {
           return interrupted_result(
-              BeamSearchOutcome::kInvalidInput, best_complete,
+              BeamSearchOutcome::kInvalidInput, best_complete, scratch,
               expansion_count, candidate_count, search_was_truncated);
         }
-        decided[*index] = true;
+        scratch.decided[*index] = 1;
       }
 
-      for (const auto activity_index : activity_order) {
-        if (decided[activity_index]) continue;
+      for (const auto activity_index : scratch.activity_order) {
+        if (scratch.decided[activity_index] != 0) continue;
         if (budget.stop_token.stop_requested()) {
           return interrupted_result(
-              BeamSearchOutcome::kCancelled, best_complete, expansion_count,
-              candidate_count, search_was_truncated);
+              BeamSearchOutcome::kCancelled, best_complete, scratch,
+              expansion_count, candidate_count, search_was_truncated);
         }
         if (std::chrono::steady_clock::now() >= budget.deadline) {
           return interrupted_result(
-              BeamSearchOutcome::kDeadlineExceeded, best_complete,
+              BeamSearchOutcome::kDeadlineExceeded, best_complete, scratch,
               expansion_count, candidate_count, search_was_truncated);
         }
         if (expansion_count >= budget.max_expansions) {
           return interrupted_result(
-              BeamSearchOutcome::kSearchLimited, best_complete,
+              BeamSearchOutcome::kSearchLimited, best_complete, scratch,
               expansion_count, candidate_count, search_was_truncated);
         }
         ++expansion_count;
 
         const auto arrival =
-            actual_arrival(input, parent.decisions, activity_index);
+            actual_arrival(input, scratch.working_decisions, activity_index);
         const auto alternatives = generate_candidate_alternatives(
             input, input.remaining_activities[activity_index],
             arrival.value_or(input.planning_horizon_end));
         for (const auto& alternative : alternatives) {
-          auto decisions = parent.decisions;
-          decisions.push_back(expansion_decision(alternative));
-          const auto score = score_candidate(input, decisions);
+          scratch.path_nodes.push_back(
+              {.parent_path_index = parent.path_index,
+               .decision = expansion_decision(alternative)});
+          const auto child_path_index = scratch.path_nodes.size() - 1;
+          scratch.working_decisions.push_back(
+              scratch.path_nodes.back().decision);
+          const auto score =
+              score_candidate(input, scratch.working_decisions);
           if (!score ||
-              !passes_protected_activity_lower_bound(input, decisions)) {
+              !passes_protected_activity_lower_bound(
+                  input, scratch.working_decisions)) {
+            scratch.working_decisions.pop_back();
+            scratch.path_nodes.pop_back();
             continue;
           }
           if (candidate_count >= budget.max_candidates) {
+            scratch.working_decisions.pop_back();
+            scratch.path_nodes.pop_back();
             return interrupted_result(
-                BeamSearchOutcome::kSearchLimited, best_complete,
+                BeamSearchOutcome::kSearchLimited, best_complete, scratch,
                 expansion_count, candidate_count, search_was_truncated);
           }
           ++candidate_count;
-          BeamNode child{.decisions = std::move(decisions), .score = *score};
-          if (child.decisions.size() ==
+          BeamScratchCandidate child{
+              .path_index = child_path_index,
+              .depth = parent.depth + 1,
+              .score = *score};
+          if (child.depth ==
                   input.remaining_activities.size() &&
               (!best_complete ||
                is_better_complete(child.score, best_complete->score))) {
             best_complete = child;
           }
-          children.push_back(std::move(child));
+          scratch.children.push_back(std::move(child));
+          scratch.working_decisions.pop_back();
         }
       }
     }
 
-    if (children.empty()) {
+    if (scratch.children.empty()) {
       if (best_complete) {
         return interrupted_result(
-            BeamSearchOutcome::kComplete, best_complete, expansion_count,
-            candidate_count, search_was_truncated);
+            BeamSearchOutcome::kComplete, best_complete, scratch,
+            expansion_count, candidate_count, search_was_truncated);
       }
       return interrupted_result(
           search_was_truncated ? BeamSearchOutcome::kSearchLimited
                                : BeamSearchOutcome::kExhaustiveInfeasible,
-          std::nullopt, expansion_count, candidate_count,
+          std::nullopt, scratch, expansion_count, candidate_count,
           search_was_truncated);
     }
 
     std::sort(
-        children.begin(), children.end(),
-        [](const BeamNode& left, const BeamNode& right) {
-          return is_better_partial(left.score, left.decisions, right.score,
-                                   right.decisions);
+        scratch.children.begin(), scratch.children.end(),
+        [&scratch](const BeamScratchCandidate& left,
+                   const BeamScratchCandidate& right) {
+          reconstruct_decisions(scratch, left, &scratch.comparison_left);
+          reconstruct_decisions(scratch, right, &scratch.comparison_right);
+          return is_better_partial(
+              left.score, scratch.comparison_left, right.score,
+              scratch.comparison_right);
         });
-    if (children.size() > budget.beam_width) {
+    if (scratch.children.size() > budget.beam_width) {
       search_was_truncated = true;
-      children.resize(budget.beam_width);
+      scratch.children.resize(budget.beam_width);
     }
-    beam = std::move(children);
+    scratch.beam.swap(scratch.children);
   }
 
   if (!best_complete) {
     return interrupted_result(
         search_was_truncated ? BeamSearchOutcome::kSearchLimited
                              : BeamSearchOutcome::kExhaustiveInfeasible,
-        std::nullopt, expansion_count, candidate_count,
+        std::nullopt, scratch, expansion_count, candidate_count,
         search_was_truncated);
   }
+  std::vector<ExpansionDecision> best_decisions;
+  reconstruct_decisions(scratch, *best_complete, &best_decisions);
   return {
       .outcome = BeamSearchOutcome::kComplete,
-      .best_decisions = best_complete->decisions,
+      .best_decisions = std::move(best_decisions),
       .best_score = best_complete->score,
       .expansion_count = expansion_count,
       .candidate_count = candidate_count,

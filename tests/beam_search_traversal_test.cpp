@@ -23,6 +23,7 @@ using liveroute::domain::TravelTimeMatrix;
 using liveroute::domain::UnixTimeMilliseconds;
 using liveroute::planner::BeamSearchInput;
 using liveroute::planner::BeamSearchOutcome;
+using liveroute::planner::PlannerScratch;
 using liveroute::planner::PlanningActivity;
 using liveroute::planner::ReplanBudget;
 using liveroute::planner::run_beam_search;
@@ -146,7 +147,43 @@ int main() {
     if (result.outcome != BeamSearchOutcome::kComplete ||
         !result.search_was_truncated || !result.best_decisions ||
         !contains_skip(*result.best_decisions, 1)) {
-      return 11;
+      return 1;
+    }
+  }
+
+  {
+    const auto important = activity(8, 1, 0, ActivityClass::kFlexible,
+                                    false, true, 0, 5000, 4,
+                                    PlanEntryState::kOmitted);
+    const auto less_important = activity(
+        9, 2, 10, ActivityClass::kFlexible, false, true, 0, 5000, 4,
+        PlanEntryState::kOmitted);
+    const auto fixed = activity(10, 3, 0, ActivityClass::kFixed, true,
+                                false, 0, 10000, 1,
+                                PlanEntryState::kScheduled, 5000, 6000);
+    const auto matrix = zero_matrix(4);
+    const BeamSearchInput input{
+        .current_time = UnixTimeMilliseconds{0},
+        .planning_horizon_start = UnixTimeMilliseconds{0},
+        .planning_horizon_end = UnixTimeMilliseconds{10000},
+        .preserved_prefix = {},
+        .remaining_activities = {important, less_important, fixed},
+        .travel_time_matrix = &matrix,
+    };
+    PlannerScratch scratch;
+    const auto result = run_beam_search(input, budget(), scratch);
+    const auto first_path_capacity = scratch.path_nodes.capacity();
+    const auto repeated = run_beam_search(input, budget(), scratch);
+    if (result.outcome != BeamSearchOutcome::kComplete ||
+        !result.best_decisions || contains_skip(*result.best_decisions, 1) ||
+        !contains_skip(*result.best_decisions, 2) ||
+        repeated.outcome != result.outcome ||
+        repeated.best_decisions != result.best_decisions ||
+        repeated.expansion_count != result.expansion_count ||
+        repeated.candidate_count != result.candidate_count ||
+        repeated.search_was_truncated != result.search_was_truncated ||
+        scratch.path_nodes.capacity() < first_path_capacity) {
+      return 1;
     }
   }
 
@@ -174,12 +211,12 @@ int main() {
     const auto limited = run_beam_search(input, budget(1));
     if (limited.outcome != BeamSearchOutcome::kSearchLimited ||
         limited.has_complete_candidate() || !limited.search_was_truncated) {
-      return 21;
+      return 1;
     }
     const auto widened = run_beam_search(input, budget(2));
     if (widened.outcome != BeamSearchOutcome::kComplete ||
         !widened.has_complete_candidate()) {
-      return 22;
+      return 1;
     }
   }
 
@@ -199,7 +236,7 @@ int main() {
     const auto result = run_beam_search(input, budget());
     if (result.outcome != BeamSearchOutcome::kExhaustiveInfeasible ||
         result.search_was_truncated) {
-      return 31;
+      return 1;
     }
   }
 
@@ -222,7 +259,7 @@ int main() {
     const auto result = run_beam_search(input, budget(32, 1));
     if (result.outcome != BeamSearchOutcome::kSearchLimited ||
         result.has_complete_candidate()) {
-      return 41;
+      return 1;
     }
 
     std::stop_source stop_source;
@@ -231,7 +268,36 @@ int main() {
         run_beam_search(input, budget(32, 1000, 1000,
                                       stop_source.get_token()));
     if (cancelled.outcome != BeamSearchOutcome::kCancelled) {
-      return 42;
+      return 1;
+    }
+
+    auto expired_budget = budget();
+    expired_budget.deadline =
+        std::chrono::steady_clock::now() - std::chrono::milliseconds{1};
+    const auto expired = run_beam_search(input, expired_budget);
+    if (expired.outcome != BeamSearchOutcome::kDeadlineExceeded) {
+      return 1;
+    }
+  }
+
+  {
+    const auto flexible = activity(
+        11, 1, 0, ActivityClass::kFlexible, false, true, 0, 10000, 1,
+        PlanEntryState::kScheduled, 2000, 3000);
+    const auto matrix = zero_matrix(2);
+    const BeamSearchInput input{
+        .current_time = UnixTimeMilliseconds{0},
+        .planning_horizon_start = UnixTimeMilliseconds{0},
+        .planning_horizon_end = UnixTimeMilliseconds{10000},
+        .preserved_prefix = {},
+        .remaining_activities = {flexible},
+        .travel_time_matrix = &matrix,
+    };
+    const auto result = run_beam_search(input, budget(32, 1000, 1));
+    if (result.outcome != BeamSearchOutcome::kBestSoFar ||
+        !result.has_complete_candidate() || result.expansion_count != 1 ||
+        result.candidate_count != 1) {
+      return 1;
     }
   }
 

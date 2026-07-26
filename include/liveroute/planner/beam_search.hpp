@@ -39,10 +39,12 @@ struct ReplanBudget {
   }
 };
 
-// remaining_activities is in exact authoritative CurrentPlan suffix order,
-// including omitted entries; original_trip_ordinal is a separate stable trip
-// identity. Matrix index zero is the current location and remaining activity i
-// is matrix index i + 1. All values are normalized UTC/in-memory constraints.
+// preserved_prefix contains every immutable completed/skipped entry and any
+// started activity. remaining_activities is in exact authoritative CurrentPlan
+// suffix order, including omitted entries; original_trip_ordinal is a separate
+// stable trip identity. Matrix index zero is the current location at the
+// effective suffix start and remaining activity i is matrix index i + 1. All
+// values are normalized UTC/in-memory constraints.
 struct BeamSearchInput {
   domain::UnixTimeMilliseconds current_time;
   domain::UnixTimeMilliseconds planning_horizon_start;
@@ -52,6 +54,7 @@ struct BeamSearchInput {
   const domain::TravelTimeMatrix* travel_time_matrix{};
 
   [[nodiscard]] bool is_valid() const noexcept;
+  [[nodiscard]] domain::UnixTimeMilliseconds suffix_start_time() const noexcept;
 };
 
 enum class CandidateAlternativeKind : std::uint8_t {
@@ -120,10 +123,48 @@ struct BeamSearchResult {
   }
 };
 
+struct BeamPathNode {
+  std::optional<std::size_t> parent_path_index;
+  ExpansionDecision decision;
+};
+
+struct BeamScratchCandidate {
+  std::optional<std::size_t> path_index;
+  std::size_t depth{};
+  CandidateScore score;
+};
+
+// Worker-owned reusable storage. Candidate paths are represented by parent
+// indices so expansion does not copy every prior decision into every child.
+struct PlannerScratch {
+  std::vector<BeamPathNode> path_nodes;
+  std::vector<BeamScratchCandidate> beam;
+  std::vector<BeamScratchCandidate> children;
+  std::vector<std::size_t> activity_order;
+  std::vector<std::uint8_t> decided;
+  std::vector<ExpansionDecision> working_decisions;
+  std::vector<ExpansionDecision> comparison_left;
+  std::vector<ExpansionDecision> comparison_right;
+
+  void reset() noexcept {
+    path_nodes.clear();
+    beam.clear();
+    children.clear();
+    activity_order.clear();
+    decided.clear();
+    working_decisions.clear();
+    comparison_left.clear();
+    comparison_right.clear();
+  }
+};
+
 // Runs the deterministic finite V1 beam traversal. A bounded search that
 // discarded feasible partials or exhausted a candidate budget never reports
 // exhaustive infeasibility.
 [[nodiscard]] BeamSearchResult run_beam_search(
     const BeamSearchInput& input, const ReplanBudget& budget);
+[[nodiscard]] BeamSearchResult run_beam_search(
+    const BeamSearchInput& input, const ReplanBudget& budget,
+    PlannerScratch& scratch);
 
 }  // namespace liveroute::planner

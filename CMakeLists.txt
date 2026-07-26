@@ -26,6 +26,7 @@ add_library(liveroute_domain
   src/domain/activity.cpp
   src/domain/hours.cpp
   src/domain/current_plan.cpp
+  src/domain/plan_proposal.cpp
   src/providers/sha256.cpp
   src/providers/seeded_hours_seed.cpp
   src/providers/seeded_hours_provider.cpp
@@ -33,6 +34,7 @@ add_library(liveroute_domain
   src/providers/tzif.cpp
   src/domain/travel_time_matrix.cpp
   src/planner/beam_search.cpp
+  src/planner/candidate_itinerary.cpp
   src/routing/travel_time_provider.cpp
   src/runtime/trip_runtime_versions.cpp
 )
@@ -96,6 +98,15 @@ add_test(NAME liveroute_beam_search_traversal_test
   COMMAND liveroute_beam_search_traversal_test
 )
 
+add_executable(liveroute_candidate_itinerary_test
+  tests/candidate_itinerary_test.cpp
+)
+target_link_libraries(liveroute_candidate_itinerary_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_candidate_itinerary_test)
+add_test(NAME liveroute_candidate_itinerary_test
+  COMMAND liveroute_candidate_itinerary_test
+)
+
 add_executable(liveroute_checked_int_test tests/checked_int_test.cpp)
 target_include_directories(liveroute_checked_int_test PRIVATE include)
 liveroute_configure_target(liveroute_checked_int_test)
@@ -110,6 +121,11 @@ add_executable(liveroute_current_plan_test tests/current_plan_test.cpp)
 target_link_libraries(liveroute_current_plan_test PRIVATE liveroute_domain)
 liveroute_configure_target(liveroute_current_plan_test)
 add_test(NAME liveroute_current_plan_test COMMAND liveroute_current_plan_test)
+
+add_executable(liveroute_plan_proposal_test tests/plan_proposal_test.cpp)
+target_link_libraries(liveroute_plan_proposal_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_plan_proposal_test)
+add_test(NAME liveroute_plan_proposal_test COMMAND liveroute_plan_proposal_test)
 
 add_executable(liveroute_tzif_test tests/tzif_test.cpp)
 target_link_libraries(liveroute_tzif_test PRIVATE liveroute_domain)
