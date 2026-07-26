@@ -98,5 +98,35 @@ int main() {
     return 1;
   }
 
+  TripRuntimeVersions terminal_versions;
+  if (!has_status(terminal_versions.bootstrap(7, 3, 4, 0),
+                  VersionOperationStatus::kAccepted)) {
+    return 1;
+  }
+  const auto before_terminal = terminal_versions.snapshot();
+  if (!has_status(terminal_versions.resolve_terminal_durable(7, 6, 3),
+                  VersionOperationStatus::kStale) ||
+      !has_status(terminal_versions.resolve_terminal_durable(7, 5, 4),
+                  VersionOperationStatus::kStale) ||
+      !has_status(terminal_versions.resolve_terminal_durable(7, 5, 3),
+                  VersionOperationStatus::kAccepted)) {
+    return 1;
+  }
+  const auto after_terminal = terminal_versions.snapshot();
+  if (after_terminal.accepted_mutation_sequence != 5 ||
+      after_terminal.trip_revision != before_terminal.trip_revision ||
+      after_terminal.planner_state_version !=
+          before_terminal.planner_state_version ||
+      after_terminal.planning_generation != before_terminal.planning_generation ||
+      after_terminal.finalized_mutation_sequence != 4 ||
+      terminal_versions.snapshot_ready() ||
+      !has_status(terminal_versions.resolve_terminal_durable(7, 5, 3),
+                  VersionOperationStatus::kDuplicate) ||
+      !has_status(terminal_versions.confirm_finalized(7, 5),
+                  VersionOperationStatus::kAccepted) ||
+      !terminal_versions.snapshot_ready()) {
+    return 1;
+  }
+
   return 0;
 }

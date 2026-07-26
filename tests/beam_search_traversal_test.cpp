@@ -124,9 +124,57 @@ bool contains_skip(
   return false;
 }
 
+bool contains_schedule(
+    const std::vector<liveroute::planner::ExpansionDecision>& decisions,
+    std::size_t ordinal, std::int64_t start, std::int64_t end) {
+  for (const auto& decision : decisions) {
+    if (decision.activity_ordinal == ordinal && decision.decision == 0 &&
+        decision.start_unix_ms == start && decision.end_unix_ms == end) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 int main() {
+  {
+    const auto first = activity(
+        12, 1, 0, ActivityClass::kFlexible, false, true, 0, 10000, 2,
+        PlanEntryState::kScheduled, 0, 2000);
+    const auto second = activity(
+        13, 2, 10, ActivityClass::kFlexible, false, true, 0, 10000, 2,
+        PlanEntryState::kScheduled, 3000, 5000);
+    auto estimates = std::vector<RouteEstimate>(
+        9, RouteEstimate{std::chrono::seconds{0}, 0, true});
+    estimates[0 * 3 + 1] =
+        RouteEstimate{std::chrono::seconds{2}, 1, true};
+    estimates[0 * 3 + 2] =
+        RouteEstimate{std::chrono::seconds{2}, 1, true};
+    estimates[1 * 3 + 2] =
+        RouteEstimate{std::chrono::seconds{1}, 1, true};
+    estimates[2 * 3 + 1] =
+        RouteEstimate{std::chrono::seconds{1}, 1, true};
+    const TravelTimeMatrix matrix(3, std::move(estimates));
+    const BeamSearchInput input{
+        .current_time = UnixTimeMilliseconds{1000},
+        .planning_horizon_start = UnixTimeMilliseconds{0},
+        .planning_horizon_end = UnixTimeMilliseconds{10000},
+        .preserved_prefix = {},
+        .remaining_activities = {first, second},
+        .travel_time_matrix = &matrix,
+    };
+    const auto result = run_beam_search(input, budget());
+    if (result.outcome != BeamSearchOutcome::kComplete ||
+        !result.best_decisions || contains_skip(*result.best_decisions, 1) ||
+        contains_skip(*result.best_decisions, 2) ||
+        !contains_schedule(*result.best_decisions, 1, 3000, 5000) ||
+        !contains_schedule(*result.best_decisions, 2, 6000, 8000)) {
+      return 1;
+    }
+  }
+
   {
     const auto optional = activity(1, 1, 10, ActivityClass::kFlexible,
                                    false, true, 0, 7000, 4,

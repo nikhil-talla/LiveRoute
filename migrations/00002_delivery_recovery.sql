@@ -43,10 +43,13 @@ CREATE TABLE command_intents (
   command_payload jsonb NOT NULL,
   state text NOT NULL CHECK (state IN ('pending', 'applied', 'rejected', 'expired')),
   outcome_status text NULL CHECK (outcome_status IS NULL OR outcome_status IN (
-    'accepted', 'accepted_degraded', 'rejected_invalid', 'rejected_stale',
-    'rejected_conflict', 'rejected_expired', 'rejected_unauthenticated',
-    'rejected_unauthorized', 'rejected_rate_limited', 'failed_internal',
-    'failed_unavailable'
+    'UNSPECIFIED', 'OK', 'DUPLICATE', 'STALE', 'INVALID_ARGUMENT',
+    'UNAUTHENTICATED', 'PERMISSION_DENIED', 'NOT_FOUND',
+    'IDEMPOTENCY_KEY_REUSED', 'INACTIVE_TRIP', 'RESOURCE_EXHAUSTED',
+    'DEADLINE_EXCEEDED', 'COMMAND_EXPIRED', 'CANCELLED', 'INFEASIBLE',
+    'PROVIDER_UNAVAILABLE', 'DURABILITY_UNAVAILABLE', 'UNAVAILABLE',
+    'UNSUPPORTED_VERSION', 'SNAPSHOT_NOT_READY', 'SNAPSHOT_INCOMPATIBLE',
+    'INTERNAL', 'MATRIX_TOO_LARGE'
   )),
   outcome_payload jsonb NULL,
   resulting_trip_revision bigint NULL,

@@ -83,7 +83,8 @@ struct CandidateAlternative {
 };
 
 // Generates the finite, boundary-derived V1 proposal set for one activity.
-// It deliberately does not search a time grid or derive new durations.
+// Moving a scheduled activity preserves its exact baseline duration; adding
+// back an omitted activity uses its preferred duration. V1 never shortens.
 [[nodiscard]] std::vector<CandidateAlternative> generate_candidate_alternatives(
     const BeamSearchInput& input, const PlanningActivity& activity,
     domain::UnixTimeMilliseconds arrival);

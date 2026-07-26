@@ -68,7 +68,9 @@ struct ProposalSegment {
   SegmentDisposition disposition;
   std::vector<PlanReasonCode> reasons;
 
-  [[nodiscard]] bool is_valid_for(const Activity& activity) const noexcept;
+  [[nodiscard]] bool is_valid_for(
+      const Activity& activity,
+      bool inbound_route_required = true) const noexcept;
 };
 
 struct PlanProposal {

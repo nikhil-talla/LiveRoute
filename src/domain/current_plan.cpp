@@ -16,7 +16,17 @@ bool CurrentPlanSegment::is_valid() const noexcept {
 }
 
 bool CurrentPlan::is_valid_for(std::span<const ActivityId> activity_ids) const {
-  if (plan_revision == 0 || segments.size() != activity_ids.size()) return false;
+  if (plan_revision == 0 || segments.size() > 64 ||
+      segments.size() != activity_ids.size()) {
+    return false;
+  }
+  switch (origin) {
+    case PlanOrigin::kUserAuthored:
+    case PlanOrigin::kAcceptedEngineProposal:
+      break;
+    default:
+      return false;
+  }
   if ((origin == PlanOrigin::kUserAuthored && source_proposal_id.has_value()) ||
       (origin == PlanOrigin::kAcceptedEngineProposal && !source_proposal_id.has_value())) {
     return false;

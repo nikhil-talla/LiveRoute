@@ -109,12 +109,28 @@ int main() {
   const auto boundary_alternatives = generate_candidate_alternatives(
       input_for(boundary_activity, &matrix), boundary_activity,
       UnixTimeMilliseconds{2000});
-  if (boundary_alternatives.size() != 5 ||
+  if (boundary_alternatives.size() != 3 ||
       !is_scheduled(boundary_alternatives[0], 2200, 7200) ||
-      !is_scheduled(boundary_alternatives[1], 2200, 4200) ||
-      !is_scheduled(boundary_alternatives[2], 4000, 9000, true) ||
-      !is_scheduled(boundary_alternatives[3], 4000, 6000) ||
-      boundary_alternatives[4].kind != CandidateAlternativeKind::kSkipped) {
+      !is_scheduled(boundary_alternatives[1], 4000, 9000, true) ||
+      boundary_alternatives[2].kind != CandidateAlternativeKind::kSkipped) {
+    return 1;
+  }
+
+  auto no_shortened_fit = boundary_activity;
+  no_shortened_fit.activity.timing.open_windows = {
+      {UnixTimeMilliseconds{1000}, UnixTimeMilliseconds{6000}}};
+  no_shortened_fit.current_plan_segment = {
+      .activity_id = no_shortened_fit.activity.activity_id,
+      .state = PlanEntryState::kScheduled,
+      .scheduled_start = UnixTimeMilliseconds{1000},
+      .scheduled_end = UnixTimeMilliseconds{6000},
+  };
+  const auto no_shortened_alternatives = generate_candidate_alternatives(
+      input_for(no_shortened_fit, &matrix), no_shortened_fit,
+      UnixTimeMilliseconds{2000});
+  if (no_shortened_alternatives.size() != 1 ||
+      no_shortened_alternatives.front().kind !=
+          CandidateAlternativeKind::kSkipped) {
     return 1;
   }
 

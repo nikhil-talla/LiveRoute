@@ -26,6 +26,7 @@ class StrongValue {
 };
 
 struct TripIdTag;
+struct EventIdTag;
 struct ActivityIdTag;
 struct PlanIdTag;
 struct ProposalIdTag;
@@ -36,6 +37,7 @@ struct PlannerStateVersionTag;
 struct UnixTimeMillisecondsTag;
 
 using TripId = StrongValue<TripIdTag, std::array<std::byte, 16>>;
+using EventId = StrongValue<EventIdTag, std::array<std::byte, 16>>;
 using ActivityId = StrongValue<ActivityIdTag, std::array<std::byte, 16>>;
 using PlanId = StrongValue<PlanIdTag, std::array<std::byte, 16>>;
 using ProposalId = StrongValue<ProposalIdTag, std::array<std::byte, 16>>;

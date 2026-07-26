@@ -97,6 +97,25 @@ VersionOperationResult TripRuntimeVersions::accept_durable(
   return accepted();
 }
 
+VersionOperationResult TripRuntimeVersions::resolve_terminal_durable(
+    std::uint64_t runtime_epoch, std::uint64_t mutation_sequence,
+    std::uint64_t expected_trip_revision) {
+  if (const auto epoch_result = validate_epoch(runtime_epoch); !epoch_result.accepted()) {
+    return epoch_result;
+  }
+  if (mutation_sequence <= snapshot_.accepted_mutation_sequence) return duplicate();
+  if (!can_increment(snapshot_.accepted_mutation_sequence) ||
+      mutation_sequence != snapshot_.accepted_mutation_sequence + 1) {
+    return stale(VersionStaleReason::kMutationSequence);
+  }
+  if (expected_trip_revision != snapshot_.trip_revision) {
+    return stale(VersionStaleReason::kTripRevision);
+  }
+
+  snapshot_.accepted_mutation_sequence = mutation_sequence;
+  return accepted();
+}
+
 VersionOperationResult TripRuntimeVersions::accept_observation(
     std::uint64_t runtime_epoch, std::uint64_t observation_sequence) {
   if (const auto epoch_result = validate_epoch(runtime_epoch); !epoch_result.accepted()) {

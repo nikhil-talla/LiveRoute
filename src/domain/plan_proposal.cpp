@@ -14,10 +14,11 @@ namespace {
   switch (disposition) {
     case SegmentDisposition::kPreserved:
     case SegmentDisposition::kMoved:
-    case SegmentDisposition::kShortened:
     case SegmentDisposition::kSkipped:
     case SegmentDisposition::kAdded:
       return true;
+    case SegmentDisposition::kShortened:
+      return false;
   }
   return false;
 }
@@ -69,7 +70,8 @@ namespace {
 
 }  // namespace
 
-bool ProposalSegment::is_valid_for(const Activity& activity) const noexcept {
+bool ProposalSegment::is_valid_for(const Activity& activity,
+                                   bool inbound_route_required) const noexcept {
   if (activity_id != activity.activity_id || !activity.is_valid() ||
       !location.is_valid() || !same_location(location, activity.location) ||
       time_zone_name.empty() ||
@@ -87,8 +89,10 @@ bool ProposalSegment::is_valid_for(const Activity& activity) const noexcept {
            !inbound_route.has_value();
   }
   return scheduled_start.has_value() && scheduled_end.has_value() &&
-         *scheduled_start < *scheduled_end && inbound_route.has_value() &&
-         inbound_route->is_valid() && inbound_route->reachable;
+         *scheduled_start < *scheduled_end &&
+         (!inbound_route_required || inbound_route.has_value()) &&
+         (!inbound_route.has_value() ||
+          (inbound_route->is_valid() && inbound_route->reachable));
 }
 
 bool PlanProposal::is_valid_for(std::span<const Activity> activities) const {
@@ -117,7 +121,8 @@ bool PlanProposal::is_valid_for(std::span<const Activity> activities) const {
   const auto validate_segment =
       [&](const ProposalSegment& segment, bool preserved) {
         const auto* activity = activity_for_id(activities, segment.activity_id);
-        if (activity == nullptr || !segment.is_valid_for(*activity) ||
+        if (activity == nullptr ||
+            !segment.is_valid_for(*activity, !preserved) ||
             (preserved &&
              segment.disposition != SegmentDisposition::kPreserved &&
              segment.disposition != SegmentDisposition::kSkipped)) {

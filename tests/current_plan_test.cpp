@@ -74,10 +74,29 @@ int main() {
   invalid_origin.source_proposal_id = id_with_first_byte<ProposalId>(std::byte{5});
   if (invalid_origin.is_valid_for(activities)) return 1;
 
+  auto unknown_origin = plan;
+  unknown_origin.origin = static_cast<PlanOrigin>(99);
+  if (unknown_origin.is_valid_for(activities)) return 1;
+
   auto accepted = plan;
   accepted.origin = PlanOrigin::kAcceptedEngineProposal;
   accepted.source_proposal_id = id_with_first_byte<ProposalId>(std::byte{5});
   if (!accepted.is_valid_for(activities)) return 1;
+
+  std::vector<ActivityId> too_many_ids;
+  auto too_many = plan;
+  too_many.segments.clear();
+  for (std::size_t index = 0; index < 65; ++index) {
+    const auto activity_id =
+        id_with_first_byte<ActivityId>(static_cast<std::byte>(index + 1));
+    too_many_ids.push_back(activity_id);
+    too_many.segments.push_back(
+        {.activity_id = activity_id,
+         .state = PlanEntryState::kOmitted,
+         .scheduled_start = std::nullopt,
+         .scheduled_end = std::nullopt});
+  }
+  if (too_many.is_valid_for(too_many_ids)) return 1;
 
   return 0;
 }

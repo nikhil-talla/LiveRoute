@@ -27,6 +27,8 @@ add_library(liveroute_domain
   src/domain/hours.cpp
   src/domain/current_plan.cpp
   src/domain/plan_proposal.cpp
+  src/domain/trip_event.cpp
+  src/domain/trip_state.cpp
   src/providers/sha256.cpp
   src/providers/seeded_hours_seed.cpp
   src/providers/seeded_hours_provider.cpp
@@ -35,6 +37,8 @@ add_library(liveroute_domain
   src/domain/travel_time_matrix.cpp
   src/planner/beam_search.cpp
   src/planner/candidate_itinerary.cpp
+  src/planner/proposal_assembler.cpp
+  src/planner/result_metadata.cpp
   src/routing/travel_time_provider.cpp
   src/runtime/trip_runtime_versions.cpp
 )
@@ -126,6 +130,30 @@ add_executable(liveroute_plan_proposal_test tests/plan_proposal_test.cpp)
 target_link_libraries(liveroute_plan_proposal_test PRIVATE liveroute_domain)
 liveroute_configure_target(liveroute_plan_proposal_test)
 add_test(NAME liveroute_plan_proposal_test COMMAND liveroute_plan_proposal_test)
+
+add_executable(liveroute_trip_event_test tests/trip_event_test.cpp)
+target_link_libraries(liveroute_trip_event_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_trip_event_test)
+add_test(NAME liveroute_trip_event_test COMMAND liveroute_trip_event_test)
+
+add_executable(liveroute_trip_state_test tests/trip_state_test.cpp)
+target_link_libraries(liveroute_trip_state_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_trip_state_test)
+add_test(NAME liveroute_trip_state_test COMMAND liveroute_trip_state_test)
+
+add_executable(liveroute_result_metadata_test tests/result_metadata_test.cpp)
+target_link_libraries(liveroute_result_metadata_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_result_metadata_test)
+add_test(NAME liveroute_result_metadata_test COMMAND liveroute_result_metadata_test)
+
+add_executable(liveroute_proposal_assembler_test
+  tests/proposal_assembler_test.cpp
+)
+target_link_libraries(liveroute_proposal_assembler_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_proposal_assembler_test)
+add_test(NAME liveroute_proposal_assembler_test
+  COMMAND liveroute_proposal_assembler_test
+)
 
 add_executable(liveroute_tzif_test tests/tzif_test.cpp)
 target_link_libraries(liveroute_tzif_test PRIVATE liveroute_domain)

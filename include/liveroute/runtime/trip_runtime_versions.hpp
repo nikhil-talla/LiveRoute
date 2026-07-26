@@ -56,6 +56,12 @@ class TripRuntimeVersions {
       std::uint64_t runtime_epoch, std::uint64_t mutation_sequence,
       std::uint64_t expected_trip_revision, bool advances_trip_revision);
 
+  // A terminal runtime-first rejection consumes its durable sequence but has
+  // no accepted state effect: planner and trip revisions remain unchanged.
+  [[nodiscard]] VersionOperationResult resolve_terminal_durable(
+      std::uint64_t runtime_epoch, std::uint64_t mutation_sequence,
+      std::uint64_t expected_trip_revision);
+
   [[nodiscard]] VersionOperationResult accept_observation(
       std::uint64_t runtime_epoch, std::uint64_t observation_sequence);
 

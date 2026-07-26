@@ -173,7 +173,7 @@ public:
 };
 ```
 
-`LocalDateRange`, `HoursInfo`, `HoursProviderError`, `HoursLookupResult`, the seeded-hours JSON shape/source digest, and the 32-day bound are exact in `plans/LiveRouteV1ContractSpec.md`. A success returns normalized UTC windows; errors remain internal provider-domain values until the service boundary maps them. The planner only sees in-memory constraints such as open windows, reservation start/grace, min/preferred/max duration, and whether an activity is mandatory, movable, skippable, or shorten-able. The planner must not call Google Places, Yelp, OpenStreetMap, scrape websites, or parse provider responses while evaluating candidates.
+`LocalDateRange`, `HoursInfo`, `HoursProviderError`, `HoursLookupResult`, the seeded-hours JSON shape/source digest, and the 32-day bound are exact in `plans/LiveRouteV1ContractSpec.md`. A success returns normalized UTC windows; errors remain internal provider-domain values until the service boundary maps them. The planner only sees in-memory constraints such as open windows, reservation start/grace, min/preferred/max duration, and whether an activity is mandatory, movable, or skippable. The compatibility-only `can_shorten` value does not change V1 planner behavior. The planner must not call Google Places, Yelp, OpenStreetMap, scrape websites, or parse provider responses while evaluating candidates.
 
 V1 accepts IANA zones whose pinned IANA tzdata 2026c entry includes country `US`. The seed file must validate against `schema/hours/liveroute-v1-hours-seed.schema.json` and `config/tzdata.lock`. Before reporting ready, the seeded provider validates recurring endpoints over every requestable opening date from `1970-01-01` through `9999-12-30` plus next-day closes. It does this by caching each distinct zone's finite TZif gap/fold transitions, including POSIX-footer recurrences through the upper bound, and comparing recurring endpoint tuples; it does not expand every date and must not defer semantic validation until lookup. CLI/fixture/seed ingestion rejects DST gaps, requires explicit valid offsets for exceptional DST folds, expands overnight/exception hours, and converts local input to UTC Unix milliseconds. The backend revalidates normalized values; the planner operates only on UTC, and output carries the activity IANA zone for display conversion after replanning.
 
@@ -287,15 +287,16 @@ Implement incremental planning:
 - Treat the current plan as the baseline chosen by the user. Planner output is a proposal and cannot update that baseline without a later user command.
 - Preserve completed activities and enforce fixed/reservation constraints, returning no feasible proposal rather than violating them.
 - Preserve every completed/skipped prefix entry and any started activity unchanged. Begin suffix travel/scheduling at the later of current time and the last scheduled preserved-prefix end.
-- Allow flexible activities to be moved, shortened, skipped, or reordered according to explicit activity constraints.
+- Allow flexible activities to be moved, skipped, or reordered according to explicit activity constraints. V1 never shortens an activity: moving a scheduled activity preserves its current-plan duration, and adding back an omitted activity uses its preferred positive duration.
 - Implement the exact `liveroute-v1-lexicographic-1` hard-feasibility rules, complete-candidate tuple, optimistic partial-candidate tuple, and canonical tie-breaker in `plans/LiveRouteV1ContractSpec.md`. Do not add scalar weights or runtime score tuning.
-- Implement its exact finite candidate generator and generation order: beam branches choose activity order/skip; scheduled alternatives are limited to legal current-plan and earliest-reachable window boundaries with the contracted preferred/capped and minimum duration choices. Do not add time-grid sampling, continuous optimization, or unversioned intermediate-duration heuristics.
+- Implement its exact finite candidate generator and generation order: beam branches choose activity order/skip; scheduled alternatives are limited to legal current-plan and earliest-reachable window boundaries with one fixed duration per activity. Use matrix travel to derive arrival at every placement, rank all-scheduled moves ahead of skips, and sacrifice less-important activities first when skipping is required. Do not add time-grid sampling, continuous optimization, or variable-duration heuristics.
 - Apply the zero-travel protected-activity lower-bound check before candidate accounting/beam retention, track every beam-width or candidate-budget truncation, and reserve `INFEASIBLE` for an untruncated exhaustive proof. A bounded search with no complete result maps to `OK/NO_NEW_PROPOSAL`.
 - Assemble `BeamSearchInput.remaining_activities` in authoritative current-plan suffix order, including omitted entries; retain `original_trip_ordinal` separately. Compute `changed_activity_count` with the exact common-scheduled-sequence rule so adding/removing one activity does not mark every later activity reordered.
 - Use `PlannerScratch` with reusable vectors, candidate pools, and parent indices to avoid copying entire plans.
 - Add `ReplanBudget` containing deadline, max candidates, beam width, max expansions, and stop token. Count one expansion per actual parent/activity generator invocation, including a zero-result invocation, but never enumerate or count hypothetical alternatives rejected before generator emission.
 - Return best-so-far if the deadline or cancellation token fires.
-- Enforce normalized time-window constraints in memory: activity start must fall inside an open window, finish must occur at or before close, reservation windows are hard, and flexible activities may be shortened, moved, or skipped only when their flags allow it.
+- Enforce normalized time-window constraints in memory: activity start must fall inside an open window, finish must occur at or before close, reservation windows are hard, and flexible activities may be moved or skipped only when their flags allow it. Retain `can_shorten` for compatibility but do not use it to generate a V1 proposal.
+- Derive result/segment reasons and the single notification with the exact trigger/fact/outcome table and precedence in `plans/LiveRouteV1ContractSpec.md`. Keep reason lists sorted/unique, attach causal reasons only to changed segments, and never let handlers or serializers invent labels.
 
 Implement OSRM integration:
 
@@ -391,7 +392,7 @@ Correctness tests:
 - Stale event is rejected or ignored.
 - Completed activities are never replanned.
 - A reservation/fixed constraint is either satisfied exactly as contracted or no feasible proposal is returned.
-- Flexible activities may be moved, shortened, or skipped.
+- Flexible activities may be moved or skipped; proposed moves preserve their existing duration, and lower-priority optional activities are skipped first when movement alone cannot produce a feasible suffix.
 - No returned engine proposal has overlapping activities.
 - No returned engine proposal violates operating-hours windows.
 - Every proposed segment allows enough travel time from the previous location.

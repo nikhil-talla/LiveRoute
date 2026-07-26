@@ -61,13 +61,9 @@ using domain::UnixTimeMilliseconds;
 
   const auto duration_ms = checked_subtract(end, start);
   const auto min_duration_ms = seconds_to_milliseconds(timing.min_duration_seconds);
-  const auto preferred_duration_ms =
-      seconds_to_milliseconds(timing.preferred_duration_seconds);
   const auto max_duration_ms = seconds_to_milliseconds(timing.max_duration_seconds);
-  if (!duration_ms || !min_duration_ms || !preferred_duration_ms ||
-      !max_duration_ms || *duration_ms < *min_duration_ms ||
-      *duration_ms > *max_duration_ms ||
-      (!timing.can_shorten && *duration_ms < *preferred_duration_ms)) {
+  if (!duration_ms || !min_duration_ms || !max_duration_ms ||
+      *duration_ms < *min_duration_ms || *duration_ms > *max_duration_ms) {
     return false;
   }
 
@@ -92,62 +88,35 @@ using domain::UnixTimeMilliseconds;
   return start < latest_end;
 }
 
-void add_generated_durations(const BeamSearchInput& input,
-                             const PlanningActivity& planning_activity,
-                             std::int64_t arrival, const TimeWindow& window,
-                             std::int64_t start,
-                             std::vector<CandidateAlternative>* alternatives) {
+void add_generated_interval(const BeamSearchInput& input,
+                            const PlanningActivity& planning_activity,
+                            std::int64_t arrival, const TimeWindow& window,
+                            std::int64_t start,
+                            std::vector<CandidateAlternative>* alternatives) {
   const auto& timing = planning_activity.activity.timing;
   if (!has_positive_legal_room(input, planning_activity, window, start)) return;
 
-  std::int64_t latest_end =
-      std::min(window.closes_at.value(), input.planning_horizon_end.value());
-  if (timing.mandatory_deadline.has_value()) {
-    latest_end = std::min(latest_end, timing.mandatory_deadline->value());
-  }
-  const auto remaining_ms = checked_subtract(latest_end, start);
-  const auto max_duration_ms = seconds_to_milliseconds(timing.max_duration_seconds);
-  if (!remaining_ms || !max_duration_ms) return;
-
-  const auto remaining_seconds = *remaining_ms / 1000;
-  const auto finish_cap_seconds =
-      std::min(remaining_seconds, *max_duration_ms / 1000);
-  const std::int64_t minimum_positive_seconds =
-      std::max<std::int64_t>(1, timing.min_duration_seconds);
-  if (finish_cap_seconds < minimum_positive_seconds) return;
-
-  std::vector<std::int64_t> durations_seconds;
-  if (!timing.can_shorten) {
-    if (timing.preferred_duration_seconds > 0 &&
-        timing.preferred_duration_seconds <= finish_cap_seconds) {
-      durations_seconds.push_back(timing.preferred_duration_seconds);
-    }
+  std::optional<std::int64_t> duration_ms;
+  if (planning_activity.current_plan_segment.state ==
+      domain::PlanEntryState::kScheduled) {
+    duration_ms = checked_subtract(
+        planning_activity.current_plan_segment.scheduled_end->value(),
+        planning_activity.current_plan_segment.scheduled_start->value());
   } else {
-    const auto preferred_or_cap = std::min<std::int64_t>(
-        std::max<std::int64_t>(1, timing.preferred_duration_seconds),
-        finish_cap_seconds);
-    if (preferred_or_cap >= minimum_positive_seconds) {
-      durations_seconds.push_back(preferred_or_cap);
-    }
-    if (minimum_positive_seconds != preferred_or_cap) {
-      durations_seconds.push_back(minimum_positive_seconds);
-    }
+    const auto duration_seconds =
+        std::max<std::uint32_t>(1, timing.preferred_duration_seconds);
+    duration_ms = checked_milliseconds(duration_seconds);
   }
-
-  for (const auto duration_seconds : durations_seconds) {
-    const auto duration_ms = checked_milliseconds(
-        static_cast<std::uint32_t>(duration_seconds));
-    const auto end = duration_ms ? checked_add(start, *duration_ms) : std::nullopt;
-    if (!end || !is_locally_hard_feasible(input, planning_activity, arrival, start,
-                                           *end)) {
-      continue;
-    }
-    alternatives->push_back({.kind = CandidateAlternativeKind::kScheduled,
-                             .activity_ordinal = planning_activity.original_trip_ordinal,
-                             .start = UnixTimeMilliseconds{start},
-                             .end = UnixTimeMilliseconds{*end},
-                             .is_exact_current_plan = false});
+  const auto end = duration_ms ? checked_add(start, *duration_ms) : std::nullopt;
+  if (!end || !is_locally_hard_feasible(input, planning_activity, arrival, start,
+                                         *end)) {
+    return;
   }
+  alternatives->push_back({.kind = CandidateAlternativeKind::kScheduled,
+                           .activity_ordinal = planning_activity.original_trip_ordinal,
+                           .start = UnixTimeMilliseconds{start},
+                           .end = UnixTimeMilliseconds{*end},
+                           .is_exact_current_plan = false});
 }
 
 void add_exact_current_plan(const BeamSearchInput& input,
@@ -413,8 +382,8 @@ std::vector<CandidateAlternative> generate_candidate_alternatives(
         earliest_start = std::max(earliest_start, timing.reservation_start->value());
       }
       if (has_positive_legal_room(input, planning_activity, window, earliest_start)) {
-        add_generated_durations(input, planning_activity, arrival.value(), window,
-                                earliest_start, &alternatives);
+        add_generated_interval(input, planning_activity, arrival.value(), window,
+                               earliest_start, &alternatives);
       }
 
       if (activity.activity_class != domain::ActivityClass::kFixed &&
@@ -424,8 +393,8 @@ std::vector<CandidateAlternative> generate_candidate_alternatives(
             current_start >= window.opens_at.value() &&
             current_start < window.closes_at.value() &&
             has_positive_legal_room(input, planning_activity, window, current_start)) {
-          add_generated_durations(input, planning_activity, arrival.value(), window,
-                                  current_start, &alternatives);
+          add_generated_interval(input, planning_activity, arrival.value(), window,
+                                 current_start, &alternatives);
         }
       }
     }

@@ -148,15 +148,21 @@ int main() {
   wrong_location.revised_suffix.front().location.latitude = 0;
   auto missing_route = valid;
   missing_route.revised_suffix.front().inbound_route = std::nullopt;
+  auto prefix_without_route = valid;
+  prefix_without_route.preserved_prefix.front().inbound_route = std::nullopt;
   auto unreachable = valid;
   unreachable.revised_suffix.front().inbound_route->reachable = false;
   auto unspecified_disposition = valid;
   unspecified_disposition.revised_suffix.front().disposition =
       static_cast<SegmentDisposition>(0);
+  auto shortened = valid;
+  shortened.revised_suffix.front().disposition =
+      SegmentDisposition::kShortened;
   auto unspecified_reason = valid;
   unspecified_reason.revised_suffix.front().reasons = {
       static_cast<PlanReasonCode>(0)};
-  if (no_epoch.is_valid_for(activities) ||
+  if (!prefix_without_route.is_valid_for(activities) ||
+      no_epoch.is_valid_for(activities) ||
       no_revision.is_valid_for(activities) ||
       no_sequence.is_valid_for(activities) ||
       duplicate.is_valid_for(activities) ||
@@ -166,6 +172,7 @@ int main() {
       missing_route.is_valid_for(activities) ||
       unreachable.is_valid_for(activities) ||
       unspecified_disposition.is_valid_for(activities) ||
+      shortened.is_valid_for(activities) ||
       unspecified_reason.is_valid_for(activities)) {
     return 1;
   }

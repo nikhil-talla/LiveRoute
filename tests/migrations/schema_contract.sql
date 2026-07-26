@@ -91,6 +91,19 @@ BEGIN
     NULL;
   END;
 
+  INSERT INTO command_intents (
+    id, trip_id, message_id, event_id, mutation_sequence, expected_trip_revision,
+    command_kind, application_order, digest_algorithm, payload_digest,
+    command_payload, state, outcome_status, runtime_sync_state, recorded_at
+  ) VALUES (
+    '16161616-1616-1616-1616-161616161616', trip_id,
+    '17171717-1717-1717-1717-171717171717',
+    '18181818-1818-1818-1818-181818181818', 5, 1,
+    'activity_status_changed', 'runtime_first', 'rfc8785-sha256-v1',
+    decode(repeat('00', 32), 'hex'), '{}'::jsonb, 'applied', 'OK',
+    'not_required', clock_timestamp()
+  );
+
   INSERT INTO plan_proposals (
     id, trip_id, base_current_plan_id, source_runtime_epoch,
     source_planner_state_version, source_trip_revision,
