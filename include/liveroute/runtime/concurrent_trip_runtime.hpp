@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "liveroute/domain/plan_proposal.hpp"
 #include "liveroute/domain/trip_state.hpp"
@@ -34,6 +35,7 @@ struct ConcurrentRuntimeConfiguration {
 
 struct RuntimeBootstrapRequest {
   domain::TripState state;
+  std::string owner_user_id;
   std::uint64_t runtime_epoch{};
   std::uint64_t trip_revision{};
   std::uint64_t finalized_mutation_sequence{};
@@ -91,6 +93,15 @@ enum class RuntimePlanningStatus : std::uint8_t {
   kInternal,
 };
 
+enum class RuntimeControlStatus : std::uint8_t {
+  kOk,
+  kDuplicate,
+  kStale,
+  kInvalidArgument,
+  kInactive,
+  kSnapshotNotReady,
+};
+
 struct RuntimeStageTimings {
   std::uint64_t queue_wait_microseconds{};
   std::uint64_t event_application_microseconds{};
@@ -104,6 +115,8 @@ struct RuntimeStageTimings {
 struct RuntimeBootstrapResult {
   RuntimeBootstrapStatus status;
   TripRuntimeVersionSnapshot versions;
+  std::optional<domain::PlanId> current_plan_id;
+  std::optional<domain::StoredPlanProposal> retained_proposal;
 };
 
 struct RuntimeEventAcknowledgement {
@@ -114,11 +127,21 @@ struct RuntimeEventAcknowledgement {
 struct RuntimePlanningDelivery {
   domain::TripId trip_id;
   std::optional<std::uint64_t> stream_binding;
+  TripRuntimeVersionSnapshot versions;
   RuntimePlanningStatus status;
   bool retryable{};
   bool coalesced_replacement_pending{};
   RuntimeStageTimings timings;
   std::optional<domain::StoredPlanProposal> proposal;
+};
+
+struct RuntimeControlResult {
+  RuntimeControlStatus status;
+  VersionStaleReason stale_reason{VersionStaleReason::kNone};
+  bool retryable{};
+  TripRuntimeVersionSnapshot versions;
+  std::optional<domain::TripState> snapshot_state;
+  std::string owner_user_id;
 };
 
 // Callbacks are transport adapters: they must perform only a non-blocking
@@ -128,6 +151,7 @@ using BootstrapCallback = std::function<void(RuntimeBootstrapResult)>;
 using EventAcknowledgementCallback =
     std::function<void(RuntimeEventAcknowledgement)>;
 using ProposalSink = std::function<bool(RuntimePlanningDelivery)>;
+using ControlCallback = std::function<void(RuntimeControlResult)>;
 
 class ConcurrentTripRuntime {
  public:
@@ -143,9 +167,23 @@ class ConcurrentTripRuntime {
       RuntimeBootstrapRequest request, BootstrapCallback callback);
   [[nodiscard]] RuntimeSubmissionStatus try_apply_event(
       RuntimeEventRequest request, EventAcknowledgementCallback callback);
+  [[nodiscard]] RuntimeSubmissionStatus try_confirm_finalized(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      std::uint64_t finalized_mutation_sequence, ControlCallback callback);
+  [[nodiscard]] RuntimeSubmissionStatus try_snapshot(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      std::uint64_t minimum_finalized_mutation_sequence,
+      std::uint64_t minimum_planner_state_version, ControlCallback callback);
+  [[nodiscard]] RuntimeSubmissionStatus try_deactivate(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      bool final_snapshot_required, ControlCallback callback);
+  [[nodiscard]] RuntimeSubmissionStatus try_abort_deactivation(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      ControlCallback callback);
 
-  // Removes only the matching transport binding. Trip state and retained
-  // proposals remain shard-owned and active.
+  // Removes only the matching transport binding and cooperatively cancels
+  // replaceable work. Trip state and retained committed proposals remain
+  // shard-owned and active.
   [[nodiscard]] RuntimeSubmissionStatus try_unbind_stream(
       const domain::TripId& trip_id, std::uint64_t runtime_epoch,
       std::uint64_t stream_binding);

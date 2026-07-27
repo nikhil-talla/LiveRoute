@@ -245,6 +245,7 @@ int main() {
   for (const auto& state : {first, second}) {
     if (runtime.try_bootstrap(
             {.state = state,
+             .owner_user_id = {},
              .runtime_epoch = 7,
              .trip_revision = 1,
              .finalized_mutation_sequence = 1,
@@ -274,6 +275,7 @@ int main() {
   const auto third = trip(90);
   if (runtime.try_bootstrap(
           {.state = third,
+           .owner_user_id = {},
            .runtime_epoch = 7,
            .trip_revision = 1,
            .finalized_mutation_sequence = 1,
@@ -398,6 +400,7 @@ int main() {
   bool coalescing_bootstrapped = false;
   if (coalescing_runtime.try_bootstrap(
           {.state = first,
+           .owner_user_id = {},
            .runtime_epoch = 7,
            .trip_revision = 1,
            .finalized_mutation_sequence = 1,
@@ -486,6 +489,7 @@ int main() {
   for (const auto& state : {first, second}) {
     if (concurrent_runtime.try_bootstrap(
             {.state = state,
+             .owner_user_id = {},
              .runtime_epoch = 7,
              .trip_revision = 1,
              .finalized_mutation_sequence = 1,
@@ -558,6 +562,7 @@ int main() {
       provider, [](RuntimePlanningDelivery) { return true; });
   if (response_capacity_runtime.try_bootstrap(
           {.state = first,
+           .owner_user_id = {},
            .runtime_epoch = 7,
            .trip_revision = 1,
            .finalized_mutation_sequence = 1,
@@ -583,6 +588,7 @@ int main() {
   }
   if (response_capacity_runtime.try_bootstrap(
           {.state = second,
+           .owner_user_id = {},
            .runtime_epoch = 7,
            .trip_revision = 1,
            .finalized_mutation_sequence = 1,
@@ -628,6 +634,7 @@ int main() {
       });
   if (mixed_runtime.try_bootstrap(
           {.state = mixed,
+           .owner_user_id = {},
            .runtime_epoch = 7,
            .trip_revision = 1,
            .finalized_mutation_sequence = 1,

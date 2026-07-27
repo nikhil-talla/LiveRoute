@@ -1,9 +1,8 @@
 name: liveroute
 
-# The skeleton builds the C++ service. The hours-assets check builds the exact
-# local seed plus pinned tzdata used by the future seeded-hours adapter. The
-# backend, PostgreSQL, OSRM, and dependency-aware readiness checks are added
-# with their implementation slices.
+# The skeleton gate builds and tests the C++ service. The planner profile runs
+# the Phase 8 gRPC boundary and its minimal protocol/ping client. PostgreSQL,
+# OSRM, the backend, and dependency-aware readiness arrive in their own slices.
 services:
   planner-skeleton:
     build:
@@ -11,6 +10,25 @@ services:
       dockerfile: docker/cpp/Dockerfile
     command: ["--self-check"]
     profiles: ["skeleton"]
+
+  planner-service:
+    build:
+      context: .
+      dockerfile: docker/cpp/Dockerfile
+    command: ["--listen=0.0.0.0:50051"]
+    ports:
+      - "127.0.0.1:50051:50051"
+    profiles: ["planner"]
+
+  planner-cli:
+    build:
+      context: .
+      dockerfile: docker/cpp/Dockerfile
+    entrypoint: ["/workspace/build/liveroute_planner_cli"]
+    command: ["planner-service:50051"]
+    depends_on:
+      - planner-service
+    profiles: ["planner"]
 
   hours-assets-check:
     build:

@@ -260,6 +260,30 @@ struct RouteRequest {
   return RuntimeBootstrapStatus::kInvalidArgument;
 }
 
+[[nodiscard]] RuntimeControlResult map_control_result(
+    VersionOperationResult result,
+    const TripRuntimeVersionSnapshot& versions) noexcept {
+  switch (result.status) {
+    case VersionOperationStatus::kAccepted:
+      return {RuntimeControlStatus::kOk, VersionStaleReason::kNone, false,
+              versions, std::nullopt, {}};
+    case VersionOperationStatus::kDuplicate:
+      return {RuntimeControlStatus::kDuplicate, VersionStaleReason::kNone,
+              false, versions, std::nullopt, {}};
+    case VersionOperationStatus::kStale:
+      return {RuntimeControlStatus::kStale, result.stale_reason, false,
+              versions, std::nullopt, {}};
+    case VersionOperationStatus::kInvalidArgument:
+      return {RuntimeControlStatus::kInvalidArgument,
+              VersionStaleReason::kNone, false, versions, std::nullopt, {}};
+    case VersionOperationStatus::kInactive:
+      return {RuntimeControlStatus::kInactive, VersionStaleReason::kNone, true,
+              versions, std::nullopt, {}};
+  }
+  return {RuntimeControlStatus::kInvalidArgument, VersionStaleReason::kNone,
+          false, versions, std::nullopt, {}};
+}
+
 }  // namespace
 
 bool ConcurrentRuntimeConfiguration::is_valid() const noexcept {
@@ -308,8 +332,10 @@ class ConcurrentTripRuntime::Impl {
 
   struct ActiveTrip {
     domain::TripState state;
+    std::string owner_user_id;
     TripRuntimeVersions versions;
     std::optional<std::uint64_t> stream_binding;
+    bool deactivation_pending{};
     bool planning_running{};
     std::shared_ptr<std::stop_source> planning_stop;
     std::optional<PendingPlanning> pending;
@@ -335,7 +361,26 @@ class ConcurrentTripRuntime::Impl {
               auto found = trips.find(request.state.trip_id);
               if (!request.state.is_valid() ||
                   request.state.active_proposal.has_value()) {
-                callback({RuntimeBootstrapStatus::kInvalidArgument, {}});
+                callback({RuntimeBootstrapStatus::kInvalidArgument, {},
+                          std::nullopt, std::nullopt});
+                return;
+              }
+              const auto observation_is_present =
+                  request.state.current_observation.location.has_value() ||
+                  request.state.current_observation.observed_at.has_value() ||
+                  request.state.current_observation
+                      .velocity_meters_per_second.has_value() ||
+                  request.state.current_observation.heading_degrees
+                      .has_value();
+              const auto is_higher_epoch =
+                  found == trips.end() ||
+                  request.runtime_epoch >
+                      found->second.versions.snapshot().runtime_epoch;
+              if (is_higher_epoch &&
+                  (request.current_observation_sequence != 0 ||
+                   observation_is_present)) {
+                callback({RuntimeBootstrapStatus::kInvalidArgument, {},
+                          std::nullopt, std::nullopt});
                 return;
               }
               if (found == trips.end()) {
@@ -347,7 +392,8 @@ class ConcurrentTripRuntime::Impl {
                            std::memory_order_relaxed)) {
                 }
                 if (current >= configuration_.max_active_trips) {
-                  callback({RuntimeBootstrapStatus::kResourceExhausted, {}});
+                  callback({RuntimeBootstrapStatus::kResourceExhausted, {},
+                            std::nullopt, std::nullopt});
                   return;
                 }
 
@@ -358,20 +404,26 @@ class ConcurrentTripRuntime::Impl {
                     request.current_observation_sequence);
                 if (!status.accepted()) {
                   active_trip_count_.fetch_sub(1, std::memory_order_release);
-                  callback({RuntimeBootstrapStatus::kInvalidArgument, {}});
+                  callback({RuntimeBootstrapStatus::kInvalidArgument, {},
+                            std::nullopt, std::nullopt});
                   return;
                 }
                 auto [inserted, unused] = trips.emplace(
                     request.state.trip_id,
                     ActiveTrip{.state = std::move(request.state),
+                               .owner_user_id =
+                                   std::move(request.owner_user_id),
                                .versions = std::move(versions),
                                .stream_binding = request.stream_binding,
+                               .deactivation_pending = false,
                                .planning_running = false,
                                .planning_stop = nullptr,
                                .pending = std::nullopt});
                 (void)unused;
                 callback({RuntimeBootstrapStatus::kAccepted,
-                          inserted->second.versions.snapshot()});
+                          inserted->second.versions.snapshot(),
+                          inserted->second.state.current_plan.plan_id,
+                          inserted->second.state.active_proposal});
                 return;
               }
 
@@ -384,14 +436,19 @@ class ConcurrentTripRuntime::Impl {
                   found->second.planning_stop->request_stop();
                 }
                 found->second.state = std::move(request.state);
+                found->second.owner_user_id =
+                    std::move(request.owner_user_id);
                 found->second.stream_binding = request.stream_binding;
+                found->second.deactivation_pending = false;
                 found->second.pending.reset();
               } else if (status.status == VersionOperationStatus::kDuplicate &&
                          request.stream_binding.has_value()) {
                 found->second.stream_binding = request.stream_binding;
               }
               callback({map_bootstrap_status(status.status),
-                        found->second.versions.snapshot()});
+                        found->second.versions.snapshot(),
+                        found->second.state.current_plan.plan_id,
+                        found->second.state.active_proposal});
             })) {
       return RuntimeSubmissionStatus::kShardQueueFull;
     }
@@ -433,6 +490,18 @@ class ConcurrentTripRuntime::Impl {
               }
 
               auto& trip = found->second;
+              if (trip.deactivation_pending) {
+                auto result = EventCoordinatorResult{
+                    .status = EventCoordinatorStatus::kInactive,
+                    .stale_reason = EventCoordinatorStaleReason::kNone,
+                    .retryable = true,
+                    .planning_input_changed = false,
+                    .current_plan_changed = false,
+                    .version_snapshot = trip.versions.snapshot(),
+                    .planning_seed = std::nullopt};
+                callback({std::move(result), timings});
+                return;
+              }
               auto admission = coordinate_event_admission(
                   trip.state, trip.versions, request.admission,
                   configuration_.max_advisory_payload_bytes);
@@ -478,6 +547,156 @@ class ConcurrentTripRuntime::Impl {
     return RuntimeSubmissionStatus::kAccepted;
   }
 
+  [[nodiscard]] RuntimeSubmissionStatus try_confirm_finalized(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      std::uint64_t finalized_mutation_sequence, ControlCallback callback) {
+    return submit_control(
+        trip_id,
+        [runtime_epoch, finalized_mutation_sequence](
+            ActiveTrip& trip) -> RuntimeControlResult {
+          const auto result = trip.versions.confirm_finalized(
+              runtime_epoch, finalized_mutation_sequence);
+          return map_control_result(result, trip.versions.snapshot());
+        },
+        std::move(callback));
+  }
+
+  [[nodiscard]] RuntimeSubmissionStatus try_snapshot(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      std::uint64_t minimum_finalized_mutation_sequence,
+      std::uint64_t minimum_planner_state_version, ControlCallback callback) {
+    return submit_control(
+        trip_id,
+        [runtime_epoch, minimum_finalized_mutation_sequence,
+         minimum_planner_state_version](
+            ActiveTrip& trip) -> RuntimeControlResult {
+          const auto versions = trip.versions.snapshot();
+          if (runtime_epoch != versions.runtime_epoch) {
+            return {RuntimeControlStatus::kStale, VersionStaleReason::kEpoch,
+                    false, versions, std::nullopt, {}};
+          }
+          if (!trip.versions.snapshot_ready() ||
+              versions.finalized_mutation_sequence <
+                  minimum_finalized_mutation_sequence ||
+              versions.planner_state_version <
+                  minimum_planner_state_version) {
+            return {RuntimeControlStatus::kSnapshotNotReady,
+                    VersionStaleReason::kNone, true, versions, std::nullopt,
+                    {}};
+          }
+          auto state = trip.state;
+          state.current_observation = {};
+          state.active_proposal.reset();
+          return {RuntimeControlStatus::kOk, VersionStaleReason::kNone, false,
+                  versions, std::move(state), trip.owner_user_id};
+        },
+        std::move(callback));
+  }
+
+  [[nodiscard]] RuntimeSubmissionStatus try_deactivate(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      bool final_snapshot_required, ControlCallback callback) {
+    if (!accepting_.load(std::memory_order_acquire)) {
+      return RuntimeSubmissionStatus::kStopping;
+    }
+    auto response = responses_.try_acquire();
+    if (!response) return RuntimeSubmissionStatus::kResponseCapacityFull;
+    const auto shard_index = shards_.shard_for(trip_id);
+    if (!shards_.try_submit(
+            trip_id, domain::EventPriority::kCritical,
+            [this, trip_id, runtime_epoch, final_snapshot_required,
+             callback = std::move(callback), response = std::move(response),
+             shard_index](std::stop_token) mutable {
+              auto& trips = trip_maps_[shard_index];
+              auto found = trips.find(trip_id);
+              if (found == trips.end()) {
+                callback({RuntimeControlStatus::kInactive,
+                          VersionStaleReason::kNone, true, {}, std::nullopt,
+                          {}});
+                return;
+              }
+              auto& trip = found->second;
+              const auto versions = trip.versions.snapshot();
+              if (runtime_epoch != versions.runtime_epoch) {
+                callback({RuntimeControlStatus::kStale,
+                          VersionStaleReason::kEpoch, false, versions,
+                          std::nullopt, {}});
+                return;
+              }
+              if (final_snapshot_required &&
+                  !trip.versions.snapshot_ready()) {
+                callback({RuntimeControlStatus::kSnapshotNotReady,
+                          VersionStaleReason::kNone, true, versions,
+                          std::nullopt, {}});
+                return;
+              }
+              if (final_snapshot_required) {
+                trip.deactivation_pending = true;
+                if (trip.planning_stop != nullptr) {
+                  trip.planning_stop->request_stop();
+                }
+                trip.pending.reset();
+                auto snapshot = trip.state;
+                snapshot.current_observation = {};
+                snapshot.active_proposal.reset();
+                callback({RuntimeControlStatus::kOk,
+                          VersionStaleReason::kNone, false, versions,
+                          std::move(snapshot), trip.owner_user_id});
+                return;
+              }
+              std::optional<domain::TripState> snapshot;
+              auto owner_user_id = trip.owner_user_id;
+              if (trip.planning_stop != nullptr) {
+                trip.planning_stop->request_stop();
+              }
+              trips.erase(found);
+              active_trip_count_.fetch_sub(1, std::memory_order_release);
+              callback({RuntimeControlStatus::kOk,
+                        VersionStaleReason::kNone, false, versions,
+                        std::move(snapshot), std::move(owner_user_id)});
+            })) {
+      return RuntimeSubmissionStatus::kShardQueueFull;
+    }
+    return RuntimeSubmissionStatus::kAccepted;
+  }
+
+  [[nodiscard]] RuntimeSubmissionStatus try_abort_deactivation(
+      const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+      ControlCallback callback) {
+    return submit_control(
+        trip_id,
+        [runtime_epoch](ActiveTrip& trip) {
+          const auto versions = trip.versions.snapshot();
+          if (runtime_epoch != versions.runtime_epoch) {
+            return RuntimeControlResult{
+                RuntimeControlStatus::kStale,
+                VersionStaleReason::kEpoch,
+                false,
+                versions,
+                std::nullopt,
+                {}};
+          }
+          if (!trip.deactivation_pending) {
+            return RuntimeControlResult{
+                RuntimeControlStatus::kDuplicate,
+                VersionStaleReason::kNone,
+                false,
+                versions,
+                std::nullopt,
+                {}};
+          }
+          trip.deactivation_pending = false;
+          return RuntimeControlResult{
+              RuntimeControlStatus::kOk,
+              VersionStaleReason::kNone,
+              false,
+              versions,
+              std::nullopt,
+              {}};
+        },
+        std::move(callback));
+  }
+
   [[nodiscard]] RuntimeSubmissionStatus try_unbind(
       const domain::TripId& trip_id, std::uint64_t runtime_epoch,
       std::uint64_t stream_binding) {
@@ -497,7 +716,41 @@ class ConcurrentTripRuntime::Impl {
                   found->second.stream_binding ==
                       std::optional<std::uint64_t>{stream_binding}) {
                 found->second.stream_binding.reset();
+                if (found->second.planning_stop != nullptr) {
+                  found->second.planning_stop->request_stop();
+                }
+                found->second.pending.reset();
               }
+            })) {
+      return RuntimeSubmissionStatus::kShardQueueFull;
+    }
+    return RuntimeSubmissionStatus::kAccepted;
+  }
+
+  template <typename Operation>
+  [[nodiscard]] RuntimeSubmissionStatus submit_control(
+      const domain::TripId& trip_id, Operation operation,
+      ControlCallback callback) {
+    if (!accepting_.load(std::memory_order_acquire)) {
+      return RuntimeSubmissionStatus::kStopping;
+    }
+    auto response = responses_.try_acquire();
+    if (!response) return RuntimeSubmissionStatus::kResponseCapacityFull;
+    const auto shard_index = shards_.shard_for(trip_id);
+    if (!shards_.try_submit(
+            trip_id, domain::EventPriority::kCritical,
+            [this, trip_id, operation = std::move(operation),
+             callback = std::move(callback), response = std::move(response),
+             shard_index](std::stop_token) mutable {
+              auto& trips = trip_maps_[shard_index];
+              auto found = trips.find(trip_id);
+              if (found == trips.end()) {
+                callback({RuntimeControlStatus::kInactive,
+                          VersionStaleReason::kNone, true, {}, std::nullopt,
+                          {}});
+                return;
+              }
+              callback(operation(found->second));
             })) {
       return RuntimeSubmissionStatus::kShardQueueFull;
     }
@@ -747,6 +1000,7 @@ class ConcurrentTripRuntime::Impl {
     RuntimePlanningDelivery delivery{
         .trip_id = trip_id,
         .stream_binding = trip.stream_binding,
+        .versions = pending.seed.source_versions,
         .status = status,
         .retryable = retryable(status),
         .coalesced_replacement_pending =
@@ -801,6 +1055,38 @@ RuntimeSubmissionStatus ConcurrentTripRuntime::try_bootstrap(
 RuntimeSubmissionStatus ConcurrentTripRuntime::try_apply_event(
     RuntimeEventRequest request, EventAcknowledgementCallback callback) {
   return impl_->try_apply_event(std::move(request), std::move(callback));
+}
+
+RuntimeSubmissionStatus ConcurrentTripRuntime::try_confirm_finalized(
+    const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+    std::uint64_t finalized_mutation_sequence, ControlCallback callback) {
+  return impl_->try_confirm_finalized(
+      trip_id, runtime_epoch, finalized_mutation_sequence,
+      std::move(callback));
+}
+
+RuntimeSubmissionStatus ConcurrentTripRuntime::try_snapshot(
+    const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+    std::uint64_t minimum_finalized_mutation_sequence,
+    std::uint64_t minimum_planner_state_version, ControlCallback callback) {
+  return impl_->try_snapshot(
+      trip_id, runtime_epoch, minimum_finalized_mutation_sequence,
+      minimum_planner_state_version, std::move(callback));
+}
+
+RuntimeSubmissionStatus ConcurrentTripRuntime::try_deactivate(
+    const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+    bool final_snapshot_required, ControlCallback callback) {
+  return impl_->try_deactivate(trip_id, runtime_epoch,
+                               final_snapshot_required,
+                               std::move(callback));
+}
+
+RuntimeSubmissionStatus ConcurrentTripRuntime::try_abort_deactivation(
+    const domain::TripId& trip_id, std::uint64_t runtime_epoch,
+    ControlCallback callback) {
+  return impl_->try_abort_deactivation(
+      trip_id, runtime_epoch, std::move(callback));
 }
 
 RuntimeSubmissionStatus ConcurrentTripRuntime::try_unbind_stream(

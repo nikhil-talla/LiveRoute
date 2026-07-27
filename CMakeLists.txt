@@ -6,6 +6,8 @@ option(LIVEROUTE_WARNINGS_AS_ERRORS "Treat project warnings as errors" ON)
 option(LIVEROUTE_ENABLE_PINNED_TZDATA_TESTS
   "Enable tests that require the verified tzdata container asset" OFF)
 option(LIVEROUTE_ENABLE_TSAN "Build and link C++ targets with ThreadSanitizer" OFF)
+option(LIVEROUTE_ENABLE_GRPC
+  "Build the pinned Protobuf/gRPC transport and server" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -61,11 +63,86 @@ add_library(liveroute_domain
 target_include_directories(liveroute_domain PUBLIC include)
 liveroute_configure_target(liveroute_domain)
 
+enable_testing()
+
+if(LIVEROUTE_ENABLE_GRPC)
+  find_package(absl CONFIG REQUIRED)
+
+  set(liveroute_protobuf_static_dependencies
+    absl::algorithm absl::base absl::bind_front absl::bits absl::btree
+    absl::cleanup absl::cord absl::core_headers absl::debugging
+    absl::die_if_null absl::dynamic_annotations absl::flags
+    absl::flat_hash_map absl::flat_hash_set absl::function_ref absl::hash
+    absl::layout absl::log absl::log_globals absl::log_initialize
+    absl::log_internal_check_op absl::log_severity absl::memory
+    absl::node_hash_map absl::node_hash_set
+    absl::optional absl::random_distributions absl::random_random absl::span
+    absl::status absl::statusor absl::strings absl::synchronization absl::time
+    absl::type_traits absl::utility gRPC::utf8_range_lib
+  )
+  add_library(protobuf::libprotobuf STATIC IMPORTED GLOBAL)
+  set_target_properties(protobuf::libprotobuf PROPERTIES
+    IMPORTED_LOCATION "/opt/grpc/lib/libprotobuf.a"
+    INTERFACE_INCLUDE_DIRECTORIES "/opt/grpc/include"
+    INTERFACE_LINK_LIBRARIES "${liveroute_protobuf_static_dependencies}"
+  )
+  add_library(protobuf::libprotoc STATIC IMPORTED GLOBAL)
+  set_target_properties(protobuf::libprotoc PROPERTIES
+    IMPORTED_LOCATION "/opt/grpc/lib/libprotoc.a"
+    INTERFACE_INCLUDE_DIRECTORIES "/opt/grpc/include"
+  )
+  find_package(gRPC CONFIG REQUIRED)
+
+  add_library(liveroute_proto STATIC
+    gen/cpp/liveroute/v1/planner.pb.cc
+    gen/cpp/liveroute/v1/planner.grpc.pb.cc
+  )
+  target_include_directories(liveroute_proto PUBLIC gen/cpp)
+  target_link_libraries(liveroute_proto PUBLIC gRPC::grpc++)
+  liveroute_configure_target(liveroute_proto)
+
+  add_library(liveroute_transport
+    src/transport/proto_conversion.cpp
+    src/transport/grpc_planner_service.cpp
+  )
+  target_include_directories(liveroute_transport PUBLIC include)
+  target_link_libraries(liveroute_transport
+    PUBLIC liveroute_domain liveroute_proto gRPC::grpc++
+  )
+  liveroute_configure_target(liveroute_transport)
+
+  add_executable(liveroute_planner_cli src/client/main.cpp)
+  target_link_libraries(liveroute_planner_cli PRIVATE liveroute_transport)
+  liveroute_configure_target(liveroute_planner_cli)
+
+  add_executable(liveroute_grpc_planner_service_test
+    tests/grpc_planner_service_test.cpp
+  )
+  target_link_libraries(liveroute_grpc_planner_service_test
+    PRIVATE liveroute_transport
+  )
+  liveroute_configure_target(liveroute_grpc_planner_service_test)
+  add_test(NAME liveroute_grpc_planner_service_test
+    COMMAND liveroute_grpc_planner_service_test
+  )
+
+  add_executable(liveroute_proto_serialization_bench
+    bench/proto_serialization_bench.cpp
+  )
+  target_link_libraries(liveroute_proto_serialization_bench
+    PRIVATE liveroute_proto
+  )
+  liveroute_configure_target(liveroute_proto_serialization_bench)
+endif()
+
 add_executable(liveroute_planner_service src/server/main.cpp)
 target_link_libraries(liveroute_planner_service PRIVATE liveroute_domain)
+if(LIVEROUTE_ENABLE_GRPC)
+  target_compile_definitions(liveroute_planner_service
+    PRIVATE LIVEROUTE_ENABLE_GRPC=1)
+  target_link_libraries(liveroute_planner_service PRIVATE liveroute_transport)
+endif()
 liveroute_configure_target(liveroute_planner_service)
-
-enable_testing()
 
 add_executable(liveroute_smoke_test tests/smoke_test.cpp)
 liveroute_configure_target(liveroute_smoke_test)
