@@ -158,6 +158,8 @@ struct TripEvent {
   TripEventPayload payload;
 
   [[nodiscard]] std::optional<TripEventClass> event_class() const noexcept;
+  [[nodiscard]] EventPriority priority_for(
+      std::span<const Activity> current_activities) const noexcept;
   [[nodiscard]] bool is_valid_for(
       std::span<const Activity> current_activities,
       std::size_t max_advisory_payload_bytes) const;

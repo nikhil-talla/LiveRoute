@@ -111,20 +111,42 @@ int main() {
 
   if (!location.is_valid_for(activities, 2) ||
       location.event_class() != TripEventClass::kTelemetry ||
+      location.priority_for(activities) != EventPriority::kNormal ||
       !velocity.is_valid_for(activities, 2) ||
+      velocity.priority_for(activities) != EventPriority::kNormal ||
       !heading.is_valid_for(activities, 2) ||
+      heading.priority_for(activities) != EventPriority::kNormal ||
       !status.is_valid_for(activities, 2) ||
       status.event_class() != TripEventClass::kDurable ||
+      status.priority_for(activities) != EventPriority::kCritical ||
       !delayed.is_valid_for(activities, 2) ||
+      delayed.priority_for(activities) != EventPriority::kCritical ||
       !reservation.is_valid_for(activities, 2) ||
+      reservation.priority_for(activities) != EventPriority::kCritical ||
       !deadline.is_valid_for(activities, 2) ||
+      deadline.priority_for(activities) != EventPriority::kCritical ||
       !deviation.is_valid_for(activities, 2) ||
+      deviation.priority_for(activities) != EventPriority::kHigh ||
       deviation.event_class() != TripEventClass::kHighObservation ||
       !hours.is_valid_for(activities, 2) ||
+      hours.priority_for(activities) != EventPriority::kHigh ||
       !closed.is_valid_for(activities, 2) ||
+      closed.priority_for(activities) != EventPriority::kCritical ||
       !travel.is_valid_for(activities, 2) ||
+      travel.priority_for(activities) != EventPriority::kCritical ||
       !advisory.is_valid_for(activities, 2) ||
+      advisory.priority_for(activities) != EventPriority::kAdvisory ||
       advisory.event_class() != TripEventClass::kAdvisory) {
+    return 1;
+  }
+
+  auto completed_activities = activities;
+  completed_activities.front().activity_state = ActivityState::kCompleted;
+  const auto completed_hours = event(OperatingHoursChanged{
+      first_id,
+      {{UnixTimeMilliseconds{0}, UnixTimeMilliseconds{1000}}}});
+  if (completed_hours.priority_for(completed_activities) !=
+      EventPriority::kCritical) {
     return 1;
   }
 
@@ -133,6 +155,7 @@ int main() {
       plan(current_ids, PlanOrigin::kUserAuthored, 10);
   const auto replaced = event(CurrentPlanReplaced{replacement_plan});
   if (!replaced.is_valid_for(activities, 2) ||
+      replaced.priority_for(activities) != EventPriority::kCritical ||
       replaced.event_class() !=
           TripEventClass::kCanonicalFirstDurableMirror) {
     return 1;
@@ -157,6 +180,7 @@ int main() {
       .base_current_plan_id = replacement_plan.plan_id,
       .resulting_current_plan = std::nullopt});
   if (!accept.is_valid_for(activities, 2) ||
+      accept.priority_for(activities) != EventPriority::kCritical ||
       accept.event_class() != TripEventClass::kDurableCompareAndSwap ||
       !reject.is_valid_for(activities, 2)) {
     return 1;

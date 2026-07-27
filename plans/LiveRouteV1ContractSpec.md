@@ -112,6 +112,47 @@ All old/late ownership and version cases use `STALE`. A structured stale reason 
 
 `EPOCH`, `MUTATION_SEQUENCE`, `OBSERVATION_SEQUENCE`, `TRIP_REVISION`, `PLANNER_STATE_VERSION`, or `PLAN_PROPOSAL`.
 
+Owner-shard event coordination is transactional across `TripState` and its
+runtime-version record. Version checks have a non-mutating preview operation.
+For a new admissible request, apply the event to a candidate state first, then
+commit the corresponding version advancement and candidate state together on
+the single owner shard. Duplicate/stale/inactive preview outcomes never invoke
+domain mutation. A runtime-first durable domain rejection consumes the next
+mutation sequence with no trip/state/planning-version advancement and returns
+its terminal status; this includes `STALE/PLAN_PROPOSAL`. Invalid observation
+or advisory work consumes no observation sequence. Invalid canonical-first
+mirror work consumes no mutation sequence because C++ does not yet contain its
+PostgreSQL-authoritative effect; the backend must retry a matching mirror or
+perform full canonical bootstrap. An impossible mismatch between a successful
+preview and the immediately following owner-shard commit is `INTERNAL`.
+
+The transport adapter maps coordinator outcomes without interpretation:
+
+| Coordinator outcome | Public status | Retryable |
+| --- | --- | --- |
+| accepted | `OK` | false |
+| duplicate | `DUPLICATE` | false |
+| stale version or proposal | `STALE` plus the exact structured reason | false |
+| invalid envelope/domain transition | `INVALID_ARGUMENT` | false |
+| inactive runtime | `INACTIVE_TRIP` | true internally |
+| preview/commit invariant mismatch | `INTERNAL` | false |
+
+Successful admission returns an internal immutable planning seed, not a public
+`ReplanResult`. The seed contains the accepted state snapshot and trigger plus
+the exact runtime epoch, planner-state version, planning generation, trip
+revision, accepted mutation sequence, and base current-plan id. It contains no
+provider handle, provider response, or matrix. Provider work runs later on its
+bounded executor. Concrete operating-hours windows are already normalized in
+the accepted activity snapshot; a refresh becomes a typed
+`OperatingHoursChanged` event before this transaction. Route input is current
+location followed by remaining activities in authoritative current-plan suffix
+order. Each matrix destination column uses that destination activity's
+`inbound_travel_mode`; mixed walking/driving snapshots may be acquired as one
+Table matrix per distinct mode and combined by destination column. Provider
+status mapping occurs before the matrix-backed planner attempt. Planner search
+status mapping occurs after `run_replan_attempt`; only a present validated
+proposal is eligible for the generation-fenced commit and later persistence.
+
 `degraded` is not a status. It previously mixed successful-but-lower-quality output with actual failures. Successful results use `status = OK` plus:
 
 - `plan_quality`: `COMPLETE`, `BEST_SO_FAR`, or `NO_NEW_PROPOSAL`;
@@ -215,6 +256,8 @@ Fields 20-28 form one `payload` oneof.
 `TravelDelayState`: 1 `string from_activity_id`, 2 `string to_activity_id`, 3 `uint32 additional_seconds`, 4 `int64 observed_at_unix_ms`.
 
 `TripDefinition`: 1 `string trip_id`, 2 `string owner_user_id`, 3 `string default_time_zone_name`, 4 `repeated Activity activities`, 5 `uint32 completed_prefix_count`, 6 `string current_activity_id`, 7 `string current_plan_id`, 8 `repeated TravelDelayState travel_delays`.
+
+`completed_prefix_count` counts leading entries of the separately supplied authoritative `CurrentPlan.segments`; it never indexes `TripDefinition.activities`. Those leading entries must reference activities whose state is `COMPLETED` or `SKIPPED`. When `current_activity_id` is present, it must identify the `STARTED` activity at `CurrentPlan.segments[completed_prefix_count]`, and that one additional segment is also preserved. No later current-plan segment may reference a terminal or started activity. `TripDefinition.activities` retains trip-definition order only: its zero-based position is `original_trip_ordinal` for deterministic candidate identity and tie-breaking. A canonical edit or replacement may reorder future current-plan segments but must not move the completed prefix or started activity out of this shape.
 
 `CurrentObservation`: 1 `Location location`, 2 `int64 observed_at_unix_ms`, 3 `optional double velocity_meters_per_second`, 4 `optional double heading_degrees`.
 
@@ -403,6 +446,8 @@ For a scheduled child, `arrival_unix_ms` is the parent's last scheduled end plus
 Within one activity, scheduled alternatives are considered by ascending start time; at one start, the exact unchanged current-plan interval comes first. The skip child comes after every scheduled alternative. Thus each normalized window contributes at most two start boundaries with one fixed duration each, plus at most one exact baseline interval per activity and one skip. Actual travel-matrix duration from the current or previously scheduled location determines the earliest reachable start, so moving activities back never ignores distance between them. The complete and partial comparator prefer every no-skip candidate over a candidate that skips an activity; when skipping is necessary, `skips_by_priority` preserves lower numeric (more important) ranks before higher numeric (less important) ranks. Adding time-grid samples, variable durations, or another start boundary is a new planner-policy version, not an implementation detail.
 
 `BeamSearchInput.remaining_activities` is ordered exactly as that authoritative current-plan suffix; it is not sorted by original trip ordinal. Its vector position is the baseline suffix-order representation, while `original_trip_ordinal` remains the stable trip-definition identity used for deterministic activity consideration and canonical keys. Travel-matrix index `i + 1` describes `remaining_activities[i]`. An input assembler must preserve this order, including omitted segments, rather than trying to reconstruct it from timestamps or trip-definition order.
+
+The input assembler copies the first `completed_prefix_count` authoritative current-plan segments and the immediately following started segment, when present, into `preserved_prefix`. It copies every later current-plan segment into `remaining_activities` in exact current-plan order, looks up its `Activity` by id, and assigns that activity's position in `TripDefinition.activities` as `original_trip_ordinal`. It rejects inconsistent progress shape, missing/duplicate ids, invalid normalized horizons, or a matrix other than `(remaining_count + 1)²`; it never repairs order or derives progress from timestamps.
 
 After one depth is generated, hard-infeasible children are absent, the remaining children are sorted by the normative partial comparator, and only the first `beam_width` continue. The planner records `search_was_truncated = true` whenever this retention step discards at least one hard-feasible partial candidate. One `expansion` is one actual invocation of the finite candidate generator for an ordered `(parent partial candidate, still-undecided activity)` pair. It increments `max_expansions` immediately before that invocation and may yield zero, one, or several locally hard-feasible scheduled/skip children. Hypothetical timestamps, durations, unreachable scheduled routes, and other alternatives rejected before emission are not enumerated and do not count as expansions. `max_candidates` is the cumulative number of emitted hard-feasible children admitted after protected-activity pruning and before beam truncation. Before the next parent/activity invocation, the planner checks cancellation, deadline, and `max_expansions`; an emitted child that would exceed `max_candidates` is not admitted and ends the attempt. Consequently, interruption or either budget limit selects a deterministic prefix of actual generator work before applying the same comparator and best-so-far rules.
 

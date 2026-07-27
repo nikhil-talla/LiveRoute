@@ -5,10 +5,21 @@ project(LiveRoute VERSION 0.1.0 LANGUAGES CXX)
 option(LIVEROUTE_WARNINGS_AS_ERRORS "Treat project warnings as errors" ON)
 option(LIVEROUTE_ENABLE_PINNED_TZDATA_TESTS
   "Enable tests that require the verified tzdata container asset" OFF)
+option(LIVEROUTE_ENABLE_TSAN "Build and link C++ targets with ThreadSanitizer" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(LIVEROUTE_ENABLE_TSAN)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    message(FATAL_ERROR "ThreadSanitizer requires GCC or Clang")
+  endif()
+  # GCC's TSan shadow mapping is incompatible with PIE under the Docker
+  # Desktop/WSL address layout used by the container-first test workflow.
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -fno-pie)
+  add_link_options(-fsanitize=thread -no-pie)
+endif()
 
 function(liveroute_configure_target target)
   target_compile_options(${target} PRIVATE
@@ -37,10 +48,15 @@ add_library(liveroute_domain
   src/domain/travel_time_matrix.cpp
   src/planner/beam_search.cpp
   src/planner/candidate_itinerary.cpp
+  src/planner/planning_input_assembler.cpp
   src/planner/proposal_assembler.cpp
+  src/planner/replan_attempt.cpp
   src/planner/result_metadata.cpp
   src/routing/travel_time_provider.cpp
+  src/runtime/concurrent_trip_runtime.cpp
+  src/runtime/planning_commit.cpp
   src/runtime/trip_runtime_versions.cpp
+  src/runtime/event_coordinator.cpp
 )
 target_include_directories(liveroute_domain PUBLIC include)
 liveroute_configure_target(liveroute_domain)
@@ -74,6 +90,15 @@ add_executable(liveroute_beam_search_input_test tests/beam_search_input_test.cpp
 target_link_libraries(liveroute_beam_search_input_test PRIVATE liveroute_domain)
 liveroute_configure_target(liveroute_beam_search_input_test)
 add_test(NAME liveroute_beam_search_input_test COMMAND liveroute_beam_search_input_test)
+
+add_executable(liveroute_planning_input_assembler_test
+  tests/planning_input_assembler_test.cpp
+)
+target_link_libraries(liveroute_planning_input_assembler_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_planning_input_assembler_test)
+add_test(NAME liveroute_planning_input_assembler_test
+  COMMAND liveroute_planning_input_assembler_test
+)
 
 add_executable(liveroute_candidate_generation_test
   tests/candidate_generation_test.cpp
@@ -155,6 +180,11 @@ add_test(NAME liveroute_proposal_assembler_test
   COMMAND liveroute_proposal_assembler_test
 )
 
+add_executable(liveroute_replan_attempt_test tests/replan_attempt_test.cpp)
+target_link_libraries(liveroute_replan_attempt_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_replan_attempt_test)
+add_test(NAME liveroute_replan_attempt_test COMMAND liveroute_replan_attempt_test)
+
 add_executable(liveroute_tzif_test tests/tzif_test.cpp)
 target_link_libraries(liveroute_tzif_test PRIVATE liveroute_domain)
 liveroute_configure_target(liveroute_tzif_test)
@@ -230,6 +260,31 @@ liveroute_configure_target(liveroute_trip_runtime_versions_test)
 add_test(NAME liveroute_trip_runtime_versions_test
   COMMAND liveroute_trip_runtime_versions_test
 )
+
+add_executable(liveroute_event_coordinator_test
+  tests/event_coordinator_test.cpp
+)
+target_link_libraries(liveroute_event_coordinator_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_event_coordinator_test)
+add_test(NAME liveroute_event_coordinator_test
+  COMMAND liveroute_event_coordinator_test
+)
+
+add_executable(liveroute_concurrent_trip_runtime_test
+  tests/concurrent_trip_runtime_test.cpp
+)
+target_link_libraries(liveroute_concurrent_trip_runtime_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_concurrent_trip_runtime_test)
+add_test(NAME liveroute_concurrent_trip_runtime_test
+  COMMAND liveroute_concurrent_trip_runtime_test
+)
+
+add_executable(liveroute_planning_commit_test
+  tests/planning_commit_test.cpp
+)
+target_link_libraries(liveroute_planning_commit_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_planning_commit_test)
+add_test(NAME liveroute_planning_commit_test COMMAND liveroute_planning_commit_test)
 
 add_executable(liveroute_smoke_bench bench/smoke_bench.cpp)
 liveroute_configure_target(liveroute_smoke_bench)

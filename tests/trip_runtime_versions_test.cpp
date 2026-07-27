@@ -17,6 +17,10 @@ bool has_status(liveroute::runtime::VersionOperationResult result,
 
 int main() {
   TripRuntimeVersions versions;
+  if (versions.capture_planning_work().has_value() ||
+      versions.can_commit_planning_work({})) {
+    return 1;
+  }
   if (!has_status(versions.accept_observation(1, 1),
                   VersionOperationStatus::kInactive) ||
       !has_status(versions.bootstrap(0, 1, 1, 0),
@@ -24,6 +28,12 @@ int main() {
       !has_status(versions.bootstrap(4, 7, 11, 3),
                   VersionOperationStatus::kAccepted) ||
       !versions.snapshot_ready()) {
+    return 1;
+  }
+
+  const auto initial_work = versions.capture_planning_work();
+  if (!initial_work.has_value() ||
+      !versions.can_commit_planning_work(*initial_work)) {
     return 1;
   }
 
@@ -36,12 +46,17 @@ int main() {
     return 1;
   }
 
+  const auto planner_version_stale =
+      versions.accept_durable(4, 12, 7, true, 1);
   if (!has_status(versions.accept_durable(3, 12, 7, true),
                   VersionOperationStatus::kStale) ||
       !has_status(versions.accept_durable(4, 13, 7, true),
                   VersionOperationStatus::kStale) ||
       !has_status(versions.accept_durable(4, 12, 6, true),
                   VersionOperationStatus::kStale) ||
+      planner_version_stale.status != VersionOperationStatus::kStale ||
+      planner_version_stale.stale_reason !=
+          VersionStaleReason::kPlannerStateVersion ||
       !has_status(versions.accept_durable(4, 12, 7, true),
                   VersionOperationStatus::kAccepted) ||
       versions.snapshot_ready()) {
@@ -54,7 +69,7 @@ int main() {
       after_durable.planning_generation != 1 ||
       after_durable.accepted_mutation_sequence != 12 ||
       !has_status(versions.accept_durable(4, 12, 7, true),
-                  VersionOperationStatus::kDuplicate) ||
+          VersionOperationStatus::kDuplicate) ||
       !has_status(versions.confirm_finalized(4, 13),
                   VersionOperationStatus::kInvalidArgument) ||
       !has_status(versions.confirm_finalized(4, 12),
@@ -64,8 +79,19 @@ int main() {
                   VersionOperationStatus::kDuplicate)) {
     return 1;
   }
+  if (versions.can_commit_planning_work(*initial_work)) {
+    return 1;
+  }
+
+  const auto post_durable_work = versions.capture_planning_work();
+  if (!post_durable_work.has_value() ||
+      !versions.can_commit_planning_work(*post_durable_work)) {
+    return 1;
+  }
 
   if (!has_status(versions.accept_observation(4, 3),
+                  VersionOperationStatus::kStale) ||
+      !has_status(versions.accept_observation(4, 9, 0),
                   VersionOperationStatus::kStale) ||
       !has_status(versions.accept_observation(4, 9),
                   VersionOperationStatus::kAccepted) ||
@@ -86,6 +112,42 @@ int main() {
       versions.snapshot().accepted_observation_sequence != 0 ||
       !has_status(versions.bootstrap(4, 8, 12, 0),
                   VersionOperationStatus::kStale)) {
+    return 1;
+  }
+  if (versions.can_commit_planning_work(*post_durable_work)) {
+    return 1;
+  }
+
+  TripRuntimeVersions freshness_versions;
+  if (!has_status(freshness_versions.bootstrap(8, 1, 1, 0),
+                  VersionOperationStatus::kAccepted) ||
+      !has_status(freshness_versions.accept_durable(8, 2, 1, true, 1),
+                  VersionOperationStatus::kStale) ||
+      freshness_versions.snapshot().accepted_mutation_sequence != 1 ||
+      freshness_versions.snapshot().planner_state_version != 0 ||
+      freshness_versions.accept_durable(8, 2, 1, true, 0).status !=
+          VersionOperationStatus::kAccepted ||
+      freshness_versions.snapshot().planner_state_version != 1) {
+    return 1;
+  }
+  if (!has_status(freshness_versions.accept_observation(8, 2, 0),
+                  VersionOperationStatus::kStale) ||
+      freshness_versions.snapshot().accepted_observation_sequence != 0) {
+    return 1;
+  }
+
+  const auto terminal_planner_version_stale =
+      freshness_versions.resolve_terminal_durable(8, 3, 2, 0);
+  if (terminal_planner_version_stale.status !=
+          VersionOperationStatus::kStale ||
+      terminal_planner_version_stale.stale_reason !=
+          VersionStaleReason::kPlannerStateVersion ||
+      freshness_versions.snapshot().accepted_mutation_sequence != 2) {
+    return 1;
+  }
+  if (!has_status(freshness_versions.resolve_terminal_durable(8, 3, 2, 1),
+                  VersionOperationStatus::kAccepted) ||
+      freshness_versions.snapshot().accepted_mutation_sequence != 3) {
     return 1;
   }
 

@@ -39,6 +39,7 @@ class BoundedPriorityLanes {
   BoundedPriorityLanes& operator=(const BoundedPriorityLanes&) = delete;
 
   [[nodiscard]] bool try_push(domain::EventPriority priority, T value) {
+    if (!is_valid_priority(priority)) return false;
     std::scoped_lock lock(mutex_);
     auto& lane = lanes_[index_for(priority)];
     if (lane.size() == capacity_for(priority)) {
@@ -76,11 +77,24 @@ class BoundedPriorityLanes {
   }
 
   [[nodiscard]] std::size_t size(domain::EventPriority priority) const {
+    if (!is_valid_priority(priority)) return 0;
     std::scoped_lock lock(mutex_);
     return lanes_[index_for(priority)].size();
   }
 
  private:
+  [[nodiscard]] static constexpr bool is_valid_priority(
+      domain::EventPriority priority) noexcept {
+    switch (priority) {
+      case domain::EventPriority::kCritical:
+      case domain::EventPriority::kHigh:
+      case domain::EventPriority::kNormal:
+      case domain::EventPriority::kAdvisory:
+        return true;
+    }
+    return false;
+  }
+
   [[nodiscard]] static constexpr std::size_t index_for(
       domain::EventPriority priority) noexcept {
     return static_cast<std::size_t>(priority);

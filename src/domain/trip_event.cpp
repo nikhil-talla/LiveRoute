@@ -256,6 +256,35 @@ std::optional<TripEventClass> TripEvent::event_class() const noexcept {
       payload);
 }
 
+EventPriority TripEvent::priority_for(
+    std::span<const Activity> current_activities) const noexcept {
+  return std::visit(
+      Overloaded{
+          [](const std::monostate&) { return EventPriority::kCritical; },
+          [](const LocationUpdated&) { return EventPriority::kNormal; },
+          [](const VelocityUpdated&) { return EventPriority::kNormal; },
+          [](const HeadingUpdated&) { return EventPriority::kNormal; },
+          [](const RouteDeviationDetected&) { return EventPriority::kHigh; },
+          [](const AdvisoryUpdate&) { return EventPriority::kAdvisory; },
+          [](const auto&) { return EventPriority::kCritical; },
+          [&](const OperatingHoursChanged& event) {
+            const auto activity = std::find_if(
+                current_activities.begin(), current_activities.end(),
+                [&](const Activity& candidate) {
+                  return candidate.activity_id == event.activity_id;
+                });
+            if (activity != current_activities.end() &&
+                activity->activity_state != ActivityState::kCompleted &&
+                activity->activity_state != ActivityState::kSkipped) {
+              return EventPriority::kHigh;
+            }
+            // The event remains durable even when it cannot affect the
+            // remaining itinerary, so it stays in the critical lane.
+            return EventPriority::kCritical;
+          }},
+      payload);
+}
+
 bool TripEvent::is_valid_for(
     std::span<const Activity> current_activities,
     std::size_t max_advisory_payload_bytes) const {

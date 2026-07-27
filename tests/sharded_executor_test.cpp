@@ -71,6 +71,78 @@ int main() {
     return 1;
   }
 
+  std::mutex priority_mutex;
+  std::condition_variable priority_condition;
+  bool priority_blocker_started = false;
+  bool release_priority_blocker = false;
+  std::vector<int> priority_observed;
+  {
+    ShardedExecutor executor(1, {1, 1, 2, 1}, 1);
+    if (!executor.try_submit(
+            trip_id, liveroute::domain::EventPriority::kNormal,
+            [&priority_mutex, &priority_condition,
+             &priority_blocker_started,
+             &release_priority_blocker](std::stop_token) {
+              std::unique_lock lock(priority_mutex);
+              priority_blocker_started = true;
+              priority_condition.notify_one();
+              priority_condition.wait(lock, [&release_priority_blocker] {
+                return release_priority_blocker;
+              });
+            })) {
+      return 1;
+    }
+    std::unique_lock priority_lock(priority_mutex);
+    if (!priority_condition.wait_for(
+            priority_lock, std::chrono::seconds{1},
+            [&priority_blocker_started] { return priority_blocker_started; })) {
+      return 1;
+    }
+    priority_lock.unlock();
+
+    if (!executor.try_submit(
+            trip_id, liveroute::domain::EventPriority::kNormal,
+            [&priority_mutex, &priority_condition, &priority_observed](
+                std::stop_token) {
+              std::scoped_lock lock(priority_mutex);
+              priority_observed.push_back(1);
+              priority_condition.notify_one();
+            }) ||
+        !executor.try_submit(
+            trip_id, liveroute::domain::EventPriority::kHigh,
+            [&priority_mutex, &priority_condition, &priority_observed](
+                std::stop_token) {
+              std::scoped_lock lock(priority_mutex);
+              priority_observed.push_back(2);
+              priority_condition.notify_one();
+            }) ||
+        !executor.try_submit(
+            trip_id, liveroute::domain::EventPriority::kNormal,
+            [&priority_mutex, &priority_condition, &priority_observed](
+                std::stop_token) {
+              std::scoped_lock lock(priority_mutex);
+              priority_observed.push_back(3);
+              priority_condition.notify_one();
+            }) ||
+        executor.queue_size(trip_id, liveroute::domain::EventPriority::kNormal) !=
+            2) {
+      return 1;
+    }
+
+    priority_lock.lock();
+    release_priority_blocker = true;
+    priority_condition.notify_one();
+    if (!priority_condition.wait_for(
+            priority_lock, std::chrono::seconds{1},
+            [&priority_observed] { return priority_observed.size() == 3; })) {
+      return 1;
+    }
+  }
+
+  if (priority_observed != std::vector<int>{2, 1, 3}) {
+    return 1;
+  }
+
   std::mutex overload_mutex;
   std::condition_variable overload_condition;
   bool first_task_started = false;
@@ -118,6 +190,61 @@ int main() {
                                      [&second_task_completed] {
                                        return second_task_completed;
                                      })) {
+      return 1;
+    }
+  }
+
+  std::mutex completion_mutex;
+  std::condition_variable completion_condition;
+  bool completion_blocker_started = false;
+  bool release_completion_blocker = false;
+  bool reserved_completion_ran = false;
+  {
+    ShardedExecutor executor(1, {1, 1, 1, 1}, 1, 1);
+    if (!executor.try_submit(
+            trip_id,
+            [&completion_mutex, &completion_condition,
+             &completion_blocker_started,
+             &release_completion_blocker](std::stop_token) {
+              std::unique_lock lock(completion_mutex);
+              completion_blocker_started = true;
+              completion_condition.notify_one();
+              completion_condition.wait(lock, [&release_completion_blocker] {
+                return release_completion_blocker;
+              });
+            })) {
+      return 1;
+    }
+    std::unique_lock lock(completion_mutex);
+    if (!completion_condition.wait_for(
+            lock, std::chrono::seconds{1},
+            [&completion_blocker_started] {
+              return completion_blocker_started;
+            })) {
+      return 1;
+    }
+    lock.unlock();
+
+    auto reservation = executor.try_reserve_completion(trip_id);
+    if (!reservation.has_value() ||
+        executor.try_reserve_completion(trip_id).has_value() ||
+        !executor.submit_completion(
+            std::move(*reservation),
+            [&completion_mutex, &completion_condition,
+             &reserved_completion_ran](std::stop_token) {
+              std::scoped_lock task_lock(completion_mutex);
+              reserved_completion_ran = true;
+              completion_condition.notify_one();
+            })) {
+      return 1;
+    }
+
+    lock.lock();
+    release_completion_blocker = true;
+    completion_condition.notify_one();
+    if (!completion_condition.wait_for(
+            lock, std::chrono::seconds{1},
+            [&reserved_completion_ran] { return reserved_completion_ran; })) {
       return 1;
     }
   }

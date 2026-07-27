@@ -80,15 +80,16 @@ Response fields:
 
 Transcribe the exact fields/numbers/enums in `plans/LiveRouteV1ContractSpec.md` into checked-in `.proto` definitions and WebSocket JSON Schemas before handlers. Buf performs lint/descriptor/`FILE` breaking checks; the separately pinned `protoc` 31.1/gRPC C++ 1.78.1 image generates checked-in bindings. The exact WebSocket schema manifest procedure and positive/negative corpus prevent contract drift.
 
-Keep the hot path transport-independent:
-
-```cpp
-ReplanResult apply_event_and_replan(
-    TripState& state,
-    const TripEvent& event,
-    Deadline deadline,
-    std::stop_token stop_token);
-```
+Keep the hot path transport-independent, but do not use a monolithic
+`apply_event_and_replan` call. The owner-shard coordinator first performs
+non-mutating version admission, applies the event to a candidate `TripState`,
+and commits the candidate state plus version advancement together. It returns
+an immutable planning seed containing the accepted state snapshot, trigger,
+runtime epoch, planner-state version, planning generation, trip revision,
+accepted mutation sequence, and base current-plan id. Provider executors then
+acquire normalized hours/routes off-shard; only the resulting immutable
+`TravelTimeMatrix` enters `run_replan_attempt`. The result returns through the
+generation-fenced commit helper.
 
 Event priority model:
 
@@ -291,7 +292,7 @@ Implement incremental planning:
 - Implement the exact `liveroute-v1-lexicographic-1` hard-feasibility rules, complete-candidate tuple, optimistic partial-candidate tuple, and canonical tie-breaker in `plans/LiveRouteV1ContractSpec.md`. Do not add scalar weights or runtime score tuning.
 - Implement its exact finite candidate generator and generation order: beam branches choose activity order/skip; scheduled alternatives are limited to legal current-plan and earliest-reachable window boundaries with one fixed duration per activity. Use matrix travel to derive arrival at every placement, rank all-scheduled moves ahead of skips, and sacrifice less-important activities first when skipping is required. Do not add time-grid sampling, continuous optimization, or variable-duration heuristics.
 - Apply the zero-travel protected-activity lower-bound check before candidate accounting/beam retention, track every beam-width or candidate-budget truncation, and reserve `INFEASIBLE` for an untruncated exhaustive proof. A bounded search with no complete result maps to `OK/NO_NEW_PROPOSAL`.
-- Assemble `BeamSearchInput.remaining_activities` in authoritative current-plan suffix order, including omitted entries; retain `original_trip_ordinal` separately. Compute `changed_activity_count` with the exact common-scheduled-sequence rule so adding/removing one activity does not mark every later activity reordered.
+- Interpret `completed_prefix_count` against leading authoritative `CurrentPlan.segments`, preserve the immediately following started activity when present, and assemble `BeamSearchInput.remaining_activities` from the later current-plan suffix in exact order, including omitted entries; retain trip-definition position separately as `original_trip_ordinal`. Compute `changed_activity_count` with the exact common-scheduled-sequence rule so adding/removing one activity does not mark every later activity reordered.
 - Use `PlannerScratch` with reusable vectors, candidate pools, and parent indices to avoid copying entire plans.
 - Add `ReplanBudget` containing deadline, max candidates, beam width, max expansions, and stop token. Count one expansion per actual parent/activity generator invocation, including a zero-result invocation, but never enumerate or count hypothetical alternatives rejected before generator emission.
 - Return best-so-far if the deadline or cancellation token fires.

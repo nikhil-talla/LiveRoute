@@ -200,6 +200,29 @@ int main() {
     return 1;
   }
 
+  if (!accepted(apply_trip_event(
+                    state, event(ActivityStatusChanged{
+                                     first_id, ActivityState::kCompleted}),
+                    16)) ||
+      state.completed_prefix_count != 1 || state.current_activity_id.has_value() ||
+      state.activities[0].activity_state != ActivityState::kCompleted ||
+      !state.is_valid()) {
+    return 1;
+  }
+
+  TripState invalid_progress = make_state();
+  if (apply_trip_event(
+          invalid_progress,
+          event(ActivityStatusChanged{second_id, ActivityState::kCompleted}),
+          16)
+          .status != TripStateApplyStatus::kInvalidArgument ||
+      invalid_progress.completed_prefix_count != 0 ||
+      invalid_progress.current_activity_id.has_value() ||
+      invalid_progress.activities[1].activity_state != ActivityState::kPlanned ||
+      !invalid_progress.is_valid()) {
+    return 1;
+  }
+
   const auto third = activity(3);
   auto added_activities = state.activities;
   added_activities.insert(added_activities.begin() + 1, third);
@@ -256,10 +279,11 @@ int main() {
     return 1;
   }
 
-  auto reordered_activities = state.activities;
+  TripState reorder_state = make_state();
+  auto reordered_activities = reorder_state.activities;
   std::swap(reordered_activities[0], reordered_activities[1]);
   if (!accepted(apply_trip_event(
-                    state,
+                    reorder_state,
                     event(TripEdited{
                         .operation = ReorderActivities{
                             {reordered_activities[0].activity_id,
@@ -268,8 +292,8 @@ int main() {
                             plan(reordered_activities, 14)}),
                     16),
                true, true) ||
-      state.activities[0].activity_id !=
-          state.current_plan.segments[0].activity_id) {
+      reorder_state.activities[0].activity_id !=
+          reorder_state.current_plan.segments[0].activity_id) {
     return 1;
   }
 
@@ -286,6 +310,15 @@ int main() {
       AdvisoryKind::kWeatherChanged, "fixture", {std::byte{1}}});
   if (!accepted(apply_trip_event(state, advisory, 1), false, false) ||
       accepted(apply_trip_event(state, advisory, 0), false, false)) {
+    return 1;
+  }
+
+  state.active_proposal = proposal(state);
+  if (!state.is_valid()) return 1;
+  if (!accepted(apply_trip_event(
+                    state, event(LocationUpdated{Location{42.0, -72.0}}),
+                    16)) ||
+      state.active_proposal.has_value()) {
     return 1;
   }
 

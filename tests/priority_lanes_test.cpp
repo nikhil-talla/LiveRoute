@@ -50,12 +50,20 @@ bool keeps_lane_capacities_independent() {
          lanes.size(EventPriority::kAdvisory) == 1 && lanes.size() == 2;
 }
 
+bool rejects_invalid_priority_without_touching_lanes() {
+  BoundedPriorityLanes<int> lanes({1, 1, 1, 1}, 1);
+  const auto invalid = static_cast<EventPriority>(255);
+  return !lanes.try_push(invalid, 1) && lanes.size(invalid) == 0 &&
+         lanes.size() == 0;
+}
+
 }  // namespace
 
 int main() {
   return rejects_invalid_configuration() &&
                  preserves_priority_fifo_and_normal_progress() &&
-                 keeps_lane_capacities_independent()
+                 keeps_lane_capacities_independent() &&
+                 rejects_invalid_priority_without_touching_lanes()
              ? 0
              : 1;
 }

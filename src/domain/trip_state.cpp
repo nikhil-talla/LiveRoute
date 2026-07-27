@@ -37,6 +37,61 @@ Overloaded(Visitors...) -> Overloaded<Visitors...>;
   return activity_for(activities, activity_id) != nullptr;
 }
 
+[[nodiscard]] std::optional<std::size_t> current_plan_index_for(
+    const CurrentPlan& plan, const ActivityId& activity_id) noexcept {
+  for (std::size_t index = 0; index < plan.segments.size(); ++index) {
+    if (plan.segments[index].activity_id == activity_id) return index;
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] bool is_terminal(ActivityState state) noexcept {
+  return state == ActivityState::kCompleted ||
+         state == ActivityState::kSkipped;
+}
+
+[[nodiscard]] bool apply_activity_status_change(
+    TripState& state, const ActivityStatusChanged& update) noexcept {
+  auto* activity = activity_for(state.activities, update.activity_id);
+  const auto plan_index =
+      current_plan_index_for(state.current_plan, update.activity_id);
+  if (activity == nullptr || !plan_index) return false;
+
+  switch (update.state) {
+    case ActivityState::kPlanned:
+      if (*plan_index < state.completed_prefix_count) return false;
+      activity->activity_state = update.state;
+      if (state.current_activity_id ==
+          std::optional<ActivityId>{update.activity_id}) {
+        state.current_activity_id.reset();
+      }
+      return true;
+    case ActivityState::kStarted:
+      if (*plan_index != state.completed_prefix_count ||
+          (state.current_activity_id.has_value() &&
+           state.current_activity_id !=
+               std::optional<ActivityId>{update.activity_id})) {
+        return false;
+      }
+      activity->activity_state = update.state;
+      state.current_activity_id = update.activity_id;
+      return true;
+    case ActivityState::kCompleted:
+    case ActivityState::kSkipped:
+      if (*plan_index != state.completed_prefix_count ||
+          (state.current_activity_id.has_value() &&
+           state.current_activity_id !=
+               std::optional<ActivityId>{update.activity_id})) {
+        return false;
+      }
+      activity->activity_state = update.state;
+      ++state.completed_prefix_count;
+      state.current_activity_id.reset();
+      return true;
+  }
+  return false;
+}
+
 [[nodiscard]] bool same_delay_key(const TravelDelayState& delay,
                                   const TravelDelay& event) noexcept {
   return delay.from_activity_id == event.from_activity_id &&
@@ -102,8 +157,35 @@ bool TripState::is_valid() const {
     return false;
   }
   if (!current_plan.is_valid_for(activity_ids)) return false;
-  if (current_activity_id.has_value() &&
-      !contains_activity(activities, *current_activity_id)) {
+  bool found_started_activity = false;
+  for (std::size_t index = 0; index < current_plan.segments.size(); ++index) {
+    const auto& segment = current_plan.segments[index];
+    const auto* activity = activity_for(activities, segment.activity_id);
+    if (activity == nullptr) return false;
+
+    if (index < completed_prefix_count) {
+      if (!is_terminal(activity->activity_state)) return false;
+    } else if (is_terminal(activity->activity_state)) {
+      return false;
+    }
+
+    if (activity->activity_state == ActivityState::kStarted) {
+      if (found_started_activity || index != completed_prefix_count) {
+        return false;
+      }
+      found_started_activity = true;
+    }
+  }
+  if (current_activity_id.has_value()) {
+    const auto current_index =
+        current_plan_index_for(current_plan, *current_activity_id);
+    const auto* current = activity_for(activities, *current_activity_id);
+    if (!current_index || *current_index != completed_prefix_count ||
+        current == nullptr || current->activity_state != ActivityState::kStarted ||
+        !found_started_activity) {
+      return false;
+    }
+  } else if (found_started_activity) {
     return false;
   }
   if (!current_observation.is_valid()) return false;
@@ -148,6 +230,8 @@ TripStateApplyResult apply_trip_event(
     }
   }
 
+  TripState original_state = state;
+  bool event_mutation_valid = true;
   bool planning_input_changed = true;
   bool current_plan_changed = false;
   std::visit(
@@ -170,11 +254,8 @@ TripStateApplyResult apply_trip_event(
                                     event.occurred_at);
           },
           [&](const ActivityStatusChanged& update) {
-            activity_for(state.activities, update.activity_id)->activity_state =
-                update.state;
-            if (update.state == ActivityState::kStarted) {
-              state.current_activity_id = update.activity_id;
-            }
+            event_mutation_valid =
+                apply_activity_status_change(state, update);
           },
           [&](const ActivityDelayed& update) {
             activity_for(state.activities, update.activity_id)
@@ -283,7 +364,9 @@ TripStateApplyResult apply_trip_event(
           }},
       event.payload);
 
-  if (!state.is_valid()) {
+  if (planning_input_changed) state.active_proposal.reset();
+  if (!event_mutation_valid || !state.is_valid()) {
+    state = std::move(original_state);
     return {TripStateApplyStatus::kInvalidArgument, false, false};
   }
   return {TripStateApplyStatus::kAccepted, planning_input_changed,
