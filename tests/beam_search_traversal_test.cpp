@@ -315,7 +315,8 @@ int main() {
     const auto cancelled =
         run_beam_search(input, budget(32, 1000, 1000,
                                       stop_source.get_token()));
-    if (cancelled.outcome != BeamSearchOutcome::kCancelled) {
+    if (cancelled.outcome != BeamSearchOutcome::kCancelled ||
+        !cancelled.cancellation_requested || cancelled.deadline_hit) {
       return 1;
     }
 
@@ -323,7 +324,8 @@ int main() {
     expired_budget.deadline =
         std::chrono::steady_clock::now() - std::chrono::milliseconds{1};
     const auto expired = run_beam_search(input, expired_budget);
-    if (expired.outcome != BeamSearchOutcome::kDeadlineExceeded) {
+    if (expired.outcome != BeamSearchOutcome::kDeadlineExceeded ||
+        !expired.deadline_hit || expired.cancellation_requested) {
       return 1;
     }
   }
@@ -344,7 +346,8 @@ int main() {
     const auto result = run_beam_search(input, budget(32, 1000, 1));
     if (result.outcome != BeamSearchOutcome::kBestSoFar ||
         !result.has_complete_candidate() || result.expansion_count != 1 ||
-        result.candidate_count != 1) {
+        result.candidate_count != 1 || result.deadline_hit ||
+        result.cancellation_requested) {
       return 1;
     }
   }

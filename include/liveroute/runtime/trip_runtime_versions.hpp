@@ -99,6 +99,18 @@ class TripRuntimeVersions {
           std::nullopt,
       bool advances_planning_generation = true) const;
 
+  // Advisory inputs share the epoch-scoped observation sequence but do not
+  // alter planner inputs. They therefore advance only that watermark and do
+  // not fence otherwise-current provider/planner work.
+  [[nodiscard]] VersionOperationResult accept_advisory(
+      std::uint64_t runtime_epoch, std::uint64_t observation_sequence,
+      std::optional<std::uint64_t> expected_planner_state_version =
+          std::nullopt);
+  [[nodiscard]] VersionOperationResult preview_advisory(
+      std::uint64_t runtime_epoch, std::uint64_t observation_sequence,
+      std::optional<std::uint64_t> expected_planner_state_version =
+          std::nullopt) const;
+
   [[nodiscard]] VersionOperationResult confirm_finalized(
       std::uint64_t runtime_epoch, std::uint64_t finalized_mutation_sequence);
 

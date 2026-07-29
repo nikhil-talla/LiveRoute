@@ -170,7 +170,7 @@ int main() {
   if (advisory.status != EventCoordinatorStatus::kAccepted ||
       advisory.planning_input_changed || advisory.planning_seed.has_value() ||
       versions.snapshot().accepted_observation_sequence != 1 ||
-      versions.snapshot().planner_state_version != 2 ||
+      versions.snapshot().planner_state_version != 1 ||
       versions.snapshot().planning_generation !=
           generation_before_advisory) {
     return 1;

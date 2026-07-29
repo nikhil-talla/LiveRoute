@@ -63,7 +63,20 @@ add_library(liveroute_domain
 target_include_directories(liveroute_domain PUBLIC include)
 liveroute_configure_target(liveroute_domain)
 
+add_library(liveroute_load_model src/load/workload.cpp)
+target_include_directories(liveroute_load_model PUBLIC include)
+liveroute_configure_target(liveroute_load_model)
+
+add_executable(liveroute_loadgen src/load/main.cpp)
+target_link_libraries(liveroute_loadgen
+  PRIVATE liveroute_domain liveroute_load_model
+)
+liveroute_configure_target(liveroute_loadgen)
+
 enable_testing()
+add_test(NAME liveroute_loadgen_self_check
+  COMMAND liveroute_loadgen --self-check
+)
 
 if(LIVEROUTE_ENABLE_GRPC)
   find_package(absl CONFIG REQUIRED)
@@ -115,6 +128,19 @@ if(LIVEROUTE_ENABLE_GRPC)
   target_link_libraries(liveroute_planner_cli PRIVATE liveroute_transport)
   liveroute_configure_target(liveroute_planner_cli)
 
+  add_library(liveroute_grpc_load_runner src/load/grpc_runner.cpp)
+  target_include_directories(liveroute_grpc_load_runner PUBLIC include)
+  target_link_libraries(liveroute_grpc_load_runner
+    PUBLIC liveroute_load_model liveroute_transport
+  )
+  liveroute_configure_target(liveroute_grpc_load_runner)
+
+  add_executable(liveroute_grpc_loadgen src/load/grpc_main.cpp)
+  target_link_libraries(liveroute_grpc_loadgen
+    PRIVATE liveroute_grpc_load_runner
+  )
+  liveroute_configure_target(liveroute_grpc_loadgen)
+
   add_executable(liveroute_grpc_planner_service_test
     tests/grpc_planner_service_test.cpp
   )
@@ -124,6 +150,17 @@ if(LIVEROUTE_ENABLE_GRPC)
   liveroute_configure_target(liveroute_grpc_planner_service_test)
   add_test(NAME liveroute_grpc_planner_service_test
     COMMAND liveroute_grpc_planner_service_test
+  )
+
+  add_executable(liveroute_grpc_load_runner_test
+    tests/grpc_load_runner_test.cpp
+  )
+  target_link_libraries(liveroute_grpc_load_runner_test
+    PRIVATE liveroute_grpc_load_runner
+  )
+  liveroute_configure_target(liveroute_grpc_load_runner_test)
+  add_test(NAME liveroute_grpc_load_runner_test
+    COMMAND liveroute_grpc_load_runner_test
   )
 
   add_executable(liveroute_proto_serialization_bench
@@ -147,6 +184,11 @@ liveroute_configure_target(liveroute_planner_service)
 add_executable(liveroute_smoke_test tests/smoke_test.cpp)
 liveroute_configure_target(liveroute_smoke_test)
 add_test(NAME liveroute_smoke_test COMMAND liveroute_smoke_test)
+
+add_executable(liveroute_workload_test tests/workload_test.cpp)
+target_link_libraries(liveroute_workload_test PRIVATE liveroute_load_model)
+liveroute_configure_target(liveroute_workload_test)
+add_test(NAME liveroute_workload_test COMMAND liveroute_workload_test)
 
 add_executable(liveroute_domain_matrix_test tests/domain_matrix_test.cpp)
 target_link_libraries(liveroute_domain_matrix_test PRIVATE liveroute_domain)
@@ -365,3 +407,11 @@ add_test(NAME liveroute_planning_commit_test COMMAND liveroute_planning_commit_t
 
 add_executable(liveroute_smoke_bench bench/smoke_bench.cpp)
 liveroute_configure_target(liveroute_smoke_bench)
+
+add_executable(liveroute_sharded_runtime_bench
+  bench/sharded_runtime_bench.cpp
+)
+target_link_libraries(liveroute_sharded_runtime_bench
+  PRIVATE liveroute_domain
+)
+liveroute_configure_target(liveroute_sharded_runtime_bench)

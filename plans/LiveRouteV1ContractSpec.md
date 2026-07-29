@@ -62,6 +62,7 @@ Reusing a `(trip_id, message_id)` with an identical algorithm and digest returns
 - `planner_state_version` is scoped to `runtime_epoch`, starts at 0 after a higher-epoch bootstrap, and increments once for each accepted state-changing durable event or telemetry observation in that epoch.
 - `planning_generation` is internal, starts at 0 per runtime epoch, and increments whenever accepted input invalidates planning work.
 - `observation_sequence` is owned by the backend in memory, scoped to `(trip_id, runtime_epoch)`, starts at 1, and may contain gaps. It is never stored in PostgreSQL or a durable snapshot.
+- A valid opaque advisory consumes its observation sequence but does not advance `planner_state_version` or `planning_generation`, because candidate search cannot read or be invalidated by its opaque bytes. `RECOMMENDATION_REFRESH` may request a new attempt over the unchanged current snapshot; the other advisory kinds only acknowledge the watermark.
 - Freshness is compared lexicographically as `(runtime_epoch, planner_state_version)`, never by planner state version alone.
 - The authoritative current plan is identified durably by `(trip_id, plan_id, plan_revision)`. It changes only through `create_trip`, canonical-first `trip_edited`/`replace_current_plan`, or fresh user acceptance of an engine proposal.
 - An engine proposal is identified by `(runtime_epoch, proposal_id, source_planner_state_version, base_current_plan_id)`. Acceptance/rejection must match all four values.
@@ -277,7 +278,7 @@ The concatenated preserved prefix and revised suffix contain every trip activity
 
 V1 assigns the single segment disposition deterministically. An omitted proposal segment is `SKIPPED`. A scheduled revised-suffix segment whose authoritative baseline entry was omitted is `ADDED`. A scheduled segment whose baseline was scheduled is `MOVED` when its interval or its relative position in the common-scheduled suffix changed, otherwise `PRESERVED`. Scheduled preserved-prefix entries are `PRESERVED`. `SHORTENED` is never emitted, so no moved-versus-shortened precedence exists.
 
-`PlannerStats`: 1 `uint64 candidates_evaluated`, 2 `uint64 candidates_pruned`, 3 `uint32 search_depth`, 4 `uint32 queue_wait_microseconds`, 5 `uint32 provider_microseconds`, 6 `uint32 planner_microseconds`, 7 `uint32 serialization_microseconds`, 8 `bool deadline_hit`.
+`PlannerStats`: 1 `uint64 candidates_evaluated`, 2 `uint64 candidates_pruned`, 3 `uint32 search_depth`, 4 `uint32 queue_wait_microseconds`, 5 `uint32 provider_microseconds`, 6 `uint32 planner_microseconds`, 7 `uint32 serialization_microseconds`, 8 `bool deadline_hit`. `deadline_hit` records the actual wall-clock stop cause and is therefore `true` even when a complete feasible candidate makes the visible result `OK` + `BEST_SO_FAR`; candidate/expansion/beam limits and cancellation alone leave it `false`.
 
 `ResultQuality`: 1 `PlanQuality plan_quality`, 2 `RoutingQuality routing_quality`, 3 `RecoveryState recovery_state`.
 
@@ -393,7 +394,7 @@ Notification selection uses this exact precedence:
 5. Otherwise, known next-event slack `<= 20 minutes` -> `LOW_SLACK_WARNING`.
 6. Otherwise, including unknown slack -> `NONE`.
 
-Slack is `authoritative next scheduled start - earliest matrix-based arrival` in signed checked milliseconds from the same immutable snapshot. The boundary bands are therefore `< 0`, `[0, 20 minutes]`, and `> 20 minutes`; the existing `< 10 minute` rule controls whether full replanning is admitted, not a second notification label. Outcome rules take precedence so bounded search never presents a false infeasibility notification and exhaustive infeasibility always uses its contracted notification.
+Slack is `authoritative next scheduled start - earliest matrix-based arrival` in signed checked milliseconds from the same immutable snapshot. The notification boundary bands are therefore `< 0`, `[0, 20 minutes]`, and `> 20 minutes`. V1 has no separate `< 10 minute` raw-telemetry admission rule: slack is computed only after an explicit feasibility-changing trigger starts an attempt. Outcome rules take precedence so bounded search never presents a false infeasibility notification and exhaustive infeasibility always uses its contracted notification.
 
 ### V1 planner feasibility and deterministic objective
 
@@ -895,18 +896,19 @@ Stream reconnection separately uses full-jitter backoff from 100 milliseconds ca
 
 ## GPS/Telemetry Coalescing and Boundary Detection
 
-The backend performs only schema/auth/admission checks and assigns observation sequences. It does not decide whether a coordinate crosses a route/geofence boundary because it does not own authoritative live trip state.
+The backend performs schema/auth/admission checks, assigns observation sequences, and performs transport-only latest-value coalescing. It does not infer a route deviation, geofence crossing, deadline-risk transition, or another domain boundary from raw coordinates.
 
 On a healthy stream, the backend sends admitted observations in sequence and bounds its queue. When disconnected or overloaded it retains only the newest observation per type/trip and explicitly marks replaced samples `COALESCED` or `DROPPED`; old telemetry is never replayed.
 
-The C++ owner shard performs domain classification before expensive work:
+In V1, ordinary `LocationUpdated`, `VelocityUpdated`, and `HeadingUpdated` events are state-only observations:
 
-1. apply the newest non-stale observation;
-2. compare it with the shard-owned current route, geofences, and slack thresholds;
-3. promote a current route-deviation/boundary condition to high-priority replan work;
-4. replace any older pending ordinary-location replan with one latest trigger.
+1. the C++ owner shard applies every admitted non-stale observation and advances the observation and planner-state versions;
+2. the change invalidates stale proposals and in-flight planning generations;
+3. when no explicit feasibility-changing replan is running or pending, the acknowledgement has `replan_scheduled = false` and no route-provider or planner work starts;
+4. when an explicit high/critical replan is already running or pending, the newest ordinary observation replaces its planning snapshot, requests cancellation of the obsolete attempt, and schedules at most one replacement while retaining the highest-priority explicit trigger;
+5. a stale observation is acknowledged as `STALE/OBSERVATION_SEQUENCE` and starts no work.
 
-Transient boundary crossings that must never be lost must arrive as an explicit high/critical domain event such as `RouteDeviationDetected` or an activity lifecycle event; they cannot rely on intermediate GPS samples surviving overload. The backend never attempts to infer such events.
+Feasibility-driven replanning starts only from an explicit feasibility-changing domain event, including `RouteDeviationDetected`, activity lifecycle, reservation/deadline, operating-hours, place-closed, or travel-delay changes. `RECOMMENDATION_REFRESH` is the sole non-feasibility exception: while idle, it may explicitly rerun the unchanged current snapshot; while any attempt is running or pending, it is acknowledged as redundant and does not cancel, fence, or enqueue a second attempt. A boundary that must never be lost is therefore represented explicitly and is never inferred from an intermediate GPS sample. Current-route geometry, configurable geofences, coordinate-derived boundary detection, and an ETA/progress-only response are not V1 contracts; adding any of them requires an additive state/wire contract and a new planner-policy version. Signed slack remains a result/notification fact computed from an explicitly triggered attempt, not a raw-GPS admission trigger.
 
 ## United States Time Normalization
 

@@ -292,6 +292,9 @@ void reconstruct_decisions(const PlannerScratch& scratch,
         .expansion_count = expansion_count,
         .candidate_count = candidate_count,
         .search_was_truncated = search_was_truncated,
+        .deadline_hit = outcome == BeamSearchOutcome::kDeadlineExceeded,
+        .cancellation_requested =
+            outcome == BeamSearchOutcome::kCancelled,
     };
   }
   return {
@@ -301,6 +304,9 @@ void reconstruct_decisions(const PlannerScratch& scratch,
       .expansion_count = expansion_count,
       .candidate_count = candidate_count,
       .search_was_truncated = search_was_truncated,
+      .deadline_hit = outcome == BeamSearchOutcome::kDeadlineExceeded,
+      .cancellation_requested =
+          outcome == BeamSearchOutcome::kCancelled,
   };
 }
 
@@ -656,12 +662,14 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
   if (budget.stop_token.stop_requested()) {
     return {.outcome = BeamSearchOutcome::kCancelled,
             .best_decisions = std::nullopt,
-            .best_score = std::nullopt};
+            .best_score = std::nullopt,
+            .cancellation_requested = true};
   }
   if (std::chrono::steady_clock::now() >= budget.deadline) {
     return {.outcome = BeamSearchOutcome::kDeadlineExceeded,
             .best_decisions = std::nullopt,
-            .best_score = std::nullopt};
+            .best_score = std::nullopt,
+            .deadline_hit = true};
   }
 
   const auto initial_score = score_candidate(input, {});
@@ -824,6 +832,8 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
       .expansion_count = expansion_count,
       .candidate_count = candidate_count,
       .search_was_truncated = search_was_truncated,
+      .deadline_hit = false,
+      .cancellation_requested = false,
   };
 }
 

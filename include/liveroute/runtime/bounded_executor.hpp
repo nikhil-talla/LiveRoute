@@ -95,6 +95,12 @@ class ProviderAndPlannerExecutors {
 
   [[nodiscard]] BoundedExecutor& provider() noexcept { return provider_; }
   [[nodiscard]] BoundedExecutor& planner() noexcept { return planner_; }
+  [[nodiscard]] const BoundedExecutor& provider() const noexcept {
+    return provider_;
+  }
+  [[nodiscard]] const BoundedExecutor& planner() const noexcept {
+    return planner_;
+  }
 
  private:
   BoundedExecutor provider_;

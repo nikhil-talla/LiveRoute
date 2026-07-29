@@ -40,7 +40,7 @@ Concise definitions for the v1 architecture.
 - **Retryable overload:** A temporary capacity problem, such as a full bounded queue. The command was not silently discarded and may be retried later.
 - **Reject when durability is unavailable:** Refuse a command if PostgreSQL cannot safely record it. The backend must not claim success for a change it cannot recover.
 - **Telemetry/latest-value data:** Replaceable information such as location, velocity, or heading. It may be coalesced or dropped because newer data supersedes it.
-- **Telemetry coalescing:** During disconnect/overload, the backend keeps only the newest sample per type/trip and reports replaced samples. The C++ owner shard—not the backend—classifies route/geofence/slack conditions against authoritative live state.
+- **Telemetry coalescing:** During disconnect/overload, the backend keeps only the newest sample per type/trip and reports replaced samples. In V1, ordinary location/velocity/heading samples are state-only and start no replan by themselves; an explicit high/critical boundary event starts replanning, and newer telemetry may only refresh that active attempt's latest snapshot.
 - **Drop with explicit status:** Intentionally discard data under pressure while reporting `dropped` or an equivalent status to make the outcome visible.
 
 ## Stream Recovery Terms

@@ -97,6 +97,8 @@ EventCoordinatorResult coordinate_event_admission(
                        versions.snapshot());
   }
   const bool durable = is_durable(*event_class);
+  const bool advisory =
+      *event_class == domain::TripEventClass::kAdvisory;
   if ((durable &&
        (request.mutation_sequence == 0 ||
         request.observation_sequence != 0 ||
@@ -109,18 +111,22 @@ EventCoordinatorResult coordinate_event_admission(
                        versions.snapshot());
   }
 
-  const auto preview =
-      durable
-          ? versions.preview_durable(
-                request.runtime_epoch, request.mutation_sequence,
-                request.expected_trip_revision,
-                advances_trip_revision(request.event),
-                request.expected_planner_state_version,
-                *event_class != domain::TripEventClass::kAdvisory)
-          : versions.preview_observation(
-                request.runtime_epoch, request.observation_sequence,
-                request.expected_planner_state_version,
-                *event_class != domain::TripEventClass::kAdvisory);
+  const auto preview = durable
+                           ? versions.preview_durable(
+                                 request.runtime_epoch,
+                                 request.mutation_sequence,
+                                 request.expected_trip_revision,
+                                 advances_trip_revision(request.event),
+                                 request.expected_planner_state_version)
+                       : advisory
+                           ? versions.preview_advisory(
+                                 request.runtime_epoch,
+                                 request.observation_sequence,
+                                 request.expected_planner_state_version)
+                           : versions.preview_observation(
+                                 request.runtime_epoch,
+                                 request.observation_sequence,
+                                 request.expected_planner_state_version);
   if (!preview.accepted()) {
     return map_version_result(preview, versions.snapshot());
   }
@@ -157,10 +163,16 @@ EventCoordinatorResult coordinate_event_admission(
                 advances_trip_revision(request.event),
                 request.expected_planner_state_version,
                 applied.planning_input_changed)
-          : versions.accept_observation(
-                request.runtime_epoch, request.observation_sequence,
-                request.expected_planner_state_version,
-                applied.planning_input_changed);
+          : advisory
+                ? versions.accept_advisory(
+                      request.runtime_epoch,
+                      request.observation_sequence,
+                      request.expected_planner_state_version)
+                : versions.accept_observation(
+                      request.runtime_epoch,
+                      request.observation_sequence,
+                      request.expected_planner_state_version,
+                      applied.planning_input_changed);
   if (!committed.accepted()) {
     return make_result(EventCoordinatorStatus::kInternal,
                        versions.snapshot());

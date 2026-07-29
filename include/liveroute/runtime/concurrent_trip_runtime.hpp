@@ -112,6 +112,42 @@ struct RuntimeStageTimings {
   std::uint64_t total_microseconds{};
 };
 
+struct RuntimeQueueDepths {
+  std::size_t critical{};
+  std::size_t high{};
+  std::size_t normal{};
+  std::size_t advisory{};
+  std::size_t completions{};
+  std::size_t provider_jobs{};
+  std::size_t planner_jobs{};
+  std::size_t essential_responses_in_use{};
+
+  friend bool operator==(const RuntimeQueueDepths&,
+                         const RuntimeQueueDepths&) = default;
+};
+
+struct RuntimeObservationMetrics {
+  std::uint64_t received_location_events{};
+  std::uint64_t coalesced_location_replans{};
+  std::uint64_t dropped_stale_location_events{};
+  std::uint64_t replans_avoided{};
+
+  friend bool operator==(const RuntimeObservationMetrics&,
+                         const RuntimeObservationMetrics&) = default;
+};
+
+struct RuntimeExecutionMetrics {
+  std::uint64_t planning_attempts_started{};
+  std::uint64_t planning_attempts_completed{};
+  std::uint64_t deadline_misses{};
+  std::uint64_t cancelled_attempts{};
+  std::uint64_t supersession_requests{};
+  std::uint64_t provider_failures{};
+
+  friend bool operator==(const RuntimeExecutionMetrics&,
+                         const RuntimeExecutionMetrics&) = default;
+};
+
 struct RuntimeBootstrapResult {
   RuntimeBootstrapStatus status;
   TripRuntimeVersionSnapshot versions;
@@ -191,6 +227,9 @@ class ConcurrentTripRuntime {
   void stop_accepting() noexcept;
   [[nodiscard]] bool is_accepting() const noexcept;
   [[nodiscard]] std::size_t active_trip_count() const noexcept;
+  [[nodiscard]] RuntimeQueueDepths queue_depths() const;
+  [[nodiscard]] RuntimeObservationMetrics observation_metrics() const noexcept;
+  [[nodiscard]] RuntimeExecutionMetrics execution_metrics() const noexcept;
 
  private:
   class Impl;

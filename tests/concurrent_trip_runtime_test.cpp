@@ -137,6 +137,73 @@ RuntimeEventRequest location_request(const TripState& state,
   };
 }
 
+RuntimeEventRequest route_deviation_request(
+    const TripState& state, std::uint64_t observation_sequence,
+    std::uint8_t marker) {
+  auto request =
+      location_request(state, observation_sequence, marker);
+  request.admission.event.payload =
+      RouteDeviationDetected{Location{40.0, -74.0}, 25};
+  return request;
+}
+
+RuntimeEventRequest recommendation_refresh_request(
+    const TripState& state, std::uint64_t observation_sequence,
+    std::uint8_t marker) {
+  auto request =
+      location_request(state, observation_sequence, marker);
+  request.admission.event.payload =
+      AdvisoryUpdate{AdvisoryKind::kRecommendationRefresh,
+                     "runtime-test", {}};
+  return request;
+}
+
+RuntimeEventRequest completion_request(
+    const TripState& state, std::uint64_t mutation_sequence,
+    std::uint64_t expected_trip_revision, std::uint8_t marker) {
+  return {
+      .trip_id = state.trip_id,
+      .admission =
+          {.runtime_epoch = 7,
+           .mutation_sequence = mutation_sequence,
+           .observation_sequence = 0,
+           .expected_trip_revision = expected_trip_revision,
+           .expected_planner_state_version = std::nullopt,
+           .event =
+               {.event_id = id<EventId>(marker),
+                .occurred_at = UnixTimeMilliseconds{0},
+                .command_expires_at = std::nullopt,
+                .payload =
+                    ActivityStatusChanged{
+                        state.activities.front().activity_id,
+                        ActivityState::kCompleted}}},
+      .planning = planning(static_cast<std::uint8_t>(marker + 1)),
+  };
+}
+
+RuntimeEventRequest reservation_request(
+    const TripState& state, std::uint64_t mutation_sequence,
+    std::uint64_t expected_trip_revision, std::uint8_t marker) {
+  return {
+      .trip_id = state.trip_id,
+      .admission =
+          {.runtime_epoch = 7,
+           .mutation_sequence = mutation_sequence,
+           .observation_sequence = 0,
+           .expected_trip_revision = expected_trip_revision,
+           .expected_planner_state_version = std::nullopt,
+           .event =
+               {.event_id = id<EventId>(marker),
+                .occurred_at = UnixTimeMilliseconds{0},
+                .command_expires_at = std::nullopt,
+                .payload =
+                    ReservationChanged{
+                        state.activities.front().activity_id,
+                        UnixTimeMilliseconds{500}, 30}}},
+      .planning = planning(static_cast<std::uint8_t>(marker + 1)),
+  };
+}
+
 class BlockingProvider final : public TravelTimeProvider {
  public:
   explicit BlockingProvider(TravelTimeMatrix matrix)
@@ -150,7 +217,7 @@ class BlockingProvider final : public TravelTimeProvider {
     ++calls_;
     started_ = true;
     condition_.notify_all();
-    if (calls_ == 1) {
+    if (calls_ == blocked_call_) {
       condition_.wait(lock, [&] {
         return release_first_ || stop_token.stop_requested();
       });
@@ -173,6 +240,13 @@ class BlockingProvider final : public TravelTimeProvider {
     condition_.notify_all();
   }
 
+  void block_next() {
+    std::scoped_lock lock(mutex_);
+    blocked_call_ = calls_ + 1;
+    started_ = false;
+    release_first_ = false;
+  }
+
   [[nodiscard]] std::size_t calls() const {
     std::scoped_lock lock(mutex_);
     return calls_;
@@ -183,6 +257,7 @@ class BlockingProvider final : public TravelTimeProvider {
   mutable std::mutex mutex_;
   std::condition_variable condition_;
   std::size_t calls_{};
+  std::size_t blocked_call_{1};
   bool started_{};
   bool release_first_{};
 };
@@ -239,6 +314,9 @@ int main() {
         condition.notify_all();
         return true;
       });
+  if (runtime.queue_depths() != RuntimeQueueDepths{}) return 1;
+  if (runtime.observation_metrics() != RuntimeObservationMetrics{}) return 1;
+  if (runtime.execution_metrics() != RuntimeExecutionMetrics{}) return 1;
 
   const auto first = trip(10);
   const auto second = trip(30);
@@ -308,9 +386,9 @@ int main() {
           condition.notify_all();
         });
   };
-  if (submit(location_request(first, 1, 50)) !=
+  if (submit(route_deviation_request(first, 1, 50)) !=
           RuntimeSubmissionStatus::kAccepted ||
-      submit(location_request(second, 1, 60)) !=
+      submit(route_deviation_request(second, 1, 60)) !=
           RuntimeSubmissionStatus::kAccepted) {
     return 1;
   }
@@ -431,7 +509,8 @@ int main() {
         condition.notify_all();
       };
   if (coalescing_runtime.try_apply_event(
-          location_request(first, 1, 100), coalescing_callback) !=
+          route_deviation_request(first, 1, 100),
+          coalescing_callback) !=
           RuntimeSubmissionStatus::kAccepted ||
       !blocking_provider.wait_until_started() ||
       coalescing_runtime.try_apply_event(
@@ -462,6 +541,15 @@ int main() {
         blocking_provider.calls() != 2) {
       return 1;
     }
+  }
+  if (coalescing_runtime.execution_metrics() !=
+      RuntimeExecutionMetrics{.planning_attempts_started = 2,
+                              .planning_attempts_completed = 2,
+                              .deadline_misses = 0,
+                              .cancelled_attempts = 1,
+                              .supersession_requests = 1,
+                              .provider_failures = 0}) {
+    return 1;
   }
 
   BlockingProvider concurrent_provider(matrix);
@@ -514,12 +602,12 @@ int main() {
     }
   }
   if (concurrent_runtime.try_apply_event(
-          location_request(first, 1, 115),
+          route_deviation_request(first, 1, 115),
           [](RuntimeEventAcknowledgement) {}) !=
           RuntimeSubmissionStatus::kAccepted ||
       !concurrent_provider.wait_until_started() ||
       concurrent_runtime.try_apply_event(
-          location_request(second, 1, 116),
+          route_deviation_request(second, 1, 116),
           [](RuntimeEventAcknowledgement) {}) !=
           RuntimeSubmissionStatus::kAccepted) {
     return 1;
@@ -656,7 +744,7 @@ int main() {
     }
   }
   if (mixed_runtime.try_apply_event(
-          location_request(mixed, 1, 125),
+          route_deviation_request(mixed, 1, 125),
           [](RuntimeEventAcknowledgement) {}) !=
       RuntimeSubmissionStatus::kAccepted) {
     return 1;
@@ -678,5 +766,486 @@ int main() {
       if (segment.inbound_route->duration != expected) return 1;
     }
   }
+
+  BlockingProvider burst_provider(matrix);
+  std::size_t burst_acknowledgements = 0;
+  bool burst_replan_scheduled = false;
+  std::uint64_t burst_planner_state_version = 0;
+  std::vector<RuntimePlanningDelivery> burst_deliveries;
+  bool burst_bootstrap_started = false;
+  bool release_burst_bootstrap = false;
+  ConcurrentTripRuntime burst_runtime(
+      {.shard_count = 1,
+       .max_active_trips = 1,
+       .shard_queue_capacities = {2, 2, 8, 2},
+       .completion_queue_capacity = 2,
+       .priority_fairness_burst = 2,
+       .provider_workers = 1,
+       .provider_queue_capacity = 2,
+       .planner_workers = 1,
+       .planner_queue_capacity = 2,
+       .essential_response_capacity = 8,
+       .max_advisory_payload_bytes = 1024},
+      burst_provider,
+      [&](RuntimePlanningDelivery delivery) {
+        std::scoped_lock lock(mutex);
+        burst_deliveries.push_back(std::move(delivery));
+        condition.notify_all();
+        return true;
+      });
+  if (burst_runtime.try_bootstrap(
+          {.state = first,
+           .owner_user_id = {},
+           .runtime_epoch = 7,
+           .trip_revision = 1,
+           .finalized_mutation_sequence = 1,
+           .current_observation_sequence = 0,
+           .stream_binding = 103},
+          [&](RuntimeBootstrapResult result) {
+            std::unique_lock lock(mutex);
+            if (result.status != RuntimeBootstrapStatus::kAccepted) return;
+            burst_bootstrap_started = true;
+            condition.notify_all();
+            condition.wait(lock,
+                           [&] { return release_burst_bootstrap; });
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return burst_bootstrap_started;
+        })) {
+      return 1;
+    }
+  }
+  for (std::uint64_t sequence = 1; sequence <= 5; ++sequence) {
+    if (burst_runtime.try_apply_event(
+            location_request(
+                first, sequence,
+                static_cast<std::uint8_t>(180 + sequence)),
+            [&](RuntimeEventAcknowledgement acknowledgement) {
+              std::scoped_lock lock(mutex);
+              if (acknowledgement.admission.status ==
+                  EventCoordinatorStatus::kAccepted) {
+                ++burst_acknowledgements;
+              }
+              burst_replan_scheduled =
+                  burst_replan_scheduled ||
+                  acknowledgement.admission.planning_seed.has_value();
+              burst_planner_state_version =
+                  acknowledgement.admission.version_snapshot
+                      .planner_state_version;
+              condition.notify_all();
+            }) != RuntimeSubmissionStatus::kAccepted) {
+      return 1;
+    }
+  }
+  if (burst_runtime.queue_depths().normal != 5) return 1;
+  {
+    std::scoped_lock lock(mutex);
+    release_burst_bootstrap = true;
+  }
+  condition.notify_all();
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{3}, [&] {
+          return burst_acknowledgements == 5;
+        }) ||
+        burst_provider.calls() != 0 ||
+        !burst_deliveries.empty() || burst_replan_scheduled ||
+        burst_planner_state_version != 5) {
+      return 1;
+    }
+  }
+  const RuntimeObservationMetrics expected_burst_metrics{
+      .received_location_events = 5,
+      .coalesced_location_replans = 0,
+      .dropped_stale_location_events = 0,
+      .replans_avoided = 5,
+  };
+  if (burst_runtime.observation_metrics() !=
+      expected_burst_metrics) {
+    return 1;
+  }
+  bool stale_location_acknowledged = false;
+  if (burst_runtime.try_apply_event(
+          location_request(first, 4, 190),
+          [&](RuntimeEventAcknowledgement acknowledgement) {
+            std::scoped_lock lock(mutex);
+            stale_location_acknowledged =
+                acknowledgement.admission.status ==
+                EventCoordinatorStatus::kStale;
+            condition.notify_all();
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return stale_location_acknowledged;
+        })) {
+      return 1;
+    }
+  }
+  const auto stale_metrics = burst_runtime.observation_metrics();
+  if (stale_metrics.received_location_events != 6 ||
+      stale_metrics.coalesced_location_replans != 0 ||
+      stale_metrics.dropped_stale_location_events != 1 ||
+      stale_metrics.replans_avoided != 5) {
+    return 1;
+  }
+
+  BlockingProvider boundary_provider(matrix);
+  std::optional<RuntimePlanningDelivery> boundary_delivery;
+  bool boundary_bootstrapped = false;
+  ConcurrentTripRuntime boundary_runtime(
+      {.shard_count = 1,
+       .max_active_trips = 1,
+       .shard_queue_capacities = {4, 4, 4, 2},
+       .completion_queue_capacity = 2,
+       .priority_fairness_burst = 2,
+       .provider_workers = 1,
+       .provider_queue_capacity = 2,
+       .planner_workers = 1,
+       .planner_queue_capacity = 2,
+       .essential_response_capacity = 4,
+       .max_advisory_payload_bytes = 1024},
+      boundary_provider,
+      [&](RuntimePlanningDelivery delivery) {
+        std::scoped_lock lock(mutex);
+        boundary_delivery = std::move(delivery);
+        condition.notify_all();
+        return true;
+      });
+  if (boundary_runtime.try_bootstrap(
+          {.state = first,
+           .owner_user_id = {},
+           .runtime_epoch = 7,
+           .trip_revision = 1,
+           .finalized_mutation_sequence = 1,
+           .current_observation_sequence = 0,
+           .stream_binding = 104},
+          [&](RuntimeBootstrapResult result) {
+            std::scoped_lock lock(mutex);
+            boundary_bootstrapped =
+                result.status == RuntimeBootstrapStatus::kAccepted;
+            condition.notify_all();
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return boundary_bootstrapped;
+        })) {
+      return 1;
+    }
+  }
+  if (boundary_runtime.try_apply_event(
+          route_deviation_request(first, 1, 200),
+          [](RuntimeEventAcknowledgement) {}) !=
+          RuntimeSubmissionStatus::kAccepted ||
+      !boundary_provider.wait_until_started() ||
+      boundary_runtime.try_apply_event(
+          location_request(first, 2, 201),
+          [](RuntimeEventAcknowledgement) {}) !=
+          RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  boundary_provider.release_first();
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{3}, [&] {
+          return boundary_delivery.has_value();
+        }) ||
+        boundary_provider.calls() != 2 ||
+        !boundary_delivery->proposal.has_value() ||
+        std::find(boundary_delivery->proposal->reasons.begin(),
+                  boundary_delivery->proposal->reasons.end(),
+                  PlanReasonCode::kRouteDeviation) ==
+            boundary_delivery->proposal->reasons.end() ||
+        boundary_delivery->proposal->proposal
+                .source_planner_state_version !=
+            PlannerStateVersion{2}) {
+      return 1;
+    }
+  }
+  if (boundary_runtime.execution_metrics() !=
+      RuntimeExecutionMetrics{.planning_attempts_started = 2,
+                              .planning_attempts_completed = 2,
+                              .deadline_misses = 0,
+                              .cancelled_attempts = 1,
+                              .supersession_requests = 1,
+                              .provider_failures = 0}) {
+    return 1;
+  }
+  {
+    std::scoped_lock lock(mutex);
+    boundary_delivery.reset();
+  }
+  boundary_provider.block_next();
+  if (boundary_runtime.try_apply_event(
+          route_deviation_request(first, 3, 205),
+          [](RuntimeEventAcknowledgement) {}) !=
+          RuntimeSubmissionStatus::kAccepted ||
+      !boundary_provider.wait_until_started() ||
+      boundary_runtime.try_apply_event(
+          reservation_request(first, 2, 1, 206),
+          [](RuntimeEventAcknowledgement) {}) !=
+          RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  boundary_provider.release_first();
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{3}, [&] {
+          return boundary_delivery.has_value();
+        }) ||
+        boundary_provider.calls() != 4 ||
+        boundary_delivery->versions.trip_revision != 2 ||
+        boundary_delivery->versions.accepted_mutation_sequence != 2 ||
+        !boundary_delivery->proposal.has_value() ||
+        boundary_delivery->proposal->proposal
+                .source_accepted_mutation_sequence !=
+            MutationSequence{2}) {
+      return 1;
+    }
+  }
+  if (boundary_runtime.execution_metrics() !=
+      RuntimeExecutionMetrics{.planning_attempts_started = 4,
+                              .planning_attempts_completed = 4,
+                              .deadline_misses = 0,
+                              .cancelled_attempts = 2,
+                              .supersession_requests = 2,
+                              .provider_failures = 0}) {
+    return 1;
+  }
+
+  std::optional<RuntimePlanningDelivery> expired_delivery;
+  bool expired_bootstrapped = false;
+  ConcurrentTripRuntime expired_runtime(
+      {.shard_count = 1,
+       .max_active_trips = 1,
+       .shard_queue_capacities = {2, 2, 2, 2},
+       .completion_queue_capacity = 1,
+       .priority_fairness_burst = 2,
+       .provider_workers = 1,
+       .provider_queue_capacity = 1,
+       .planner_workers = 1,
+       .planner_queue_capacity = 1,
+       .essential_response_capacity = 2,
+       .max_advisory_payload_bytes = 1024},
+      provider,
+      [&](RuntimePlanningDelivery delivery) {
+        std::scoped_lock lock(mutex);
+        expired_delivery = std::move(delivery);
+        condition.notify_all();
+        return true;
+      });
+  if (expired_runtime.try_bootstrap(
+          {.state = first,
+           .owner_user_id = {},
+           .runtime_epoch = 7,
+           .trip_revision = 1,
+           .finalized_mutation_sequence = 1,
+           .current_observation_sequence = 0,
+           .stream_binding = 105},
+          [&](RuntimeBootstrapResult result) {
+            std::scoped_lock lock(mutex);
+            expired_bootstrapped =
+                result.status == RuntimeBootstrapStatus::kAccepted;
+            condition.notify_all();
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return expired_bootstrapped;
+        })) {
+      return 1;
+    }
+  }
+  auto expired_request = route_deviation_request(first, 1, 210);
+  expired_request.planning->deadline =
+      std::chrono::steady_clock::now() - std::chrono::milliseconds{1};
+  if (expired_runtime.try_apply_event(
+          std::move(expired_request),
+          [](RuntimeEventAcknowledgement) {}) !=
+      RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return expired_delivery.has_value();
+        }) ||
+        expired_delivery->status !=
+            RuntimePlanningStatus::kDeadlineExceeded ||
+        expired_delivery->proposal.has_value()) {
+      return 1;
+    }
+  }
+  if (expired_runtime.execution_metrics() !=
+      RuntimeExecutionMetrics{.planning_attempts_started = 1,
+                              .planning_attempts_completed = 1,
+                              .deadline_misses = 1,
+                              .cancelled_attempts = 0,
+                              .supersession_requests = 0,
+                              .provider_failures = 1}) {
+    return 1;
+  }
+
+  BlockingProvider advisory_provider(matrix);
+  std::optional<RuntimePlanningDelivery> advisory_delivery;
+  bool advisory_bootstrapped = false;
+  ConcurrentTripRuntime advisory_runtime(
+      {.shard_count = 1,
+       .max_active_trips = 1,
+       .shard_queue_capacities = {2, 2, 2, 2},
+       .completion_queue_capacity = 2,
+       .priority_fairness_burst = 2,
+       .provider_workers = 1,
+       .provider_queue_capacity = 2,
+       .planner_workers = 1,
+       .planner_queue_capacity = 2,
+       .essential_response_capacity = 3,
+       .max_advisory_payload_bytes = 1024},
+      advisory_provider,
+      [&](RuntimePlanningDelivery delivery) {
+        std::scoped_lock lock(mutex);
+        advisory_delivery = std::move(delivery);
+        condition.notify_all();
+        return true;
+      });
+  if (advisory_runtime.try_bootstrap(
+          {.state = first,
+           .owner_user_id = {},
+           .runtime_epoch = 7,
+           .trip_revision = 1,
+           .finalized_mutation_sequence = 1,
+           .current_observation_sequence = 0,
+           .stream_binding = 106},
+          [&](RuntimeBootstrapResult result) {
+            std::scoped_lock lock(mutex);
+            advisory_bootstrapped =
+                result.status == RuntimeBootstrapStatus::kAccepted;
+            condition.notify_all();
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return advisory_bootstrapped;
+        })) {
+      std::cerr << "advisory bootstrap callback timed out\n";
+      return 1;
+    }
+  }
+  bool advisory_location_accepted = false;
+  if (advisory_runtime.try_apply_event(
+          location_request(first, 1, 219),
+          [&](RuntimeEventAcknowledgement acknowledgement) {
+            std::scoped_lock lock(mutex);
+            advisory_location_accepted =
+                acknowledgement.admission.status ==
+                    EventCoordinatorStatus::kAccepted &&
+                !acknowledgement.admission.planning_seed.has_value();
+            condition.notify_all();
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    std::cerr << "advisory location submission failed\n";
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return advisory_location_accepted;
+        })) {
+      std::cerr << "advisory location callback timed out\n";
+      return 1;
+    }
+  }
+  bool refresh_accepted = false;
+  if (advisory_runtime.try_apply_event(
+          recommendation_refresh_request(first, 2, 220),
+          [&](RuntimeEventAcknowledgement acknowledgement) {
+            std::scoped_lock lock(mutex);
+            refresh_accepted =
+                acknowledgement.admission.status ==
+                    EventCoordinatorStatus::kAccepted &&
+                acknowledgement.admission.planning_seed.has_value();
+            condition.notify_all();
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    std::cerr << "advisory refresh submission failed\n";
+    return 1;
+  }
+  if (!advisory_provider.wait_until_started()) {
+    std::cerr << "advisory provider did not start; accepted="
+              << refresh_accepted << '\n';
+    return 1;
+  }
+  bool redundant_refresh_accepted = false;
+  if (advisory_runtime.try_apply_event(
+          recommendation_refresh_request(first, 3, 222),
+          [&](RuntimeEventAcknowledgement acknowledgement) {
+            std::scoped_lock lock(mutex);
+            redundant_refresh_accepted =
+                acknowledgement.admission.status ==
+                    EventCoordinatorStatus::kAccepted &&
+                !acknowledgement.admission.planning_seed.has_value();
+            condition.notify_all();
+          }) != RuntimeSubmissionStatus::kAccepted) {
+    std::cerr << "redundant advisory refresh submission failed\n";
+    return 1;
+  }
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{2}, [&] {
+          return redundant_refresh_accepted;
+        })) {
+      std::cerr << "redundant advisory refresh callback timed out\n";
+      return 1;
+    }
+  }
+  if (advisory_runtime.try_apply_event(
+          completion_request(first, 2, 1, 221),
+          [](RuntimeEventAcknowledgement) {}) !=
+      RuntimeSubmissionStatus::kAccepted) {
+    std::cerr << "completion submission failed\n";
+    return 1;
+  }
+  advisory_provider.release_first();
+  {
+    std::unique_lock lock(mutex);
+    if (!condition.wait_for(lock, std::chrono::seconds{3}, [&] {
+          return advisory_delivery.has_value();
+        }) ||
+        advisory_delivery->status != RuntimePlanningStatus::kOk ||
+        !advisory_delivery->proposal.has_value() ||
+        advisory_delivery->versions.trip_revision != 2 ||
+        advisory_delivery->versions.accepted_mutation_sequence != 2) {
+      std::cerr << "completion replacement delivery failed\n";
+      return 1;
+    }
+  }
+  if (advisory_runtime.execution_metrics() !=
+      RuntimeExecutionMetrics{.planning_attempts_started = 2,
+                              .planning_attempts_completed = 2,
+                              .deadline_misses = 0,
+                              .cancelled_attempts = 1,
+                              .supersession_requests = 1,
+                              .provider_failures = 0}) {
+    const auto metrics = advisory_runtime.execution_metrics();
+    std::cerr << "advisory metrics " << metrics.deadline_misses << ' '
+              << metrics.cancelled_attempts << ' '
+              << metrics.supersession_requests << '\n';
+    return 1;
+  }
+  if (advisory_runtime.observation_metrics().replans_avoided != 2) {
+    return 1;
+  }
+
   return 0;
 }

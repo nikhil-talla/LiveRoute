@@ -50,6 +50,7 @@ RUN cmake -S . -B /workspace/build -G Ninja \
       -DLIVEROUTE_ENABLE_PINNED_TZDATA_TESTS=ON \
     && cmake --build /workspace/build \
     && ctest --test-dir /workspace/build --output-on-failure \
-    && /workspace/build/liveroute_proto_serialization_bench
+    && /workspace/build/liveroute_proto_serialization_bench \
+    && /workspace/build/liveroute_sharded_runtime_bench
 
 ENTRYPOINT ["/workspace/build/liveroute_planner_service"]

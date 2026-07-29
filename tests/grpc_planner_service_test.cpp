@@ -190,6 +190,18 @@ void fill_location_event(
   location->set_longitude(-74.0);
 }
 
+void fill_route_deviation_event(
+    ::liveroute::v1::PlannerStreamRequest& request,
+    std::string request_id, std::uint64_t observation_sequence) {
+  fill_location_event(
+      request, std::move(request_id), observation_sequence);
+  auto* deviation =
+      request.mutable_apply_event()->mutable_route_deviation_detected();
+  deviation->mutable_location()->set_latitude(40.0);
+  deviation->mutable_location()->set_longitude(-74.0);
+  deviation->set_distance_from_route_meters(25);
+}
+
 }  // namespace
 
 int main() {
@@ -267,7 +279,7 @@ int main() {
   }
 
   request.Clear();
-  fill_location_event(
+  fill_route_deviation_event(
       request, "cccccccc-cccc-cccc-cccc-cccccccccccc", 1);
   if (!first_stream->Write(request)) return 1;
   bool acknowledged = false;
@@ -335,7 +347,7 @@ int main() {
 
   provider.block();
   request.Clear();
-  fill_location_event(
+  fill_route_deviation_event(
       request, "ffffffff-ffff-ffff-ffff-ffffffffffff", 2);
   if (!second_stream->Write(request) ||
       !second_stream->Read(&response) ||

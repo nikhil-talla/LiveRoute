@@ -38,6 +38,34 @@ using SteadyTime = std::chrono::steady_clock::time_point;
                               std::numeric_limits<std::uint32_t>::max()));
 }
 
+[[nodiscard]] bool is_location_update(
+    const domain::TripEventPayload& payload) noexcept {
+  return std::holds_alternative<domain::LocationUpdated>(payload);
+}
+
+[[nodiscard]] bool is_recommendation_refresh(
+    const domain::TripEventPayload& payload) noexcept {
+  const auto* advisory =
+      std::get_if<domain::AdvisoryUpdate>(&payload);
+  return advisory != nullptr &&
+         advisory->kind ==
+             domain::AdvisoryKind::kRecommendationRefresh;
+}
+
+[[nodiscard]] bool is_ordinary_observation(
+    const domain::TripEventPayload& payload) noexcept {
+  return std::holds_alternative<domain::LocationUpdated>(payload) ||
+         std::holds_alternative<domain::VelocityUpdated>(payload) ||
+         std::holds_alternative<domain::HeadingUpdated>(payload);
+}
+
+[[nodiscard]] bool has_higher_priority(
+    domain::EventPriority candidate,
+    domain::EventPriority current) noexcept {
+  return static_cast<std::uint8_t>(candidate) <
+         static_cast<std::uint8_t>(current);
+}
+
 class PermitPool {
  public:
   explicit PermitPool(std::size_t capacity) : state_(std::make_shared<State>()) {
@@ -56,6 +84,10 @@ class PermitPool {
       }
     }
     return {};
+  }
+
+  [[nodiscard]] std::size_t used() const noexcept {
+    return state_->used.load(std::memory_order_acquire);
   }
 
  private:
@@ -323,11 +355,71 @@ class ConcurrentTripRuntime::Impl {
                     .planner_queue_capacity =
                         configuration.planner_queue_capacity}) {}
 
+  [[nodiscard]] RuntimeQueueDepths queue_depths() const {
+    return {
+        .critical = shards_.queue_size(domain::EventPriority::kCritical),
+        .high = shards_.queue_size(domain::EventPriority::kHigh),
+        .normal = shards_.queue_size(domain::EventPriority::kNormal),
+        .advisory = shards_.queue_size(domain::EventPriority::kAdvisory),
+        .completions = shards_.completion_queue_size(),
+        .provider_jobs = executors_.provider().queue_size(),
+        .planner_jobs = executors_.planner().queue_size(),
+        .essential_responses_in_use = responses_.used(),
+    };
+  }
+
+  [[nodiscard]] RuntimeObservationMetrics observation_metrics() const noexcept {
+    return {
+        .received_location_events =
+            received_location_events_.load(std::memory_order_acquire),
+        .coalesced_location_replans =
+            coalesced_location_replans_.load(std::memory_order_acquire),
+        .dropped_stale_location_events =
+            dropped_stale_location_events_.load(std::memory_order_acquire),
+        .replans_avoided =
+            replans_avoided_.load(std::memory_order_acquire),
+    };
+  }
+
+  [[nodiscard]] RuntimeExecutionMetrics execution_metrics() const noexcept {
+    return {
+        .planning_attempts_started =
+            planning_attempts_started_.load(std::memory_order_acquire),
+        .planning_attempts_completed =
+            planning_attempts_completed_.load(std::memory_order_acquire),
+        .deadline_misses =
+            deadline_misses_.load(std::memory_order_acquire),
+        .cancelled_attempts =
+            cancelled_attempts_.load(std::memory_order_acquire),
+        .supersession_requests =
+            supersession_requests_.load(std::memory_order_acquire),
+        .provider_failures =
+            provider_failures_.load(std::memory_order_acquire),
+    };
+  }
+
+  void record_terminal_work_status(RuntimePlanningStatus status) noexcept {
+    if (status == RuntimePlanningStatus::kDeadlineExceeded) {
+      deadline_misses_.fetch_add(1, std::memory_order_relaxed);
+    } else if (status == RuntimePlanningStatus::kCancelled) {
+      cancelled_attempts_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  void record_provider_failure(RuntimePlanningStatus status) noexcept {
+    if (status != RuntimePlanningStatus::kCancelled &&
+        status != RuntimePlanningStatus::kInvalidArgument) {
+      provider_failures_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
   struct PendingPlanning {
     ImmutablePlanningSeed seed;
     RuntimePlanningContext context;
     RuntimeStageTimings timings;
     SteadyTime started_at;
+    domain::EventPriority priority{domain::EventPriority::kNormal};
+    bool latest_input_is_ordinary_observation{};
   };
 
   struct ActiveTrip {
@@ -338,6 +430,9 @@ class ConcurrentTripRuntime::Impl {
     bool deactivation_pending{};
     bool planning_running{};
     std::shared_ptr<std::stop_source> planning_stop;
+    domain::EventPriority planning_priority{
+        domain::EventPriority::kNormal};
+    domain::TripEventPayload planning_trigger;
     std::optional<PendingPlanning> pending;
   };
 
@@ -418,6 +513,9 @@ class ConcurrentTripRuntime::Impl {
                                .deactivation_pending = false,
                                .planning_running = false,
                                .planning_stop = nullptr,
+                               .planning_priority =
+                                   domain::EventPriority::kNormal,
+                               .planning_trigger = std::monostate{},
                                .pending = std::nullopt});
                 (void)unused;
                 callback({RuntimeBootstrapStatus::kAccepted,
@@ -457,6 +555,9 @@ class ConcurrentTripRuntime::Impl {
 
   [[nodiscard]] RuntimeSubmissionStatus try_apply_event(
       RuntimeEventRequest request, EventAcknowledgementCallback callback) {
+    if (is_location_update(request.admission.event.payload)) {
+      received_location_events_.fetch_add(1, std::memory_order_relaxed);
+    }
     if (!accepting_.load(std::memory_order_acquire)) {
       return RuntimeSubmissionStatus::kStopping;
     }
@@ -502,12 +603,57 @@ class ConcurrentTripRuntime::Impl {
                 callback({std::move(result), timings});
                 return;
               }
+              const auto event_priority =
+                  request.admission.event.priority_for(
+                      trip.state.activities);
+              const bool ordinary_observation =
+                  is_ordinary_observation(
+                      request.admission.event.payload);
+              const bool location_update =
+                  is_location_update(request.admission.event.payload);
+              const bool recommendation_refresh =
+                  is_recommendation_refresh(
+                      request.admission.event.payload);
               auto admission = coordinate_event_admission(
                   trip.state, trip.versions, request.admission,
                   configuration_.max_advisory_payload_bytes);
+              if (location_update &&
+                  admission.status == EventCoordinatorStatus::kStale) {
+                dropped_stale_location_events_.fetch_add(
+                    1, std::memory_order_relaxed);
+              }
               const auto application_end = std::chrono::steady_clock::now();
               timings.event_application_microseconds =
                   elapsed_microseconds(application_start, application_end);
+              if (recommendation_refresh &&
+                  admission.status == EventCoordinatorStatus::kAccepted &&
+                  !admission.planning_seed.has_value()) {
+                const auto token = trip.versions.capture_planning_work();
+                if (!token.has_value()) {
+                  admission.status = EventCoordinatorStatus::kInternal;
+                } else {
+                  admission.planning_seed = ImmutablePlanningSeed{
+                      .state = trip.state,
+                      .trigger = request.admission.event.payload,
+                      .source_versions = trip.versions.snapshot(),
+                      .work_token = *token};
+                }
+              }
+              if (ordinary_observation &&
+                  admission.planning_seed.has_value() &&
+                  !trip.planning_running &&
+                  !trip.pending.has_value()) {
+                admission.planning_seed.reset();
+                replans_avoided_.fetch_add(
+                    1, std::memory_order_relaxed);
+              }
+              if (recommendation_refresh &&
+                  admission.planning_seed.has_value() &&
+                  (trip.planning_running || trip.pending.has_value())) {
+                admission.planning_seed.reset();
+                replans_avoided_.fetch_add(
+                    1, std::memory_order_relaxed);
+              }
               const auto seed = admission.planning_seed;
               const auto response_start = std::chrono::steady_clock::now();
               RuntimeEventAcknowledgement acknowledgement{
@@ -526,7 +672,10 @@ class ConcurrentTripRuntime::Impl {
               PendingPlanning pending{.seed = *seed,
                                       .context = *request.planning,
                                       .timings = timings,
-                                      .started_at = submitted_at};
+                                      .started_at = submitted_at,
+                                      .priority = event_priority,
+                                      .latest_input_is_ordinary_observation =
+                                          ordinary_observation};
               if (!request.planning->is_valid()) {
                 deliver_failure(request.trip_id, trip,
                                 RuntimePlanningStatus::kInvalidArgument,
@@ -534,10 +683,35 @@ class ConcurrentTripRuntime::Impl {
                 return;
               }
               if (trip.planning_running) {
+                preserve_higher_priority_trigger(
+                    pending, trip.planning_priority,
+                    trip.planning_trigger);
+                if (trip.pending.has_value()) {
+                  preserve_higher_priority_trigger(
+                      pending, trip.pending->priority,
+                      trip.pending->seed.trigger);
+                }
                 if (trip.planning_stop != nullptr) {
-                  trip.planning_stop->request_stop();
+                  if (trip.planning_stop->request_stop()) {
+                    supersession_requests_.fetch_add(
+                        1, std::memory_order_relaxed);
+                  }
+                }
+                if (ordinary_observation) {
+                  record_coalesced_location_replan(location_update);
                 }
                 trip.pending = std::move(pending);
+                return;
+              }
+              if (trip.pending.has_value()) {
+                preserve_higher_priority_trigger(
+                    pending, trip.pending->priority,
+                    trip.pending->seed.trigger);
+                if (ordinary_observation) {
+                  record_coalesced_location_replan(location_update);
+                }
+                trip.pending = std::move(pending);
+                dispatch_pending(request.trip_id, trip);
                 return;
               }
               dispatch_planning(request.trip_id, trip, std::move(pending));
@@ -757,6 +931,26 @@ class ConcurrentTripRuntime::Impl {
     return RuntimeSubmissionStatus::kAccepted;
   }
 
+  static void preserve_higher_priority_trigger(
+      PendingPlanning& replacement,
+      domain::EventPriority retained_priority,
+      const domain::TripEventPayload& retained_trigger) {
+    if (!has_higher_priority(retained_priority,
+                             replacement.priority)) {
+      return;
+    }
+    replacement.priority = retained_priority;
+    replacement.seed.trigger = retained_trigger;
+  }
+
+  void record_coalesced_location_replan(bool location_update) noexcept {
+    if (location_update) {
+      coalesced_location_replans_.fetch_add(
+          1, std::memory_order_relaxed);
+    }
+    replans_avoided_.fetch_add(1, std::memory_order_relaxed);
+  }
+
   void dispatch_planning(const domain::TripId& trip_id, ActiveTrip& trip,
                          PendingPlanning pending) {
     auto completion = shards_.try_reserve_completion(trip_id);
@@ -767,7 +961,10 @@ class ConcurrentTripRuntime::Impl {
     }
 
     trip.planning_running = true;
+    trip.planning_priority = pending.priority;
+    trip.planning_trigger = pending.seed.trigger;
     trip.planning_stop = std::make_shared<std::stop_source>();
+    planning_attempts_started_.fetch_add(1, std::memory_order_relaxed);
     auto stop = trip.planning_stop;
     auto pending_work =
         std::make_shared<PendingPlanning>(std::move(pending));
@@ -786,6 +983,10 @@ class ConcurrentTripRuntime::Impl {
                                  pending_work->context, provider_,
                                  stop->get_token(), pending_work->timings);
               if (const auto* failure = std::get_if<MatrixFailure>(&matrix)) {
+                record_provider_failure(failure->status);
+                record_terminal_work_status(failure->status);
+                planning_attempts_completed_.fetch_add(
+                    1, std::memory_order_relaxed);
                 post_completion(
                     trip_id, reserved,
                     [this, trip_id, pending_work,
@@ -808,6 +1009,8 @@ class ConcurrentTripRuntime::Impl {
                         run_planner(trip_id, std::move(*pending_work), stop,
                                     reserved, immutable_matrix);
                       })) {
+                planning_attempts_completed_.fetch_add(
+                    1, std::memory_order_relaxed);
                 post_completion(
                     trip_id, reserved,
                     [this, trip_id, pending_work](
@@ -821,6 +1024,8 @@ class ConcurrentTripRuntime::Impl {
             })) {
       trip.planning_running = false;
       trip.planning_stop.reset();
+      planning_attempts_completed_.fetch_add(
+          1, std::memory_order_relaxed);
       deliver_failure(trip_id, trip, RuntimePlanningStatus::kResourceExhausted,
                       std::move(*pending_work), false);
     }
@@ -837,6 +1042,8 @@ class ConcurrentTripRuntime::Impl {
         pending.context.planning_horizon_start,
         pending.context.planning_horizon_end, *matrix);
     if (!input.has_value()) {
+      planning_attempts_completed_.fetch_add(
+          1, std::memory_order_relaxed);
       post_completion(
           trip_id, reserved,
           [this, trip_id, pending = std::move(pending)](
@@ -849,6 +1056,8 @@ class ConcurrentTripRuntime::Impl {
     }
     const auto facts = planner::derive_replan_facts(*input);
     if (!facts.has_value()) {
+      planning_attempts_completed_.fetch_add(
+          1, std::memory_order_relaxed);
       post_completion(
           trip_id, reserved,
           [this, trip_id, pending = std::move(pending)](
@@ -882,6 +1091,14 @@ class ConcurrentTripRuntime::Impl {
     auto attempt = planner::run_replan_attempt(
         *input, pending.seed.state.activities, source, pending.seed.trigger,
         *facts, budget);
+    if (attempt.search.deadline_hit) {
+      deadline_misses_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (attempt.search.cancellation_requested) {
+      cancelled_attempts_.fetch_add(1, std::memory_order_relaxed);
+    }
+    planning_attempts_completed_.fetch_add(
+        1, std::memory_order_relaxed);
     const auto planner_end = std::chrono::steady_clock::now();
     pending.timings.planner_microseconds =
         elapsed_microseconds(planner_start, planner_end);
@@ -898,8 +1115,7 @@ class ConcurrentTripRuntime::Impl {
         .planner_microseconds =
             bounded_u32(pending.timings.planner_microseconds),
         .serialization_microseconds = 0,
-        .deadline_hit = attempt.search.outcome ==
-                        planner::BeamSearchOutcome::kDeadlineExceeded,
+        .deadline_hit = attempt.search.deadline_hit,
     };
     auto stored = planner::assemble_stored_plan_proposal(
         attempt, pending.seed.state.activities, stats,
@@ -979,6 +1195,11 @@ class ConcurrentTripRuntime::Impl {
         !trip.pending.has_value()) {
       return;
     }
+    if (trip.pending->latest_input_is_ordinary_observation &&
+        shards_.queue_size_for_trip(
+            trip_id, domain::EventPriority::kNormal) != 0) {
+      return;
+    }
     auto pending = std::move(*trip.pending);
     trip.pending.reset();
     dispatch_planning(trip_id, trip, std::move(pending));
@@ -1025,6 +1246,16 @@ class ConcurrentTripRuntime::Impl {
   std::vector<TripMap> trip_maps_;
   std::atomic<std::size_t> active_trip_count_{};
   std::atomic<bool> accepting_{true};
+  std::atomic<std::uint64_t> received_location_events_{};
+  std::atomic<std::uint64_t> coalesced_location_replans_{};
+  std::atomic<std::uint64_t> dropped_stale_location_events_{};
+  std::atomic<std::uint64_t> replans_avoided_{};
+  std::atomic<std::uint64_t> planning_attempts_started_{};
+  std::atomic<std::uint64_t> planning_attempts_completed_{};
+  std::atomic<std::uint64_t> deadline_misses_{};
+  std::atomic<std::uint64_t> cancelled_attempts_{};
+  std::atomic<std::uint64_t> supersession_requests_{};
+  std::atomic<std::uint64_t> provider_failures_{};
   // Destruction is reverse declaration order: executor jobs finish while the
   // shard dispatcher is alive, shards join while trip_maps_ is alive, then
   // shard-owned state is released.
@@ -1105,6 +1336,20 @@ bool ConcurrentTripRuntime::is_accepting() const noexcept {
 
 std::size_t ConcurrentTripRuntime::active_trip_count() const noexcept {
   return impl_->active_trip_count_.load(std::memory_order_acquire);
+}
+
+RuntimeQueueDepths ConcurrentTripRuntime::queue_depths() const {
+  return impl_->queue_depths();
+}
+
+RuntimeObservationMetrics
+ConcurrentTripRuntime::observation_metrics() const noexcept {
+  return impl_->observation_metrics();
+}
+
+RuntimeExecutionMetrics
+ConcurrentTripRuntime::execution_metrics() const noexcept {
+  return impl_->execution_metrics();
 }
 
 }  // namespace liveroute::runtime

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <deque>
@@ -80,6 +81,16 @@ class BoundedPriorityLanes {
     if (!is_valid_priority(priority)) return 0;
     std::scoped_lock lock(mutex_);
     return lanes_[index_for(priority)].size();
+  }
+
+  template <typename Predicate>
+  [[nodiscard]] std::size_t count_if(
+      domain::EventPriority priority, Predicate predicate) const {
+    if (!is_valid_priority(priority)) return 0;
+    std::scoped_lock lock(mutex_);
+    const auto& lane = lanes_[index_for(priority)];
+    return static_cast<std::size_t>(
+        std::count_if(lane.begin(), lane.end(), std::move(predicate)));
   }
 
  private:

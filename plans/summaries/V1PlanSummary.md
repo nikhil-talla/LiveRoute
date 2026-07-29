@@ -80,7 +80,7 @@ The client sends location, velocity, heading, and possibly route-deviation obser
 
 The backend validates and authorizes them, assigns observation sequences, coalesces or drops obsolete samples when overloaded, and sends accepted observations to C++.
 
-The C++ owner shard decides whether an observation indicates route deviation, a geofence/boundary crossing, low deadline slack, or another condition requiring replanning. The backend does not determine route deviation because it does not own authoritative live trip state.
+Ordinary location, velocity, and heading observations update C++ shard-owned live state but do not independently start replanning. Full replanning starts from an explicit feasibility-changing event such as route deviation, lifecycle, reservation/deadline, hours, place-closed, or travel delay; newer telemetry may refresh one active replacement snapshot without erasing that explicit cause. Coordinate-derived route/geofence inference and ETA-only refresh are outside V1.
 
 ### Manual Trip Edits
 

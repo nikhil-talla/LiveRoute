@@ -3,6 +3,7 @@
 #include "liveroute/domain/types.hpp"
 #include "liveroute/runtime/priority_lanes.hpp"
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +24,13 @@ class ShardedExecutor {
  public:
   using Task = std::function<void(std::stop_token)>;
 
+ private:
+  struct QueuedTask {
+    domain::TripId trip_id;
+    Task task;
+  };
+
+ public:
   class CompletionReservation {
    public:
     CompletionReservation() = default;
@@ -118,6 +126,7 @@ class ShardedExecutor {
   ShardedExecutor& operator=(const ShardedExecutor&) = delete;
 
   ~ShardedExecutor() {
+    stop_accepting();
     for (auto& shard : shards_) {
       shard->worker.request_stop();
       shard->work_available.notify_all();
@@ -143,12 +152,22 @@ class ShardedExecutor {
 
   [[nodiscard]] bool try_submit(const domain::TripId& trip_id,
                                 domain::EventPriority priority, Task task) {
+    if (!accepting_.load(std::memory_order_acquire)) return false;
     auto& shard = *shards_[shard_for(trip_id)];
-    if (!shard.queue.try_push(priority, std::move(task))) {
+    if (!shard.queue.try_push(
+            priority, QueuedTask{trip_id, std::move(task)})) {
       return false;
     }
     shard.work_available.notify_one();
     return true;
+  }
+
+  void stop_accepting() noexcept {
+    accepting_.store(false, std::memory_order_release);
+  }
+
+  [[nodiscard]] bool is_accepting() const noexcept {
+    return accepting_.load(std::memory_order_acquire);
   }
 
   [[nodiscard]] std::size_t queue_size(
@@ -159,6 +178,25 @@ class ShardedExecutor {
   [[nodiscard]] std::size_t queue_size(
       const domain::TripId& trip_id, domain::EventPriority priority) const {
     return shards_[shard_for(trip_id)]->queue.size(priority);
+  }
+
+  [[nodiscard]] std::size_t queue_size(
+      domain::EventPriority priority) const {
+    std::size_t total{};
+    for (const auto& shard : shards_) {
+      total += shard->queue.size(priority);
+    }
+    return total;
+  }
+
+  [[nodiscard]] std::size_t queue_size_for_trip(
+      const domain::TripId& trip_id,
+      domain::EventPriority priority) const {
+    const auto& shard = *shards_[shard_for(trip_id)];
+    return shard.queue.count_if(
+        priority, [&trip_id](const QueuedTask& queued) {
+          return queued.trip_id == trip_id;
+        });
   }
 
   [[nodiscard]] std::optional<CompletionReservation>
@@ -201,6 +239,15 @@ class ShardedExecutor {
     return state->tasks.size();
   }
 
+  [[nodiscard]] std::size_t completion_queue_size() const {
+    std::size_t total{};
+    for (const auto& shard : shards_) {
+      std::scoped_lock lock(shard->completion->mutex);
+      total += shard->completion->tasks.size();
+    }
+    return total;
+  }
+
  private:
   struct Shard {
     Shard(PriorityLaneCapacities capacities,
@@ -210,7 +257,7 @@ class ShardedExecutor {
           completion(std::make_shared<CompletionReservation::State>(
               completion_capacity)) {}
 
-    BoundedPriorityLanes<Task> queue;
+    BoundedPriorityLanes<QueuedTask> queue;
     std::shared_ptr<CompletionReservation::State> completion;
     std::mutex wait_mutex;
     std::condition_variable_any work_available;
@@ -218,7 +265,7 @@ class ShardedExecutor {
   };
 
   static void run_shard(Shard& shard, std::stop_token stop_token) {
-    while (!stop_token.stop_requested()) {
+    while (true) {
       std::optional<Task> completion;
       {
         std::scoped_lock lock(shard.completion->mutex);
@@ -232,9 +279,12 @@ class ShardedExecutor {
         continue;
       }
       if (auto task = shard.queue.try_pop(); task.has_value()) {
-        (*task)(stop_token);
+        task->task(stop_token);
         continue;
       }
+      // Stop requests are visible to every task, but work accepted before
+      // shutdown is drained instead of disappearing from a durable lane.
+      if (stop_token.stop_requested()) return;
 
       std::unique_lock lock(shard.wait_mutex);
       shard.work_available.wait(lock, stop_token, [&shard] {
@@ -245,6 +295,7 @@ class ShardedExecutor {
     }
   }
 
+  std::atomic<bool> accepting_{true};
   std::vector<std::unique_ptr<Shard>> shards_;
 };
 

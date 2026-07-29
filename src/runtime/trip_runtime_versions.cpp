@@ -184,6 +184,35 @@ VersionOperationResult TripRuntimeVersions::preview_observation(
   return accepted();
 }
 
+VersionOperationResult TripRuntimeVersions::accept_advisory(
+    std::uint64_t runtime_epoch, std::uint64_t observation_sequence,
+    std::optional<std::uint64_t> expected_planner_state_version) {
+  const auto preview = preview_advisory(
+      runtime_epoch, observation_sequence,
+      expected_planner_state_version);
+  if (!preview.accepted()) return preview;
+
+  snapshot_.accepted_observation_sequence = observation_sequence;
+  return accepted();
+}
+
+VersionOperationResult TripRuntimeVersions::preview_advisory(
+    std::uint64_t runtime_epoch, std::uint64_t observation_sequence,
+    std::optional<std::uint64_t> expected_planner_state_version) const {
+  if (const auto epoch_result = validate_epoch(runtime_epoch);
+      !epoch_result.accepted()) {
+    return epoch_result;
+  }
+  if (observation_sequence <= snapshot_.accepted_observation_sequence) {
+    return stale(VersionStaleReason::kObservationSequence);
+  }
+  if (expected_planner_state_version.has_value() &&
+      *expected_planner_state_version != snapshot_.planner_state_version) {
+    return stale(VersionStaleReason::kPlannerStateVersion);
+  }
+  return accepted();
+}
+
 VersionOperationResult TripRuntimeVersions::confirm_finalized(
     std::uint64_t runtime_epoch, std::uint64_t finalized_mutation_sequence) {
   if (const auto epoch_result = validate_epoch(runtime_epoch); !epoch_result.accepted()) {

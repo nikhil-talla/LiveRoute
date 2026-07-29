@@ -2,9 +2,11 @@
 #include "liveroute/runtime/sharded_executor.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <vector>
@@ -125,7 +127,8 @@ int main() {
               priority_condition.notify_one();
             }) ||
         executor.queue_size(trip_id, liveroute::domain::EventPriority::kNormal) !=
-            2) {
+            2 ||
+        executor.queue_size(liveroute::domain::EventPriority::kNormal) != 2) {
       return 1;
     }
 
@@ -247,6 +250,58 @@ int main() {
             [&reserved_completion_ran] { return reserved_completion_ran; })) {
       return 1;
     }
+  }
+
+  std::mutex shutdown_mutex;
+  std::condition_variable_any shutdown_condition;
+  bool shutdown_blocker_started = false;
+  std::atomic<bool> shutdown_stop_observed{false};
+  std::atomic<bool> queued_task_drained{false};
+  {
+    auto executor = std::make_unique<ShardedExecutor>(1, 2);
+    if (!executor->try_submit(
+            trip_id,
+            [&shutdown_mutex, &shutdown_condition,
+             &shutdown_blocker_started,
+             &shutdown_stop_observed](std::stop_token stop_token) {
+              std::unique_lock lock(shutdown_mutex);
+              shutdown_blocker_started = true;
+              shutdown_condition.notify_one();
+              (void)shutdown_condition.wait(
+                  lock, stop_token, [] { return false; });
+              shutdown_stop_observed.store(
+                  stop_token.stop_requested(), std::memory_order_release);
+            })) {
+      return 1;
+    }
+    {
+      std::unique_lock lock(shutdown_mutex);
+      if (!shutdown_condition.wait_for(
+              lock, std::chrono::seconds{1},
+              [&shutdown_blocker_started] {
+                return shutdown_blocker_started;
+              })) {
+        return 1;
+      }
+    }
+    if (!executor->try_submit(
+            trip_id, [&queued_task_drained](std::stop_token stop_token) {
+              if (stop_token.stop_requested()) {
+                queued_task_drained.store(true, std::memory_order_release);
+              }
+            })) {
+      return 1;
+    }
+    executor->stop_accepting();
+    if (executor->is_accepting() ||
+        executor->try_submit(trip_id, [](std::stop_token) {})) {
+      return 1;
+    }
+    executor.reset();
+  }
+  if (!shutdown_stop_observed.load(std::memory_order_acquire) ||
+      !queued_task_drained.load(std::memory_order_acquire)) {
+    return 1;
   }
 
   return 0;

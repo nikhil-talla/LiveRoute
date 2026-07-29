@@ -118,6 +118,10 @@ struct BeamSearchResult {
   std::size_t expansion_count{};
   std::size_t candidate_count{};
   bool search_was_truncated{};
+  // These preserve the actual interruption cause when a valid complete
+  // candidate changes the visible outcome to kBestSoFar.
+  bool deadline_hit{};
+  bool cancellation_requested{};
 
   [[nodiscard]] bool has_complete_candidate() const noexcept {
     return best_decisions.has_value() && best_score.has_value();

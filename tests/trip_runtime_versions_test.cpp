@@ -105,6 +105,21 @@ int main() {
     return 1;
   }
 
+  const auto pre_advisory_work = versions.capture_planning_work();
+  if (!pre_advisory_work.has_value() ||
+      !has_status(versions.accept_advisory(4, 10, 1),
+                  VersionOperationStatus::kStale) ||
+      !has_status(versions.accept_advisory(4, 10, 2),
+                  VersionOperationStatus::kAccepted) ||
+      versions.snapshot().accepted_observation_sequence != 10 ||
+      versions.snapshot().planner_state_version != 2 ||
+      versions.snapshot().planning_generation != 2 ||
+      !versions.can_commit_planning_work(*pre_advisory_work) ||
+      !has_status(versions.accept_advisory(4, 10, 2),
+                  VersionOperationStatus::kStale)) {
+    return 1;
+  }
+
   if (!has_status(versions.bootstrap(5, 8, 12, 0),
                   VersionOperationStatus::kAccepted) ||
       versions.snapshot().planner_state_version != 0 ||
