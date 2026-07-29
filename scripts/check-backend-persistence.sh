@@ -89,4 +89,4 @@ docker run --rm --network "$network_name" \
   "$test_image" \
   go test -race -count=1 ./...
 
-echo "Backend migration, runtime-lease, outbox, and command checks passed."
+echo "Backend migration, runtime-lease, outbox, command, proposal, decision, and accepted-mutation checks passed."

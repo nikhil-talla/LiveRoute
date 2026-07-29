@@ -87,6 +87,7 @@ func (store *LeaseStore) Acquire(
 	var currentEpoch int64
 	var expiresAt time.Time
 	var databaseNow time.Time
+	tookOver := false
 	err = tx.QueryRow(ctx, `
 		SELECT holder_id::text, runtime_epoch, lease_expires_at, clock_timestamp()
 		FROM trip_runtime_leases
@@ -143,9 +144,44 @@ func (store *LeaseStore) Acquire(
 			&expiresAt,
 			&databaseNow,
 		)
+		tookOver = err == nil
 	}
 	if err != nil {
 		return RuntimeLease{}, fmt.Errorf("write runtime lease: %w", err)
+	}
+	if tookOver {
+		rows, err := tx.Query(ctx, `
+			SELECT id
+			FROM plan_proposals
+			WHERE trip_id = $1
+			  AND state = 'pending'
+			  AND source_runtime_epoch < $2
+			ORDER BY id
+			FOR UPDATE
+		`, tripID, currentEpoch)
+		if err != nil {
+			return RuntimeLease{},
+				fmt.Errorf("lock old-epoch proposals: %w", err)
+		}
+		for rows.Next() {
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return RuntimeLease{},
+				fmt.Errorf("scan old-epoch proposals: %w", err)
+		}
+		rows.Close()
+		if _, err := tx.Exec(ctx, `
+			UPDATE plan_proposals
+			SET state = 'stale',
+			    decided_at = $3
+			WHERE trip_id = $1
+			  AND state = 'pending'
+			  AND source_runtime_epoch < $2
+		`, tripID, currentEpoch, databaseNow); err != nil {
+			return RuntimeLease{},
+				fmt.Errorf("stale old-epoch proposals: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return RuntimeLease{}, fmt.Errorf("commit lease acquisition: %w", err)

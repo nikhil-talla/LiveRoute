@@ -44,7 +44,7 @@ func TestOrderedOutboxClaimsAndAttemptFencing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	const (
 		userID     = "61111111-1111-1111-1111-111111111111"

@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -159,6 +160,17 @@ func validateRecordRuntimeCommand(request RecordRuntimeCommandRequest) error {
 			!validCanonicalUUID(request.PlannedCurrentPlan.ID) ||
 			len(request.PlannedCurrentPlan.Payload) == 0 {
 			return errors.New("proposal acceptance requires a planned current plan")
+		}
+		checksum := sha256.Sum256(request.PlannedCurrentPlan.Payload)
+		if subtle.ConstantTimeCompare(
+			checksum[:],
+			request.PlannedCurrentPlan.Checksum[:],
+		) != 1 {
+			return errors.New("planned current-plan checksum is invalid")
+		}
+		plan, err := parseCurrentPlan(request.PlannedCurrentPlan.Payload)
+		if err != nil || plan.planID != request.PlannedCurrentPlan.ID {
+			return errors.New("planned current-plan payload is invalid")
 		}
 	} else if request.PlannedCurrentPlan != nil {
 		return errors.New("planned current plan is valid only for proposal acceptance")
