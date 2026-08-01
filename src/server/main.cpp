@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 
@@ -19,6 +20,9 @@ constexpr std::string_view kServiceName = "liveroute-planner";
 #include <grpcpp/server_builder.h>
 
 #include "liveroute/routing/travel_time_provider.hpp"
+#ifdef LIVEROUTE_ENABLE_OSRM
+#include "liveroute/routing/osrm_travel_time_provider.hpp"
+#endif
 #include "liveroute/transport/grpc_planner_service.hpp"
 
 namespace {
@@ -37,12 +41,38 @@ class UnavailableTravelTimeProvider final
   }
 };
 
+[[nodiscard]] std::unique_ptr<liveroute::routing::TravelTimeProvider>
+make_travel_time_provider() {
+#ifdef LIVEROUTE_ENABLE_OSRM
+  const auto endpoint = [](const char* name, const char* fallback) {
+    const auto* value = std::getenv(name);
+    return std::string{value == nullptr ? fallback : value};
+  };
+  return std::make_unique<liveroute::routing::OsrmTravelTimeProvider>(
+      liveroute::routing::OsrmTravelTimeProviderConfig{
+          .car_endpoint = endpoint("LIVEROUTE_OSRM_CAR_ENDPOINT",
+                                   "http://osrm-car:5000"),
+          .foot_endpoint = endpoint("LIVEROUTE_OSRM_FOOT_ENDPOINT",
+                                    "http://osrm-foot:5000"),
+          .max_locations = 65,
+          .max_matrix_cells = 4225,
+          .max_encoded_request_bytes = 8192,
+          .max_response_bytes = 1048576,
+          .per_profile_concurrency = 2,
+          .connect_timeout = std::chrono::milliseconds{100},
+          .request_timeout = std::chrono::milliseconds{750},
+      });
+#else
+  return std::make_unique<UnavailableTravelTimeProvider>();
+#endif
+}
+
 [[nodiscard]] int serve(std::string address) {
   using liveroute::runtime::ConcurrentTripRuntime;
   using liveroute::transport::GrpcPlannerService;
   using liveroute::transport::PlannerResponseRouter;
 
-  UnavailableTravelTimeProvider provider;
+  auto provider = make_travel_time_provider();
   PlannerResponseRouter router;
   ConcurrentTripRuntime runtime(
       {.shard_count = 2,
@@ -56,7 +86,7 @@ class UnavailableTravelTimeProvider final
        .planner_queue_capacity = 32,
        .essential_response_capacity = 128,
        .max_advisory_payload_bytes = 262144},
-      provider,
+      *provider,
       [&router](liveroute::runtime::RuntimePlanningDelivery delivery) {
         return router.publish(std::move(delivery));
       });

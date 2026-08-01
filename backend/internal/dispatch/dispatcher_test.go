@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -260,5 +261,24 @@ func TestDispatcherFinalizesRuntimeFirstEvent(t *testing.T) {
 	if resolved != 1 || runtime.row == nil || mirrors.request != nil ||
 		len(confirmations.sequences) != 1 {
 		t.Fatalf("runtime outcome did not finalize: %#v %#v", runtime.row, confirmations.sequences)
+	}
+}
+
+func TestDispatcherRunPollsUntilCancellation(t *testing.T) {
+	dispatcher := newTestDispatcher(t, &fakeOutbox{}, &fakePlanner{}, &fakeMirrors{}, &fakeConfirmations{})
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if err := dispatcher.Run(ctx, time.Millisecond, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("dispatcher run returned %v, want cancellation", err)
+	}
+}
+
+func TestDispatcherRunRejectsInvalidConfiguration(t *testing.T) {
+	dispatcher := newTestDispatcher(t, &fakeOutbox{}, &fakePlanner{}, &fakeMirrors{}, &fakeConfirmations{})
+	if err := dispatcher.Run(nil, time.Second, nil); err == nil {
+		t.Fatal("nil context was accepted")
+	}
+	if err := dispatcher.Run(context.Background(), 0, nil); err == nil {
+		t.Fatal("zero polling interval was accepted")
 	}
 }

@@ -8,6 +8,10 @@ option(LIVEROUTE_ENABLE_PINNED_TZDATA_TESTS
 option(LIVEROUTE_ENABLE_TSAN "Build and link C++ targets with ThreadSanitizer" OFF)
 option(LIVEROUTE_ENABLE_GRPC
   "Build the pinned Protobuf/gRPC transport and server" OFF)
+option(LIVEROUTE_ENABLE_OSRM
+  "Build the libcurl-multi OSRM travel-time provider" OFF)
+option(LIVEROUTE_ENABLE_OSRM_INTEGRATION_TESTS
+  "Register tests that require the local car/foot OSRM services" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,6 +58,7 @@ add_library(liveroute_domain
   src/planner/proposal_assembler.cpp
   src/planner/replan_attempt.cpp
   src/planner/result_metadata.cpp
+  src/routing/osrm_response.cpp
   src/routing/travel_time_provider.cpp
   src/runtime/concurrent_trip_runtime.cpp
   src/runtime/planning_commit.cpp
@@ -62,6 +67,28 @@ add_library(liveroute_domain
 )
 target_include_directories(liveroute_domain PUBLIC include)
 liveroute_configure_target(liveroute_domain)
+
+if(LIVEROUTE_ENABLE_OSRM)
+  find_package(CURL REQUIRED)
+  target_sources(liveroute_domain PRIVATE
+    src/routing/osrm_travel_time_provider.cpp
+  )
+  target_link_libraries(liveroute_domain PUBLIC CURL::libcurl)
+  target_compile_definitions(liveroute_domain PUBLIC LIVEROUTE_ENABLE_OSRM=1)
+
+  add_executable(liveroute_osrm_provider_integration_test
+    tests/osrm_provider_integration_test.cpp
+  )
+  target_link_libraries(liveroute_osrm_provider_integration_test
+    PRIVATE liveroute_domain
+  )
+  liveroute_configure_target(liveroute_osrm_provider_integration_test)
+  if(LIVEROUTE_ENABLE_OSRM_INTEGRATION_TESTS)
+    add_test(NAME liveroute_osrm_provider_integration_test
+      COMMAND liveroute_osrm_provider_integration_test
+    )
+  endif()
+endif()
 
 add_library(liveroute_load_model src/load/workload.cpp)
 target_include_directories(liveroute_load_model PUBLIC include)
@@ -350,6 +377,11 @@ liveroute_configure_target(liveroute_travel_time_provider_test)
 add_test(NAME liveroute_travel_time_provider_test
   COMMAND liveroute_travel_time_provider_test
 )
+
+add_executable(liveroute_osrm_response_test tests/osrm_response_test.cpp)
+target_link_libraries(liveroute_osrm_response_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_osrm_response_test)
+add_test(NAME liveroute_osrm_response_test COMMAND liveroute_osrm_response_test)
 
 add_executable(liveroute_bounded_queue_test tests/bounded_queue_test.cpp)
 target_include_directories(liveroute_bounded_queue_test PRIVATE include)

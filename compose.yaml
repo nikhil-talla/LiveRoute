@@ -1,8 +1,9 @@
 name: liveroute
 
 # The skeleton gate builds and tests the C++ service. The planner profile runs
-# the Phase 8 gRPC boundary and its minimal protocol/ping client. PostgreSQL,
-# OSRM, the backend, and dependency-aware readiness arrive in their own slices.
+# the gRPC boundary and its minimal protocol/ping client. The OSRM profile
+# verifies the locked Rhode Island source, prepares separate MLD datasets, and
+# starts private car and foot Table services.
 services:
   planner-skeleton:
     build:
@@ -16,8 +17,14 @@ services:
       context: .
       dockerfile: docker/cpp/Dockerfile
     command: ["--listen=0.0.0.0:50051"]
-    ports:
-      - "127.0.0.1:50051:50051"
+    environment:
+      LIVEROUTE_OSRM_CAR_ENDPOINT: http://osrm-car:5000
+      LIVEROUTE_OSRM_FOOT_ENDPOINT: http://osrm-foot:5000
+    depends_on:
+      osrm-car:
+        condition: service_healthy
+      osrm-foot:
+        condition: service_healthy
     profiles: ["planner"]
 
   planner-cli:
@@ -35,3 +42,81 @@ services:
       context: .
       dockerfile: docker/hours/Dockerfile
     profiles: ["hours"]
+
+  osrm-car-prepare:
+    build:
+      context: .
+      dockerfile: docker/osrm/Dockerfile
+    entrypoint: ["/usr/local/bin/liveroute-prepare-osrm"]
+    environment:
+      LIVEROUTE_OSRM_PROFILE: car
+    volumes:
+      - ./data/osrm:/data
+    profiles: ["osrm", "planner"]
+
+  osrm-foot-prepare:
+    build:
+      context: .
+      dockerfile: docker/osrm/Dockerfile
+    entrypoint: ["/usr/local/bin/liveroute-prepare-osrm"]
+    environment:
+      LIVEROUTE_OSRM_PROFILE: foot
+    volumes:
+      - ./data/osrm:/data
+    profiles: ["osrm", "planner"]
+
+  osrm-car:
+    build:
+      context: .
+      dockerfile: docker/osrm/Dockerfile
+    entrypoint: ["osrm-routed"]
+    command:
+      - /data/rhode-island.osrm
+      - --algorithm
+      - MLD
+      - --threads
+      - "1"
+      - --max-table-size
+      - "65"
+    environment:
+      LIVEROUTE_OSRM_PROFILE: car
+    volumes:
+      - ./data/osrm/generated/car:/data:ro
+    depends_on:
+      osrm-car-prepare:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/liveroute-osrm-healthcheck"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 10s
+    profiles: ["osrm", "planner"]
+
+  osrm-foot:
+    build:
+      context: .
+      dockerfile: docker/osrm/Dockerfile
+    entrypoint: ["osrm-routed"]
+    command:
+      - /data/rhode-island.osrm
+      - --algorithm
+      - MLD
+      - --threads
+      - "1"
+      - --max-table-size
+      - "65"
+    environment:
+      LIVEROUTE_OSRM_PROFILE: foot
+    volumes:
+      - ./data/osrm/generated/foot:/data:ro
+    depends_on:
+      osrm-foot-prepare:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/liveroute-osrm-healthcheck"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 10s
+    profiles: ["osrm", "planner"]

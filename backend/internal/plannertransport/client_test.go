@@ -93,6 +93,13 @@ func TestClientNegotiatesBeforeCorrelatedExchange(t *testing.T) {
 		response.GetEventAcknowledged() == nil {
 		t.Fatalf("unexpected response: %#v", response)
 	}
+	deadline := time.Now().Add(time.Second)
+	for !client.StreamReady() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !client.StreamReady() {
+		t.Fatal("negotiated planner stream was not reported ready")
+	}
 	stream.mutex.Lock()
 	defer stream.mutex.Unlock()
 	if len(stream.sent) != 2 || stream.sent[0].GetOpenStream() == nil ||

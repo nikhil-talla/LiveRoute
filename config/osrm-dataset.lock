@@ -1,0 +1,38 @@
+schema_version: 1
+dataset:
+  id: geofabrik-rhode-island-260701
+  source_url: https://download.geofabrik.de/north-america/us/rhode-island-260701.osm.pbf
+  source_data_date: 2026-07-01
+  source_data_timestamp: 2026-07-01T20:22:00Z
+  publisher_timestamp: 2026-07-02T00:22:00Z
+  verified_at: 2026-08-01
+  file_name: rhode-island-260701.osm.pbf
+  size_bytes: 51668445
+  sha256: 375eb017159102cff19032d5e679a061726d4c9c69851871cf03a1a893ee4b40
+  publisher_md5: 751bceba57ed9a3196a4d9775e0b70e9
+osrm:
+  release: v26.5.0
+  source_revision: 3c32a51bf58d12bf30efd0808d0b6ad51d334122
+  image:
+    source_tag: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-debian
+    platform: linux/amd64
+    digest: sha256:34c4aa0a41daa8024b3c0bf1fe2ee42fc8b411d07a135ecc29f829390aed31ea
+  profiles:
+    car_sha256: e7c5fd44897f43e6181e292fc7e8b280fa136477aa5a83b86e89df2d96949d6d
+    foot_sha256: b58e92c64240b1fc25fa72ea25b09411bc8d3cb05f04c11828977f094ce773c8
+    manifest_path: config/osrm/profiles.sha256
+  preprocessing:
+    algorithm: mld
+    threads: 1
+    output_base_name: rhode-island.osrm
+    extract_flags: --threads 1 --profile PROFILE --output OUTPUT INPUT
+    partition_flags: --threads 1 OUTPUT
+    customize_flags: --threads 1 OUTPUT
+  serving:
+    max_table_size: 65
+    car_profile_path: config/osrm/profiles/car.lua
+    foot_profile_path: config/osrm/profiles/foot.lua
+    car_internal_url: http://osrm-car:5000
+    foot_internal_url: http://osrm-foot:5000
+    readiness_coordinates: -71.4128,41.8240;-71.4150,41.8300
+    build_id: geofabrik-rhode-island-260701-osrm-v26.5.0-mld-v1

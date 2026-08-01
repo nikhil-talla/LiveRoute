@@ -15,6 +15,7 @@ images:
     protobuf_cpp_version: 31.1.0
     grpc_cpp_version: 1.78.1
     digest: sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4
+    libcurl_dev_package: libcurl4-openssl-dev=8.5.0-2ubuntu10.11
   go_proto_toolchain:
     platform: linux/amd64
     build_file: docker/go-proto/Dockerfile
@@ -28,6 +29,12 @@ images:
   postgres:
     source_tag: postgres:18-bookworm
     digest: sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+  osrm:
+    source_tag: ghcr.io/project-osrm/osrm-backend:v26.5.0-amd64-debian
+    platform: linux/amd64
+    resolved_version: v26.5.0
+    source_revision: 3c32a51bf58d12bf30efd0808d0b6ad51d334122
+    digest: sha256:34c4aa0a41daa8024b3c0bf1fe2ee42fc8b411d07a135ecc29f829390aed31ea
   backend_builder:
     source_tag: golang:1.26-bookworm
     platform: linux/amd64

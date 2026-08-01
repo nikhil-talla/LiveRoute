@@ -63,4 +63,16 @@ hours:
   tzdata_release: 2026c
   tzdata_zoneinfo_path: /opt/liveroute/share/tzdata/2026c/zoneinfo
 
+routing:
+  dataset_version: geofabrik-rhode-island-260701-osrm-v26.5.0-mld-v1
+  car_endpoint: http://osrm-car:5000
+  foot_endpoint: http://osrm-foot:5000
+  max_locations: 65
+  max_matrix_cells: 4225
+  max_encoded_request_bytes: 8192
+  max_response_bytes: 1048576
+  per_profile_concurrency: 2
+  connect_timeout_ms: 100
+  request_timeout_ms: 750
+
 shutdown_deadline_ms: 10000

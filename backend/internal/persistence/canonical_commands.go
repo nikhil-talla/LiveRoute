@@ -26,6 +26,20 @@ type CanonicalPlanSegmentDraft struct {
 	End        *int64
 }
 
+// CanonicalPlanMetadata is the immutable identity assigned to a newly
+// published user-authored plan inside its PostgreSQL transaction.
+type CanonicalPlanMetadata struct {
+	ID        string
+	Revision  uint64
+	CreatedAt time.Time
+}
+
+// CanonicalEventPayloadBuilder lets a gateway construct the stored planner
+// event after the transaction has allocated the exact plan timestamp. The
+// callback must only perform bounded in-memory work; it runs before the
+// outbox row is inserted and must not perform I/O.
+type CanonicalEventPayloadBuilder func(CanonicalPlanMetadata) (json.RawMessage, error)
+
 type CreateTripRequest struct {
 	TripID              string
 	OwnerUserID         string
@@ -51,10 +65,12 @@ type ReplaceCurrentPlanRequest struct {
 	EventID                   string
 	PlanID                    string
 	ExpectedTripRevision      uint64
+	CommandExpiresAt          *time.Time
 	MaxPendingCanonicalMirror uint32
 	PlanSegments              []CanonicalPlanSegmentDraft
 	CommandPayload            json.RawMessage
 	EventPayload              json.RawMessage
+	EventPayloadBuilder       CanonicalEventPayloadBuilder
 	PayloadDigest             [32]byte
 	OutcomePayload            json.RawMessage
 }
@@ -68,11 +84,13 @@ type ReorderActivitiesRequest struct {
 	EventID                   string
 	PlanID                    string
 	ExpectedTripRevision      uint64
+	CommandExpiresAt          *time.Time
 	MaxPendingCanonicalMirror uint32
 	ActivityIDs               []string
 	PlanSegments              []CanonicalPlanSegmentDraft
 	CommandPayload            json.RawMessage
 	EventPayload              json.RawMessage
+	EventPayloadBuilder       CanonicalEventPayloadBuilder
 	PayloadDigest             [32]byte
 	OutcomePayload            json.RawMessage
 }
@@ -86,11 +104,13 @@ type RemoveActivityRequest struct {
 	EventID                   string
 	PlanID                    string
 	ExpectedTripRevision      uint64
+	CommandExpiresAt          *time.Time
 	MaxPendingCanonicalMirror uint32
 	ActivityID                string
 	PlanSegments              []CanonicalPlanSegmentDraft
 	CommandPayload            json.RawMessage
 	EventPayload              json.RawMessage
+	EventPayloadBuilder       CanonicalEventPayloadBuilder
 	PayloadDigest             [32]byte
 	OutcomePayload            json.RawMessage
 }
@@ -104,11 +124,13 @@ type ReplaceActivityRequest struct {
 	EventID                   string
 	PlanID                    string
 	ExpectedTripRevision      uint64
+	CommandExpiresAt          *time.Time
 	MaxPendingCanonicalMirror uint32
 	Activity                  CanonicalActivity
 	PlanSegments              []CanonicalPlanSegmentDraft
 	CommandPayload            json.RawMessage
 	EventPayload              json.RawMessage
+	EventPayloadBuilder       CanonicalEventPayloadBuilder
 	PayloadDigest             [32]byte
 	OutcomePayload            json.RawMessage
 }
@@ -122,14 +144,38 @@ type AddActivityRequest struct {
 	EventID                   string
 	PlanID                    string
 	ExpectedTripRevision      uint64
+	CommandExpiresAt          *time.Time
 	MaxPendingCanonicalMirror uint32
 	Ordinal                   uint32
 	Activity                  CanonicalActivity
 	PlanSegments              []CanonicalPlanSegmentDraft
 	CommandPayload            json.RawMessage
 	EventPayload              json.RawMessage
+	EventPayloadBuilder       CanonicalEventPayloadBuilder
 	PayloadDigest             [32]byte
 	OutcomePayload            json.RawMessage
+}
+
+func validCanonicalEventPayload(payload json.RawMessage, builder CanonicalEventPayloadBuilder) bool {
+	return builder != nil || json.Valid(payload)
+}
+
+func buildCanonicalEventPayload(
+	payload json.RawMessage,
+	builder CanonicalEventPayloadBuilder,
+	metadata CanonicalPlanMetadata,
+) (json.RawMessage, error) {
+	if builder == nil {
+		return payload, nil
+	}
+	result, err := builder(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("build canonical planner event: %w", err)
+	}
+	if !json.Valid(result) {
+		return nil, errors.New("canonical planner event builder returned invalid JSON")
+	}
+	return result, nil
 }
 
 func appendVarint(output []byte, value uint64) []byte {
@@ -401,7 +447,7 @@ func validateReplaceCurrentPlanRequest(
 	if request.MessageID != request.EventID ||
 		request.MaxPendingCanonicalMirror == 0 ||
 		!json.Valid(request.CommandPayload) ||
-		!json.Valid(request.EventPayload) ||
+		!validCanonicalEventPayload(request.EventPayload, request.EventPayloadBuilder) ||
 		!json.Valid(request.OutcomePayload) {
 		return errors.New("replacement request is invalid")
 	}
@@ -432,7 +478,7 @@ func validateReorderActivitiesRequest(
 		request.MaxPendingCanonicalMirror == 0 ||
 		len(request.ActivityIDs) == 0 ||
 		!json.Valid(request.CommandPayload) ||
-		!json.Valid(request.EventPayload) ||
+		!validCanonicalEventPayload(request.EventPayload, request.EventPayloadBuilder) ||
 		!json.Valid(request.OutcomePayload) {
 		return errors.New("trip-edit request is invalid")
 	}
@@ -473,7 +519,7 @@ func validateRemoveActivityRequest(
 		request.MaxPendingCanonicalMirror == 0 ||
 		!validCanonicalUUID(request.ActivityID) ||
 		!json.Valid(request.CommandPayload) ||
-		!json.Valid(request.EventPayload) ||
+		!validCanonicalEventPayload(request.EventPayload, request.EventPayloadBuilder) ||
 		!json.Valid(request.OutcomePayload) {
 		return errors.New("trip-edit remove request is invalid")
 	}
@@ -503,7 +549,7 @@ func validateReplaceActivityRequest(
 	if request.MessageID != request.EventID ||
 		request.MaxPendingCanonicalMirror == 0 ||
 		!json.Valid(request.CommandPayload) ||
-		!json.Valid(request.EventPayload) ||
+		!validCanonicalEventPayload(request.EventPayload, request.EventPayloadBuilder) ||
 		!json.Valid(request.OutcomePayload) {
 		return errors.New("trip-edit replace request is invalid")
 	}
@@ -533,7 +579,7 @@ func validateAddActivityRequest(
 	if request.MessageID != request.EventID ||
 		request.MaxPendingCanonicalMirror == 0 ||
 		!json.Valid(request.CommandPayload) ||
-		!json.Valid(request.EventPayload) ||
+		!validCanonicalEventPayload(request.EventPayload, request.EventPayloadBuilder) ||
 		!json.Valid(request.OutcomePayload) {
 		return errors.New("trip-edit add request is invalid")
 	}
@@ -840,6 +886,14 @@ func (store *CanonicalStateStore) ReplaceCurrentPlan(
 	createdAt = createdAt.UTC()
 	payload := userCurrentPlanPayload(
 		request.PlanID, planRevision, createdAt.UnixMilli(), request.PlanSegments)
+	eventPayload, err := buildCanonicalEventPayload(
+		request.EventPayload,
+		request.EventPayloadBuilder,
+		CanonicalPlanMetadata{ID: request.PlanID, Revision: planRevision, CreatedAt: createdAt},
+	)
+	if err != nil {
+		return RecordedCommand{}, err
+	}
 	var lockedPlanID string
 	if err := tx.QueryRow(ctx, `
 		SELECT id::text FROM itinerary_plans
@@ -881,14 +935,15 @@ func (store *CanonicalStateStore) ReplaceCurrentPlan(
 			expected_trip_revision, command_kind, application_order,
 			digest_algorithm, payload_digest, command_payload, state,
 			outcome_status, outcome_payload, resulting_trip_revision,
-			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at
+			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at,
+			command_expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'replace_current_plan',
 			'canonical_first', 'rfc8785-sha256-v1', $7, $8, 'applied',
-			'OK', $9, $10, $11, 'pending', $12, $12)
+			'OK', $9, $10, $11, 'pending', $12, $12, $13)
 	`, request.IntentID, request.TripID, request.MessageID, request.EventID,
 		mutationSequence, request.ExpectedTripRevision, request.PayloadDigest[:],
 		request.CommandPayload, request.OutcomePayload, planRevision,
-		request.PlanID, createdAt); err != nil {
+		request.PlanID, createdAt, request.CommandExpiresAt); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert replacement intent: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -897,7 +952,7 @@ func (store *CanonicalStateStore) ReplaceCurrentPlan(
 			event_schema_version, event_payload, delivery_state
 		) VALUES ($1, $2, $3, $4, 1, $5, 'pending')
 	`, request.OutboxID, request.IntentID, request.TripID,
-		mutationSequence, request.EventPayload); err != nil {
+		mutationSequence, eventPayload); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert replacement outbox: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1064,6 +1119,14 @@ func (store *CanonicalStateStore) ReorderActivities(
 	createdAt = createdAt.UTC()
 	payload := userCurrentPlanPayload(
 		request.PlanID, planRevision, createdAt.UnixMilli(), request.PlanSegments)
+	eventPayload, err := buildCanonicalEventPayload(
+		request.EventPayload,
+		request.EventPayloadBuilder,
+		CanonicalPlanMetadata{ID: request.PlanID, Revision: planRevision, CreatedAt: createdAt},
+	)
+	if err != nil {
+		return RecordedCommand{}, err
+	}
 	checksum := sha256.Sum256(payload)
 	if _, err := tx.Exec(ctx, `
 		UPDATE plan_proposals
@@ -1113,14 +1176,15 @@ func (store *CanonicalStateStore) ReorderActivities(
 			expected_trip_revision, command_kind, application_order,
 			digest_algorithm, payload_digest, command_payload, state,
 			outcome_status, outcome_payload, resulting_trip_revision,
-			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at
+			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at,
+			command_expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'trip_edited',
 			'canonical_first', 'rfc8785-sha256-v1', $7, $8, 'applied',
-			'OK', $9, $10, $11, 'pending', $12, $12)
+			'OK', $9, $10, $11, 'pending', $12, $12, $13)
 	`, request.IntentID, request.TripID, request.MessageID, request.EventID,
 		mutationSequence, request.ExpectedTripRevision, request.PayloadDigest[:],
 		request.CommandPayload, request.OutcomePayload, planRevision,
-		request.PlanID, createdAt); err != nil {
+		request.PlanID, createdAt, request.CommandExpiresAt); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert trip-edit intent: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -1129,7 +1193,7 @@ func (store *CanonicalStateStore) ReorderActivities(
 			event_schema_version, event_payload, delivery_state
 		) VALUES ($1, $2, $3, $4, 1, $5, 'pending')
 	`, request.OutboxID, request.IntentID, request.TripID,
-		mutationSequence, request.EventPayload); err != nil {
+		mutationSequence, eventPayload); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert trip-edit outbox: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1297,6 +1361,14 @@ func (store *CanonicalStateStore) RemoveActivity(
 	createdAt = createdAt.UTC()
 	payload := userCurrentPlanPayload(
 		request.PlanID, planRevision, createdAt.UnixMilli(), request.PlanSegments)
+	eventPayload, err := buildCanonicalEventPayload(
+		request.EventPayload,
+		request.EventPayloadBuilder,
+		CanonicalPlanMetadata{ID: request.PlanID, Revision: planRevision, CreatedAt: createdAt},
+	)
+	if err != nil {
+		return RecordedCommand{}, err
+	}
 	checksum := sha256.Sum256(payload)
 	if _, err := tx.Exec(ctx, `
 		UPDATE plan_proposals
@@ -1365,14 +1437,15 @@ func (store *CanonicalStateStore) RemoveActivity(
 			expected_trip_revision, command_kind, application_order,
 			digest_algorithm, payload_digest, command_payload, state,
 			outcome_status, outcome_payload, resulting_trip_revision,
-			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at
+			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at,
+			command_expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'trip_edited',
 			'canonical_first', 'rfc8785-sha256-v1', $7, $8, 'applied',
-			'OK', $9, $10, $11, 'pending', $12, $12)
+			'OK', $9, $10, $11, 'pending', $12, $12, $13)
 	`, request.IntentID, request.TripID, request.MessageID, request.EventID,
 		mutationSequence, request.ExpectedTripRevision, request.PayloadDigest[:],
 		request.CommandPayload, request.OutcomePayload, planRevision,
-		request.PlanID, createdAt); err != nil {
+		request.PlanID, createdAt, request.CommandExpiresAt); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert remove-activity intent: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -1381,7 +1454,7 @@ func (store *CanonicalStateStore) RemoveActivity(
 			event_schema_version, event_payload, delivery_state
 		) VALUES ($1, $2, $3, $4, 1, $5, 'pending')
 	`, request.OutboxID, request.IntentID, request.TripID,
-		mutationSequence, request.EventPayload); err != nil {
+		mutationSequence, eventPayload); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert remove-activity outbox: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1546,6 +1619,14 @@ func (store *CanonicalStateStore) ReplaceActivity(
 	createdAt = createdAt.UTC()
 	payload := userCurrentPlanPayload(
 		request.PlanID, planRevision, createdAt.UnixMilli(), request.PlanSegments)
+	eventPayload, err := buildCanonicalEventPayload(
+		request.EventPayload,
+		request.EventPayloadBuilder,
+		CanonicalPlanMetadata{ID: request.PlanID, Revision: planRevision, CreatedAt: createdAt},
+	)
+	if err != nil {
+		return RecordedCommand{}, err
+	}
 	checksum := sha256.Sum256(payload)
 	if _, err := tx.Exec(ctx, `
 		UPDATE plan_proposals
@@ -1631,14 +1712,15 @@ func (store *CanonicalStateStore) ReplaceActivity(
 			expected_trip_revision, command_kind, application_order,
 			digest_algorithm, payload_digest, command_payload, state,
 			outcome_status, outcome_payload, resulting_trip_revision,
-			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at
+			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at,
+			command_expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'trip_edited',
 			'canonical_first', 'rfc8785-sha256-v1', $7, $8, 'applied',
-			'OK', $9, $10, $11, 'pending', $12, $12)
+			'OK', $9, $10, $11, 'pending', $12, $12, $13)
 	`, request.IntentID, request.TripID, request.MessageID, request.EventID,
 		mutationSequence, request.ExpectedTripRevision, request.PayloadDigest[:],
 		request.CommandPayload, request.OutcomePayload, planRevision,
-		request.PlanID, createdAt); err != nil {
+		request.PlanID, createdAt, request.CommandExpiresAt); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert replace-activity intent: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -1647,7 +1729,7 @@ func (store *CanonicalStateStore) ReplaceActivity(
 			event_schema_version, event_payload, delivery_state
 		) VALUES ($1, $2, $3, $4, 1, $5, 'pending')
 	`, request.OutboxID, request.IntentID, request.TripID,
-		mutationSequence, request.EventPayload); err != nil {
+		mutationSequence, eventPayload); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert replace-activity outbox: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1821,6 +1903,14 @@ func (store *CanonicalStateStore) AddActivity(
 	createdAt = createdAt.UTC()
 	payload := userCurrentPlanPayload(
 		request.PlanID, planRevision, createdAt.UnixMilli(), request.PlanSegments)
+	eventPayload, err := buildCanonicalEventPayload(
+		request.EventPayload,
+		request.EventPayloadBuilder,
+		CanonicalPlanMetadata{ID: request.PlanID, Revision: planRevision, CreatedAt: createdAt},
+	)
+	if err != nil {
+		return RecordedCommand{}, err
+	}
 	checksum := sha256.Sum256(payload)
 	if _, err := tx.Exec(ctx, `
 		UPDATE plan_proposals
@@ -1915,14 +2005,15 @@ func (store *CanonicalStateStore) AddActivity(
 			expected_trip_revision, command_kind, application_order,
 			digest_algorithm, payload_digest, command_payload, state,
 			outcome_status, outcome_payload, resulting_trip_revision,
-			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at
+			resulting_current_plan_id, runtime_sync_state, recorded_at, finalized_at,
+			command_expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'trip_edited',
 			'canonical_first', 'rfc8785-sha256-v1', $7, $8, 'applied',
-			'OK', $9, $10, $11, 'pending', $12, $12)
+			'OK', $9, $10, $11, 'pending', $12, $12, $13)
 	`, request.IntentID, request.TripID, request.MessageID, request.EventID,
 		mutationSequence, request.ExpectedTripRevision, request.PayloadDigest[:],
 		request.CommandPayload, request.OutcomePayload, planRevision,
-		request.PlanID, createdAt); err != nil {
+		request.PlanID, createdAt, request.CommandExpiresAt); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert add-activity intent: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -1931,7 +2022,7 @@ func (store *CanonicalStateStore) AddActivity(
 			event_schema_version, event_payload, delivery_state
 		) VALUES ($1, $2, $3, $4, 1, $5, 'pending')
 	`, request.OutboxID, request.IntentID, request.TripID,
-		mutationSequence, request.EventPayload); err != nil {
+		mutationSequence, eventPayload); err != nil {
 		return RecordedCommand{}, fmt.Errorf("insert add-activity outbox: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

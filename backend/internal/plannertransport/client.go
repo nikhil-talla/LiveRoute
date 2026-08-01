@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	liveroutev1 "github.com/liveroute/liveroute/backend/gen/liveroute/v1"
@@ -54,6 +55,7 @@ type Client struct {
 	cancel        context.CancelFunc
 	requests      chan exchange
 	notifications chan *liveroutev1.PlannerStreamResponse
+	ready         atomic.Bool
 	wait          sync.WaitGroup
 }
 
@@ -150,6 +152,12 @@ func (client *Client) Notifications() <-chan *liveroutev1.PlannerStreamResponse 
 	return client.notifications
 }
 
+// StreamReady reports whether the current long-lived stream completed the V1
+// capability negotiation. It is false during startup and reconnect windows.
+func (client *Client) StreamReady() bool {
+	return client.ready.Load()
+}
+
 func (client *Client) Close() {
 	client.cancel()
 	client.wait.Wait()
@@ -163,9 +171,14 @@ func (client *Client) run() {
 		streamContext, cancelStream := context.WithCancel(client.context)
 		stream, err := client.openStream(streamContext)
 		if err == nil {
+			client.ready.Store(true)
 			failures = 0
 			err = client.serve(stream)
+			client.ready.Store(false)
 			_ = stream.CloseSend()
+		}
+		if err != nil {
+			client.ready.Store(false)
 		}
 		cancelStream()
 		if client.context.Err() != nil {

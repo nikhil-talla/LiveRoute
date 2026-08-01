@@ -2,4 +2,5 @@
 .agents
 build
 out
+data/osrm
 **/.DS_Store

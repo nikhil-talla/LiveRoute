@@ -59,6 +59,36 @@ type Dispatcher struct {
 	retryDelay    func(uint64) (time.Duration, error)
 }
 
+// Run continuously services durable outbox work at a bounded polling cadence.
+// Delivery errors are reported and retried on the next pass; they do not stop
+// the process or discard durable rows. The caller owns shutdown and logging.
+func (dispatcher *Dispatcher) Run(
+	ctx context.Context,
+	interval time.Duration,
+	reportError func(error),
+) error {
+	if ctx == nil || interval <= 0 {
+		return errors.New("dispatcher context and positive interval are required")
+	}
+	if reportError == nil {
+		reportError = func(error) {}
+	}
+	for {
+		if _, err := dispatcher.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			reportError(err)
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func New(
 	config Config,
 	outbox outboxStore,

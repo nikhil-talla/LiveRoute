@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -91,6 +92,38 @@ func createTripRequest(fixture createTripFixture) CreateTripRequest {
 }
 
 func int64Ptr(value int64) *int64 { return &value }
+
+func TestCanonicalEventPayloadBuilderUsesTransactionPlanMetadata(t *testing.T) {
+	createdAt := time.UnixMilli(1_784_000_123_456).UTC()
+	builder := CanonicalEventPayloadBuilder(func(metadata CanonicalPlanMetadata) (json.RawMessage, error) {
+		if metadata.ID != "89999999-9999-9999-9999-999999999999" ||
+			metadata.Revision != 7 || !metadata.CreatedAt.Equal(createdAt) {
+			t.Fatalf("unexpected plan metadata: %+v", metadata)
+		}
+		return []byte(`{"event":"current_plan_replaced","created_at_unix_ms":1784000123456}`), nil
+	})
+	request := replaceCurrentPlanRequest(createTripFixture{
+		userID:    "11111111-1111-1111-1111-111111111111",
+		tripID:    "22222222-2222-2222-2222-222222222222",
+		intentID:  "33333333-3333-3333-3333-333333333333",
+		messageID: "44444444-4444-4444-4444-444444444444",
+		planID:    "55555555-5555-5555-5555-555555555555",
+	})
+	request.EventPayload = nil
+	request.EventPayloadBuilder = builder
+	if !validCanonicalEventPayload(request.EventPayload, request.EventPayloadBuilder) {
+		t.Fatal("builder-backed event payload should be valid input")
+	}
+	got, err := buildCanonicalEventPayload(request.EventPayload, request.EventPayloadBuilder, CanonicalPlanMetadata{
+		ID: "89999999-9999-9999-9999-999999999999", Revision: 7, CreatedAt: createdAt,
+	})
+	if err != nil {
+		t.Fatalf("build canonical event payload: %v", err)
+	}
+	if string(got) != `{"event":"current_plan_replaced","created_at_unix_ms":1784000123456}` {
+		t.Fatalf("unexpected event payload: %s", got)
+	}
+}
 
 func replaceCurrentPlanRequest(
 	fixture createTripFixture,

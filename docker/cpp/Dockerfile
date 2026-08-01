@@ -32,6 +32,14 @@ RUN set -eu; \
 
 FROM --platform=linux/amd64 bmigeri/devcon-cpp@sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4
 
+USER root
+RUN mkdir --parents /var/lib/apt/lists/partial \
+    && apt-get update \
+    && apt-get install --no-install-recommends --yes \
+      libcurl4-openssl-dev=8.5.0-2ubuntu10.11 \
+    && rm -rf /var/lib/apt/lists/*
+USER developer
+
 WORKDIR /workspace
 COPY CMakeLists.txt ./
 COPY include ./include
@@ -47,6 +55,7 @@ RUN cmake -S . -B /workspace/build -G Ninja \
       -DCMAKE_BUILD_TYPE=RelWithDebInfo \
       -DCMAKE_PREFIX_PATH=/opt/grpc \
       -DLIVEROUTE_ENABLE_GRPC=ON \
+      -DLIVEROUTE_ENABLE_OSRM=ON \
       -DLIVEROUTE_ENABLE_PINNED_TZDATA_TESTS=ON \
     && cmake --build /workspace/build \
     && ctest --test-dir /workspace/build --output-on-failure \

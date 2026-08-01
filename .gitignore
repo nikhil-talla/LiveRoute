@@ -1,2 +1,5 @@
 build/
 out/
+
+# Downloaded and generated OSRM datasets
+/data/osrm/

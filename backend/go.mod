@@ -3,8 +3,11 @@ module github.com/liveroute/liveroute/backend
 go 1.26.5
 
 require (
+	github.com/coder/websocket v1.8.15
+	github.com/gibson042/canonicaljson-go v1.0.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pressly/goose/v3 v3.27.3
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 )
