@@ -93,6 +93,28 @@ EventAdmissionRequest durable_request(TripEvent value,
 }  // namespace
 
 int main() {
+  {
+    auto expired_trip = state();
+    TripRuntimeVersions expired_versions;
+    if (!expired_versions.bootstrap(7, 1, 0, 0).accepted()) return 1;
+    auto expired_event = event(
+        ActivityStatusChanged{expired_trip.activities[0].activity_id,
+                              ActivityState::kStarted},
+        9);
+    expired_event.command_expires_at = UnixTimeMilliseconds{9};
+    const auto expired = coordinate_event_admission(
+        expired_trip, expired_versions,
+        durable_request(std::move(expired_event), 1),
+        UnixTimeMilliseconds{10}, 16);
+    if (expired.status != EventCoordinatorStatus::kCommandExpired ||
+        expired.retryable || expired.planning_seed.has_value() ||
+        expired_versions.snapshot().accepted_mutation_sequence != 1 ||
+        expired_versions.snapshot().trip_revision != 1 ||
+        expired_trip.activities[0].activity_state != ActivityState::kPlanned) {
+      return 1;
+    }
+  }
+
   auto trip = state();
   TripRuntimeVersions versions;
   if (!versions.bootstrap(7, 1, 0, 0).accepted()) return 1;
@@ -104,7 +126,7 @@ int main() {
                                       ActivityState::kCompleted},
                 10),
           1),
-      16);
+      UnixTimeMilliseconds{10}, 16);
   if (invalid_transition.status !=
           EventCoordinatorStatus::kInvalidArgument ||
       versions.snapshot().accepted_mutation_sequence != 1 ||
@@ -121,22 +143,24 @@ int main() {
             11),
       2);
   const auto accepted = coordinate_event_admission(
-      trip, versions, accepted_request, 16);
+      trip, versions, accepted_request, UnixTimeMilliseconds{10}, 16);
   if (accepted.status != EventCoordinatorStatus::kAccepted ||
       !accepted.planning_seed.has_value() ||
       accepted.planning_seed->source_versions.accepted_mutation_sequence != 2 ||
       accepted.planning_seed->source_versions.planner_state_version != 1 ||
       accepted.planning_seed->source_versions.planning_generation != 1 ||
+      accepted.resulting_current_plan_id.has_value() ||
       trip.current_activity_id !=
           std::optional<ActivityId>{trip.activities[0].activity_id}) {
     return 1;
   }
 
   const auto duplicate = coordinate_event_admission(
-      trip, versions, accepted_request, 16);
+      trip, versions, accepted_request, UnixTimeMilliseconds{10}, 16);
   if (duplicate.status != EventCoordinatorStatus::kDuplicate ||
       versions.snapshot().accepted_mutation_sequence != 2 ||
-      versions.snapshot().planner_state_version != 1) {
+      versions.snapshot().planner_state_version != 1 ||
+      duplicate.resulting_current_plan_id.has_value()) {
     return 1;
   }
 
@@ -148,7 +172,7 @@ int main() {
       .expected_planner_state_version = std::nullopt,
       .event = event(LocationUpdated{Location{91, 0}}, 12)};
   const auto observation = coordinate_event_admission(
-      trip, versions, invalid_observation, 16);
+      trip, versions, invalid_observation, UnixTimeMilliseconds{10}, 16);
   if (observation.status != EventCoordinatorStatus::kInvalidArgument ||
       versions.snapshot().accepted_observation_sequence != 0 ||
       versions.snapshot().planner_state_version != 1) {
@@ -166,7 +190,7 @@ int main() {
   const auto generation_before_advisory =
       versions.snapshot().planning_generation;
   const auto advisory = coordinate_event_admission(
-      trip, versions, advisory_request, 16);
+      trip, versions, advisory_request, UnixTimeMilliseconds{10}, 16);
   if (advisory.status != EventCoordinatorStatus::kAccepted ||
       advisory.planning_input_changed || advisory.planning_seed.has_value() ||
       versions.snapshot().accepted_observation_sequence != 1 ||
@@ -186,9 +210,38 @@ int main() {
   invalid_plan.plan_id = id<PlanId>(8);
   const auto mirror = coordinate_event_admission(
       canonical, canonical_versions,
-      durable_request(event(CurrentPlanReplaced{invalid_plan}, 13), 1), 16);
-  return mirror.status != EventCoordinatorStatus::kInvalidArgument ||
-                 canonical_versions.snapshot().accepted_mutation_sequence != 0
+      durable_request(event(CurrentPlanReplaced{invalid_plan}, 13), 1),
+      UnixTimeMilliseconds{10}, 16);
+  if (mirror.status != EventCoordinatorStatus::kInvalidArgument ||
+      mirror.resulting_current_plan_id.has_value() ||
+      canonical_versions.snapshot().accepted_mutation_sequence != 0) {
+    return 1;
+  }
+
+  auto replacement = canonical.current_plan;
+  replacement.plan_id = id<PlanId>(9);
+  replacement.plan_revision = 2;
+  replacement.created_at = UnixTimeMilliseconds{20};
+  auto replacement_request = durable_request(
+      event(CurrentPlanReplaced{replacement}, 14), 1);
+  const auto replaced = coordinate_event_admission(
+      canonical, canonical_versions, replacement_request,
+      UnixTimeMilliseconds{10}, 16);
+  if (replaced.status != EventCoordinatorStatus::kAccepted ||
+      replaced.resulting_current_plan_id !=
+          std::optional<PlanId>{replacement.plan_id} ||
+      canonical.current_plan.plan_id != replacement.plan_id ||
+      canonical_versions.snapshot().accepted_mutation_sequence != 1 ||
+      canonical_versions.snapshot().trip_revision != 2) {
+    return 1;
+  }
+
+  const auto duplicate_replacement = coordinate_event_admission(
+      canonical, canonical_versions, replacement_request,
+      UnixTimeMilliseconds{10}, 16);
+  return duplicate_replacement.status != EventCoordinatorStatus::kDuplicate ||
+                 duplicate_replacement.resulting_current_plan_id !=
+                     std::optional<PlanId>{replacement.plan_id}
              ? 1
              : 0;
 }

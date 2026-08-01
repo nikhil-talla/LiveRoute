@@ -651,20 +651,6 @@ class PlanTripsReactor final : public Reactor {
                  true, "request deadline exceeded");
       return;
     }
-    if (request.apply_event().has_command_expires_at_unix_ms() &&
-        request.apply_event().command_expires_at_unix_ms() <=
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                system_now.time_since_epoch())
-                .count() &&
-        request.apply_event().event_case() !=
-            ::liveroute::v1::ApplyTripEvent::kTripEdited &&
-        request.apply_event().event_case() !=
-            ::liveroute::v1::ApplyTripEvent::kCurrentPlanReplaced) {
-      send_error(request,
-                 ::liveroute::v1::STATUS_CODE_COMMAND_EXPIRED,
-                 false, "command expired");
-      return;
-    }
     auto converted = event_from_proto(
         request, system_now, std::chrono::steady_clock::now(),
         configuration_.default_attempt_timeout,
@@ -720,6 +706,12 @@ class PlanTripsReactor final : public Reactor {
               output->set_status(
                   ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT);
               break;
+            case Status::kCommandExpired:
+              output->set_disposition(
+                  ::liveroute::v1::EVENT_DISPOSITION_REJECTED);
+              output->set_status(
+                  ::liveroute::v1::STATUS_CODE_COMMAND_EXPIRED);
+              break;
             case Status::kInactive:
               output->set_disposition(
                   ::liveroute::v1::EVENT_DISPOSITION_REJECTED);
@@ -746,6 +738,10 @@ class PlanTripsReactor final : public Reactor {
                   .accepted_observation_sequence);
           output->set_replan_scheduled(
               result.admission.planning_seed.has_value());
+          if (result.admission.resulting_current_plan_id) {
+            output->set_resulting_current_plan_id(format_plan_id(
+                *result.admission.resulting_current_plan_id));
+          }
           if (result.admission.planning_seed) {
             endpoint->record_correlation(
                 {trip_id,

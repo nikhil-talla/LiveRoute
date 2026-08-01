@@ -23,7 +23,8 @@ namespace {
     const domain::TripEvent& event) noexcept {
   if (const auto* decision =
           std::get_if<domain::PlanDecisionEvent>(&event.payload)) {
-    return decision->decision == domain::PlanDecision::kAccept;
+    return decision->decision == domain::PlanDecision::kAccept ||
+           decision->decision == domain::PlanDecision::kReject;
   }
   return is_durable(*event.event_class());
 }
@@ -59,7 +60,8 @@ namespace {
           .planning_input_changed = false,
           .current_plan_changed = false,
           .version_snapshot = version_snapshot,
-          .planning_seed = std::nullopt};
+          .planning_seed = std::nullopt,
+          .resulting_current_plan_id = std::nullopt};
 }
 
 [[nodiscard]] EventCoordinatorResult map_version_result(
@@ -90,6 +92,7 @@ namespace {
 EventCoordinatorResult coordinate_event_admission(
     domain::TripState& state, TripRuntimeVersions& versions,
     const EventAdmissionRequest& request,
+    domain::UnixTimeMilliseconds current_time,
     std::size_t max_advisory_payload_bytes) {
   const auto event_class = request.event.event_class();
   if (!event_class.has_value()) {
@@ -128,7 +131,27 @@ EventCoordinatorResult coordinate_event_admission(
                                  request.observation_sequence,
                                  request.expected_planner_state_version);
   if (!preview.accepted()) {
-    return map_version_result(preview, versions.snapshot());
+    auto result = map_version_result(preview, versions.snapshot());
+    if (result.status == EventCoordinatorStatus::kDuplicate &&
+        is_canonical_mirror(*event_class)) {
+      result.resulting_current_plan_id = state.current_plan.plan_id;
+    }
+    return result;
+  }
+
+  if (durable && !is_canonical_mirror(*event_class) &&
+      request.event.command_expires_at.has_value() &&
+      *request.event.command_expires_at <= current_time) {
+    const auto resolved = versions.resolve_terminal_durable(
+        request.runtime_epoch, request.mutation_sequence,
+        request.expected_trip_revision,
+        request.expected_planner_state_version);
+    if (!resolved.accepted()) {
+      return make_result(EventCoordinatorStatus::kInternal,
+                         versions.snapshot());
+    }
+    return make_result(EventCoordinatorStatus::kCommandExpired,
+                       versions.snapshot());
   }
 
   auto candidate_state = state;
@@ -187,7 +210,11 @@ EventCoordinatorResult coordinate_event_admission(
       .current_plan_changed = applied.current_plan_changed,
       .version_snapshot = versions.snapshot(),
       .planning_seed = std::nullopt,
+      .resulting_current_plan_id = std::nullopt,
   };
+  if (is_canonical_mirror(*event_class)) {
+    result.resulting_current_plan_id = state.current_plan.plan_id;
+  }
   if (applied.planning_input_changed) {
     const auto token = versions.capture_planning_work();
     if (!token.has_value()) {

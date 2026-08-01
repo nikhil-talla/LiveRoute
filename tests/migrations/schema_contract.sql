@@ -27,15 +27,35 @@ BEGIN
   INSERT INTO command_intents (
     id, trip_id, message_id, event_id, mutation_sequence, expected_trip_revision,
     command_kind, application_order, digest_algorithm, payload_digest,
-    command_payload, state, runtime_sync_state, recorded_at
+    command_payload, state, resulting_trip_revision,
+    resulting_current_plan_id, runtime_sync_state, recorded_at
   ) VALUES (
     '55555555-5555-5555-5555-555555555555', trip_id,
     '66666666-6666-6666-6666-666666666666',
     '77777777-7777-7777-7777-777777777777', 1, 1,
     'create_trip', 'canonical_first', 'rfc8785-sha256-v1',
-    decode(repeat('00', 32), 'hex'), '{}'::jsonb, 'pending', 'not_required',
-    clock_timestamp()
+    decode(repeat('00', 32), 'hex'), '{}'::jsonb, 'pending', 1, plan_id,
+    'not_required', clock_timestamp()
   );
+
+  BEGIN
+    INSERT INTO command_intents (
+      id, trip_id, message_id, event_id, mutation_sequence,
+      expected_trip_revision, command_kind, application_order,
+      digest_algorithm, payload_digest, command_payload, state,
+      resulting_trip_revision, runtime_sync_state, recorded_at
+    ) VALUES (
+      '29292929-2929-2929-2929-292929292929', trip_id,
+      '30303030-3030-3030-3030-303030303030',
+      '31313131-3131-3131-3131-313131313131', 6, 1,
+      'trip_edited', 'canonical_first', 'rfc8785-sha256-v1',
+      decode(repeat('00', 32), 'hex'), '{}'::jsonb, 'applied', 2,
+      'pending', clock_timestamp()
+    );
+    RAISE EXCEPTION 'expected canonical intent without result plan to be rejected';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
 
   BEGIN
     INSERT INTO command_intents (

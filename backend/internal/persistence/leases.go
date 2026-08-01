@@ -253,3 +253,42 @@ func (store *LeaseStore) Renew(
 	renewed.RuntimeEpoch = uint64(epoch)
 	return renewed, nil
 }
+
+// Current returns dispatch authority only while PostgreSQL considers this
+// holder's exact epoch lease live. Local clock time is never used to extend it.
+func (store *LeaseStore) Current(
+	ctx context.Context,
+	tripID string,
+	holderID string,
+) (RuntimeLease, error) {
+	if tripID == "" || holderID == "" {
+		return RuntimeLease{}, errors.New("trip and holder ids are required")
+	}
+	var lease RuntimeLease
+	var epoch int64
+	err := store.pool.QueryRow(ctx, `
+		SELECT trip_id::text, holder_id::text, runtime_epoch,
+		       lease_expires_at, renewed_at
+		FROM trip_runtime_leases
+		WHERE trip_id = $1
+		  AND holder_id = $2
+		  AND lease_expires_at > clock_timestamp()
+	`, tripID, holderID).Scan(
+		&lease.TripID,
+		&lease.HolderID,
+		&epoch,
+		&lease.LeaseExpiresAt,
+		&lease.RenewedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RuntimeLease{}, ErrLeaseLost
+	}
+	if err != nil {
+		return RuntimeLease{}, fmt.Errorf("read current runtime lease: %w", err)
+	}
+	if epoch <= 0 {
+		return RuntimeLease{}, ErrLeaseLost
+	}
+	lease.RuntimeEpoch = uint64(epoch)
+	return lease, nil
+}

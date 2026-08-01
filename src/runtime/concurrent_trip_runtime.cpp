@@ -585,7 +585,8 @@ class ConcurrentTripRuntime::Impl {
                     .planning_input_changed = false,
                     .current_plan_changed = false,
                     .version_snapshot = {},
-                    .planning_seed = std::nullopt};
+                    .planning_seed = std::nullopt,
+                    .resulting_current_plan_id = std::nullopt};
                 callback({std::move(result), timings});
                 return;
               }
@@ -599,7 +600,8 @@ class ConcurrentTripRuntime::Impl {
                     .planning_input_changed = false,
                     .current_plan_changed = false,
                     .version_snapshot = trip.versions.snapshot(),
-                    .planning_seed = std::nullopt};
+                    .planning_seed = std::nullopt,
+                    .resulting_current_plan_id = std::nullopt};
                 callback({std::move(result), timings});
                 return;
               }
@@ -616,6 +618,7 @@ class ConcurrentTripRuntime::Impl {
                       request.admission.event.payload);
               auto admission = coordinate_event_admission(
                   trip.state, trip.versions, request.admission,
+                  request.planning->current_time,
                   configuration_.max_advisory_payload_bytes);
               if (location_update &&
                   admission.status == EventCoordinatorStatus::kStale) {

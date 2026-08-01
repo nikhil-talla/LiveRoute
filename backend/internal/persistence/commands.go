@@ -27,8 +27,11 @@ var (
 type CommandKind string
 
 const (
+	CommandCreateTrip               CommandKind = "create_trip"
 	CommandActivityStatusChanged    CommandKind = "activity_status_changed"
 	CommandActivityDelayed          CommandKind = "activity_delayed"
+	CommandReplaceCurrentPlan       CommandKind = "replace_current_plan"
+	CommandTripEdited               CommandKind = "trip_edited"
 	CommandReservationChanged       CommandKind = "reservation_changed"
 	CommandMandatoryDeadlineChanged CommandKind = "mandatory_deadline_changed"
 	CommandOperatingHoursChanged    CommandKind = "operating_hours_changed"
@@ -91,6 +94,7 @@ type RecordedCommand struct {
 	OutcomeStatus                *string
 	OutcomePayload               json.RawMessage
 	ResultingTripRevision        *uint64
+	ResultingCurrentPlanID       *string
 	ResultingPlannerStateVersion *uint64
 	RecordedAt                   time.Time
 	FinalizedAt                  *time.Time
@@ -192,6 +196,7 @@ func scanRecordedCommand(
 	var outcomeStatus pgtype.Text
 	var outcomePayload []byte
 	var resultingRevision pgtype.Int8
+	var resultingCurrentPlanID pgtype.Text
 	var resultingPlannerVersion pgtype.Int8
 	var finalizedAt pgtype.Timestamptz
 	err := row.Scan(
@@ -209,6 +214,7 @@ func scanRecordedCommand(
 		&outcomeStatus,
 		&outcomePayload,
 		&resultingRevision,
+		&resultingCurrentPlanID,
 		&resultingPlannerVersion,
 		&result.RuntimeSyncState,
 		&result.RecordedAt,
@@ -248,6 +254,14 @@ func scanRecordedCommand(
 		value := uint64(resultingRevision.Int64)
 		result.ResultingTripRevision = &value
 	}
+	if resultingCurrentPlanID.Valid {
+		if !validCanonicalUUID(resultingCurrentPlanID.String) {
+			return RecordedCommand{}, nil, "",
+				errors.New("stored resulting current-plan id is invalid")
+		}
+		value := resultingCurrentPlanID.String
+		result.ResultingCurrentPlanID = &value
+	}
 	if resultingPlannerVersion.Valid {
 		if resultingPlannerVersion.Int64 < 0 {
 			return RecordedCommand{}, nil, "",
@@ -278,6 +292,7 @@ const recordedCommandSelect = `
 	       intent.outcome_status,
 	       intent.outcome_payload,
 	       intent.resulting_trip_revision,
+	       intent.resulting_current_plan_id::text,
 	       intent.resulting_planner_state_version,
 	       intent.runtime_sync_state,
 	       intent.recorded_at,

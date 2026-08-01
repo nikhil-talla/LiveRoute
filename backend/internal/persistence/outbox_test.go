@@ -100,13 +100,14 @@ func TestOrderedOutboxClaimsAndAttemptFencing(t *testing.T) {
 				id, trip_id, message_id, event_id, mutation_sequence,
 				expected_trip_revision, command_kind, application_order,
 				digest_algorithm, payload_digest, command_payload, state,
+				resulting_trip_revision, resulting_current_plan_id,
 				runtime_sync_state, recorded_at
 			) VALUES (
 				$1, $2, $3, $4, $5, 1, 'trip_edited', 'canonical_first',
-				'rfc8785-sha256-v1', $6, '{}'::jsonb, 'applied', 'pending',
+				'rfc8785-sha256-v1', $6, '{}'::jsonb, 'applied', 1, $7, 'pending',
 				clock_timestamp()
 			)
-		`, intentID, tripID, messageID, eventID, sequence, checksum[:]); err != nil {
+		`, intentID, tripID, messageID, eventID, sequence, checksum[:], planID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(ctx, `
@@ -135,7 +136,13 @@ func TestOrderedOutboxClaimsAndAttemptFencing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(firstClaim) != 1 || firstClaim[0].MutationSequence != 2 ||
-		firstClaim[0].AttemptCount != 1 {
+		firstClaim[0].AttemptCount != 1 ||
+		firstClaim[0].EventID != "67777777-7777-7777-7777-000000000002" ||
+		firstClaim[0].CommandKind != CommandTripEdited ||
+		firstClaim[0].ApplicationOrder != "canonical_first" ||
+		firstClaim[0].ExpectedTripRevision != 1 ||
+		firstClaim[0].ResultingTripRevision != 1 ||
+		firstClaim[0].ResultingCurrentPlanID != planID {
 		t.Fatalf("unexpected first claim: %+v", firstClaim)
 	}
 	blocked, err := store.ClaimDue(ctx, claimOwner, 10, 30*time.Second)

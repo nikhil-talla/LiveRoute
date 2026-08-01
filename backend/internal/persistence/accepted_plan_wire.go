@@ -148,7 +148,11 @@ func parseCurrentPlanSegment(input []byte) (currentPlanSegmentWire, error) {
 	return result, nil
 }
 
-func parseCurrentPlan(input []byte) (currentPlanWire, error) {
+func parseCurrentPlanWithOrigin(
+	input []byte,
+	expectedOrigin uint64,
+	requireSourceProposal bool,
+) (currentPlanWire, error) {
 	fields, err := consumeWireFields(input)
 	if err != nil {
 		return currentPlanWire{}, err
@@ -194,8 +198,9 @@ func parseCurrentPlan(input []byte) (currentPlanWire, error) {
 	}
 	if !validCanonicalUUID(result.planID) ||
 		result.planRevision == 0 ||
-		result.origin != 2 ||
-		!validCanonicalUUID(result.sourceProposalID) {
+		result.origin != expectedOrigin ||
+		(requireSourceProposal && !validCanonicalUUID(result.sourceProposalID)) ||
+		(!requireSourceProposal && result.sourceProposalID != "") {
 		return result, errors.New("accepted current-plan metadata is invalid")
 	}
 	seen := make(map[string]struct{}, len(result.segments))
@@ -215,6 +220,14 @@ func parseCurrentPlan(input []byte) (currentPlanWire, error) {
 		priorScheduledEnd = &value
 	}
 	return result, nil
+}
+
+func parseCurrentPlan(input []byte) (currentPlanWire, error) {
+	return parseCurrentPlanWithOrigin(input, 2, true)
+}
+
+func parseUserCurrentPlan(input []byte) (currentPlanWire, error) {
+	return parseCurrentPlanWithOrigin(input, 1, false)
 }
 
 func parseProposalSegment(input []byte) (currentPlanSegmentWire, error) {

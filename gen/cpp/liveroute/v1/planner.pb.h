@@ -6624,6 +6624,7 @@ class EventAcknowledged final : public ::google::protobuf::Message
   enum : int {
     kEventIdFieldNumber = 5,
     kSafeMessageFieldNumber = 9,
+    kResultingCurrentPlanIdFieldNumber = 10,
     kDispositionFieldNumber = 1,
     kStatusFieldNumber = 2,
     kStaleReasonFieldNumber = 4,
@@ -6660,6 +6661,21 @@ class EventAcknowledged final : public ::google::protobuf::Message
   const ::std::string& _internal_safe_message() const;
   PROTOBUF_ALWAYS_INLINE void _internal_set_safe_message(const ::std::string& value);
   ::std::string* PROTOBUF_NONNULL _internal_mutable_safe_message();
+
+  public:
+  // string resulting_current_plan_id = 10;
+  void clear_resulting_current_plan_id() ;
+  const ::std::string& resulting_current_plan_id() const;
+  template <typename Arg_ = const ::std::string&, typename... Args_>
+  void set_resulting_current_plan_id(Arg_&& arg, Args_... args);
+  ::std::string* PROTOBUF_NONNULL mutable_resulting_current_plan_id();
+  [[nodiscard]] ::std::string* PROTOBUF_NULLABLE release_resulting_current_plan_id();
+  void set_allocated_resulting_current_plan_id(::std::string* PROTOBUF_NULLABLE value);
+
+  private:
+  const ::std::string& _internal_resulting_current_plan_id() const;
+  PROTOBUF_ALWAYS_INLINE void _internal_set_resulting_current_plan_id(const ::std::string& value);
+  ::std::string* PROTOBUF_NONNULL _internal_mutable_resulting_current_plan_id();
 
   public:
   // .liveroute.v1.EventDisposition disposition = 1;
@@ -6736,8 +6752,8 @@ class EventAcknowledged final : public ::google::protobuf::Message
  private:
   class _Internal;
   friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<4, 9,
-                                   0, 67,
+  static const ::google::protobuf::internal::TcParseTable<4, 10,
+                                   0, 92,
                                    2>
       _table_;
 
@@ -6760,6 +6776,7 @@ class EventAcknowledged final : public ::google::protobuf::Message
     ::google::protobuf::internal::CachedSize _cached_size_;
     ::google::protobuf::internal::ArenaStringPtr event_id_;
     ::google::protobuf::internal::ArenaStringPtr safe_message_;
+    ::google::protobuf::internal::ArenaStringPtr resulting_current_plan_id_;
     int disposition_;
     int status_;
     int stale_reason_;
@@ -24497,7 +24514,7 @@ inline ApplyTripEvent::EventCase ApplyTripEvent::event_case() const {
 inline void EventAcknowledged::clear_disposition() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.disposition_ = 0;
-  _impl_._has_bits_[0] &= ~0x00000004u;
+  _impl_._has_bits_[0] &= ~0x00000008u;
 }
 inline ::liveroute::v1::EventDisposition EventAcknowledged::disposition() const {
   // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.disposition)
@@ -24505,7 +24522,7 @@ inline ::liveroute::v1::EventDisposition EventAcknowledged::disposition() const 
 }
 inline void EventAcknowledged::set_disposition(::liveroute::v1::EventDisposition value) {
   _internal_set_disposition(value);
-  _impl_._has_bits_[0] |= 0x00000004u;
+  _impl_._has_bits_[0] |= 0x00000008u;
   // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.disposition)
 }
 inline ::liveroute::v1::EventDisposition EventAcknowledged::_internal_disposition() const {
@@ -24521,7 +24538,7 @@ inline void EventAcknowledged::_internal_set_disposition(::liveroute::v1::EventD
 inline void EventAcknowledged::clear_status() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.status_ = 0;
-  _impl_._has_bits_[0] &= ~0x00000008u;
+  _impl_._has_bits_[0] &= ~0x00000010u;
 }
 inline ::liveroute::v1::StatusCode EventAcknowledged::status() const {
   // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.status)
@@ -24529,7 +24546,7 @@ inline ::liveroute::v1::StatusCode EventAcknowledged::status() const {
 }
 inline void EventAcknowledged::set_status(::liveroute::v1::StatusCode value) {
   _internal_set_status(value);
-  _impl_._has_bits_[0] |= 0x00000008u;
+  _impl_._has_bits_[0] |= 0x00000010u;
   // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.status)
 }
 inline ::liveroute::v1::StatusCode EventAcknowledged::_internal_status() const {
@@ -24545,7 +24562,7 @@ inline void EventAcknowledged::_internal_set_status(::liveroute::v1::StatusCode 
 inline void EventAcknowledged::clear_retryable() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.retryable_ = false;
-  _impl_._has_bits_[0] &= ~0x00000020u;
+  _impl_._has_bits_[0] &= ~0x00000040u;
 }
 inline bool EventAcknowledged::retryable() const {
   // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.retryable)
@@ -24553,7 +24570,7 @@ inline bool EventAcknowledged::retryable() const {
 }
 inline void EventAcknowledged::set_retryable(bool value) {
   _internal_set_retryable(value);
-  _impl_._has_bits_[0] |= 0x00000020u;
+  _impl_._has_bits_[0] |= 0x00000040u;
   // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.retryable)
 }
 inline bool EventAcknowledged::_internal_retryable() const {
@@ -24569,7 +24586,7 @@ inline void EventAcknowledged::_internal_set_retryable(bool value) {
 inline void EventAcknowledged::clear_stale_reason() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.stale_reason_ = 0;
-  _impl_._has_bits_[0] &= ~0x00000010u;
+  _impl_._has_bits_[0] &= ~0x00000020u;
 }
 inline ::liveroute::v1::StaleReason EventAcknowledged::stale_reason() const {
   // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.stale_reason)
@@ -24577,7 +24594,7 @@ inline ::liveroute::v1::StaleReason EventAcknowledged::stale_reason() const {
 }
 inline void EventAcknowledged::set_stale_reason(::liveroute::v1::StaleReason value) {
   _internal_set_stale_reason(value);
-  _impl_._has_bits_[0] |= 0x00000010u;
+  _impl_._has_bits_[0] |= 0x00000020u;
   // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.stale_reason)
 }
 inline ::liveroute::v1::StaleReason EventAcknowledged::_internal_stale_reason() const {
@@ -24658,7 +24675,7 @@ inline void EventAcknowledged::set_allocated_event_id(::std::string* PROTOBUF_NU
 inline void EventAcknowledged::clear_resolved_mutation_sequence() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.resolved_mutation_sequence_ = ::uint64_t{0u};
-  _impl_._has_bits_[0] &= ~0x00000080u;
+  _impl_._has_bits_[0] &= ~0x00000100u;
 }
 inline ::uint64_t EventAcknowledged::resolved_mutation_sequence() const {
   // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.resolved_mutation_sequence)
@@ -24666,7 +24683,7 @@ inline ::uint64_t EventAcknowledged::resolved_mutation_sequence() const {
 }
 inline void EventAcknowledged::set_resolved_mutation_sequence(::uint64_t value) {
   _internal_set_resolved_mutation_sequence(value);
-  _impl_._has_bits_[0] |= 0x00000080u;
+  _impl_._has_bits_[0] |= 0x00000100u;
   // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.resolved_mutation_sequence)
 }
 inline ::uint64_t EventAcknowledged::_internal_resolved_mutation_sequence() const {
@@ -24682,7 +24699,7 @@ inline void EventAcknowledged::_internal_set_resolved_mutation_sequence(::uint64
 inline void EventAcknowledged::clear_resolved_observation_sequence() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.resolved_observation_sequence_ = ::uint64_t{0u};
-  _impl_._has_bits_[0] &= ~0x00000100u;
+  _impl_._has_bits_[0] &= ~0x00000200u;
 }
 inline ::uint64_t EventAcknowledged::resolved_observation_sequence() const {
   // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.resolved_observation_sequence)
@@ -24690,7 +24707,7 @@ inline ::uint64_t EventAcknowledged::resolved_observation_sequence() const {
 }
 inline void EventAcknowledged::set_resolved_observation_sequence(::uint64_t value) {
   _internal_set_resolved_observation_sequence(value);
-  _impl_._has_bits_[0] |= 0x00000100u;
+  _impl_._has_bits_[0] |= 0x00000200u;
   // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.resolved_observation_sequence)
 }
 inline ::uint64_t EventAcknowledged::_internal_resolved_observation_sequence() const {
@@ -24706,7 +24723,7 @@ inline void EventAcknowledged::_internal_set_resolved_observation_sequence(::uin
 inline void EventAcknowledged::clear_replan_scheduled() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.replan_scheduled_ = false;
-  _impl_._has_bits_[0] &= ~0x00000040u;
+  _impl_._has_bits_[0] &= ~0x00000080u;
 }
 inline bool EventAcknowledged::replan_scheduled() const {
   // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.replan_scheduled)
@@ -24714,7 +24731,7 @@ inline bool EventAcknowledged::replan_scheduled() const {
 }
 inline void EventAcknowledged::set_replan_scheduled(bool value) {
   _internal_set_replan_scheduled(value);
-  _impl_._has_bits_[0] |= 0x00000040u;
+  _impl_._has_bits_[0] |= 0x00000080u;
   // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.replan_scheduled)
 }
 inline bool EventAcknowledged::_internal_replan_scheduled() const {
@@ -24789,6 +24806,71 @@ inline void EventAcknowledged::set_allocated_safe_message(::std::string* PROTOBU
     _impl_.safe_message_.Set("", GetArena());
   }
   // @@protoc_insertion_point(field_set_allocated:liveroute.v1.EventAcknowledged.safe_message)
+}
+
+// string resulting_current_plan_id = 10;
+inline void EventAcknowledged::clear_resulting_current_plan_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.resulting_current_plan_id_.ClearToEmpty();
+  _impl_._has_bits_[0] &= ~0x00000004u;
+}
+inline const ::std::string& EventAcknowledged::resulting_current_plan_id() const
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  // @@protoc_insertion_point(field_get:liveroute.v1.EventAcknowledged.resulting_current_plan_id)
+  return _internal_resulting_current_plan_id();
+}
+template <typename Arg_, typename... Args_>
+PROTOBUF_ALWAYS_INLINE void EventAcknowledged::set_resulting_current_plan_id(Arg_&& arg, Args_... args) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_._has_bits_[0] |= 0x00000004u;
+  _impl_.resulting_current_plan_id_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
+  // @@protoc_insertion_point(field_set:liveroute.v1.EventAcknowledged.resulting_current_plan_id)
+}
+inline ::std::string* PROTOBUF_NONNULL EventAcknowledged::mutable_resulting_current_plan_id()
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  ::std::string* _s = _internal_mutable_resulting_current_plan_id();
+  // @@protoc_insertion_point(field_mutable:liveroute.v1.EventAcknowledged.resulting_current_plan_id)
+  return _s;
+}
+inline const ::std::string& EventAcknowledged::_internal_resulting_current_plan_id() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  return _impl_.resulting_current_plan_id_.Get();
+}
+inline void EventAcknowledged::_internal_set_resulting_current_plan_id(const ::std::string& value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_._has_bits_[0] |= 0x00000004u;
+  _impl_.resulting_current_plan_id_.Set(value, GetArena());
+}
+inline ::std::string* PROTOBUF_NONNULL EventAcknowledged::_internal_mutable_resulting_current_plan_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_._has_bits_[0] |= 0x00000004u;
+  return _impl_.resulting_current_plan_id_.Mutable( GetArena());
+}
+inline ::std::string* PROTOBUF_NULLABLE EventAcknowledged::release_resulting_current_plan_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  // @@protoc_insertion_point(field_release:liveroute.v1.EventAcknowledged.resulting_current_plan_id)
+  if ((_impl_._has_bits_[0] & 0x00000004u) == 0) {
+    return nullptr;
+  }
+  _impl_._has_bits_[0] &= ~0x00000004u;
+  auto* released = _impl_.resulting_current_plan_id_.Release();
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString()) {
+    _impl_.resulting_current_plan_id_.Set("", GetArena());
+  }
+  return released;
+}
+inline void EventAcknowledged::set_allocated_resulting_current_plan_id(::std::string* PROTOBUF_NULLABLE value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (value != nullptr) {
+    _impl_._has_bits_[0] |= 0x00000004u;
+  } else {
+    _impl_._has_bits_[0] &= ~0x00000004u;
+  }
+  _impl_.resulting_current_plan_id_.SetAllocated(value, GetArena());
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.resulting_current_plan_id_.IsDefault()) {
+    _impl_.resulting_current_plan_id_.Set("", GetArena());
+  }
+  // @@protoc_insertion_point(field_set_allocated:liveroute.v1.EventAcknowledged.resulting_current_plan_id)
 }
 
 // -------------------------------------------------------------------

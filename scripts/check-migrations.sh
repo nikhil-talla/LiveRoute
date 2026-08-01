@@ -55,7 +55,19 @@ apply_migration_section "$repo_root/migrations/00001_canonical_trip_state.sql" U
 apply_migration_section "$repo_root/migrations/00002_delivery_recovery.sql" Up
 docker exec --interactive "$container_name" \
   psql --set ON_ERROR_STOP=1 --username=liveroute --dbname=liveroute \
+  < "$repo_root/tests/migrations/00003_backfill_fixture.sql"
+apply_migration_section "$repo_root/migrations/00003_canonical_intent_plan_identity.sql" Up
+backfilled_plan_id=$(docker exec "$container_name" \
+  psql --tuples-only --no-align --username=liveroute --dbname=liveroute \
+  --command "SELECT resulting_current_plan_id FROM command_intents WHERE id = '94949494-9494-9494-9494-949494949494';")
+if [[ $backfilled_plan_id != 93939393-9393-9393-9393-939393939393 ]]; then
+  echo "migration 3 failed to backfill canonical result-plan identity" >&2
+  exit 1
+fi
+docker exec --interactive "$container_name" \
+  psql --set ON_ERROR_STOP=1 --username=liveroute --dbname=liveroute \
   < "$repo_root/tests/migrations/schema_contract.sql"
+apply_migration_section "$repo_root/migrations/00003_canonical_intent_plan_identity.sql" Down
 apply_migration_section "$repo_root/migrations/00002_delivery_recovery.sql" Down
 apply_migration_section "$repo_root/migrations/00001_canonical_trip_state.sql" Down
 

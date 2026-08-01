@@ -349,12 +349,19 @@ Implement backend durability and WebSocket gateway:
 - Use one Go 1.26 backend process in V1; do not add cross-instance routing or distributed fanout.
 - Add complete `liveroute.v1` Protobuf schemas and WebSocket JSON Schemas before implementing handlers.
 - Add Goose SQL migrations for every exact table/column/constraint/index in `plans/LiveRouteV1ContractSpec.md`, including development token digests, canonical trip/activity windows, immutable `itinerary_plans`, separate `plan_proposals`, `command_intents`, lease-neutral `planner_outbox`, two retained compatible snapshots, and runtime leases.
-- Implement `create_trip`, `trip_edited` plus its complete resulting user plan, and `replace_current_plan` as canonical-first PostgreSQL transactions. Emit `canonical_committed` without waiting for C++, preserve the user state during C++ outage, and converge the ordered `TripEdited`/`CurrentPlanReplaced` mirror through replay or full bootstrap before later runtime-first dispatch.
+- Implement `create_trip`, `trip_edited` plus its complete resulting user plan, and `replace_current_plan` as canonical-first PostgreSQL transactions. Persist each command's exact resulting plan id on its retained intent rather than deriving it from opaque outbox JSON or the live trip pointer. Emit `canonical_committed` without waiting for C++, preserve the user state during C++ outage, and converge the ordered `TripEdited`/`CurrentPlanReplaced` mirror through replay or full bootstrap before later runtime-first dispatch.
 - Validate user-plan structure and safety boundaries in Go, but do not reject a structurally valid plan for nonoptimality or routing/hours/reservation/deadline infeasibility. Never accept browser-supplied route/provider/planner metadata as authoritative.
 - Persist exact `StoredPlanProposal` bytes before WebSocket publication, retain proposal/current-plan history separately, and update `current_plan_id` only after an explicit fresh user acceptance or direct user-authored replacement.
 - Canonicalize validated durable commands with RFC 8785 and SHA-256; retain digest algorithm/digest/outcome for the trip lifetime and reject changed-payload key reuse.
 - Acquire/renew leases using PostgreSQL time. Add the current epoch only when dispatching an outbox entry, including replay after restart.
 - Generate a new gRPC `request_id` and attempt deadline per dispatch while preserving stable `event_id`/mutation/payload identity. Use capped full-jitter outbox retry without a fixed attempt cutoff; stop only on an acknowledged terminal/applied outcome, deletion, or explicit paused-internal repair. Logical expiry must be terminally resolved by C++ as `COMMAND_EXPIRED`.
+- Generate and check in Go Protobuf/gRPC bindings with the pinned container
+  recipe. Store typed `ApplyTripEvent` bodies using the contract's deterministic
+  Protobuf JSONB wrapper, reject ambiguous encodings, negotiate the fixed
+  capability set before dispatch, and keep stream admission/notifications
+  bounded. This backend-to-C++ transport is Phase 14 infrastructure; Phase 15
+  browser handlers only translate validated commands into these internal typed
+  events and do not redefine replay encoding or stream lifecycle.
 - After PostgreSQL finalization, send the cumulative finalized mutation watermark to C++; snapshot only after acknowledgement or bootstrap convergence.
 - Hold at most one latest proposal whose `source_accepted_mutation_sequence` is ahead of PostgreSQL finalization or awaiting proposal persistence; publish it only after the watermark covers it, its epoch/state/base-plan tuple remains current, and its proposal row commits.
 - Use bounded per-connection admission, bounded per-trip pending-command queues, and bounded outbound buffers.

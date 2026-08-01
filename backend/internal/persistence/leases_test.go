@@ -97,6 +97,10 @@ func TestRuntimeLeaseEpochAndFencing(t *testing.T) {
 		!renewed.LeaseExpiresAt.After(renewed.RenewedAt) {
 		t.Fatalf("unexpected renewal: %+v", renewed)
 	}
+	current, err := store.Current(ctx, tripID, holderA)
+	if err != nil || current.RuntimeEpoch != first.RuntimeEpoch {
+		t.Fatalf("current lease lookup failed: %+v, %v", current, err)
+	}
 	if _, err := store.Acquire(ctx, tripID, holderB, 30*time.Second); !errors.Is(err, ErrLeaseHeld) {
 		t.Fatalf("expected held lease, got %v", err)
 	}
@@ -113,6 +117,9 @@ func TestRuntimeLeaseEpochAndFencing(t *testing.T) {
 	}
 	if second.RuntimeEpoch != 2 || second.HolderID != holderB {
 		t.Fatalf("unexpected replacement lease: %+v", second)
+	}
+	if _, err := store.Current(ctx, tripID, holderA); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("old holder retained dispatch authority: %v", err)
 	}
 	if _, err := store.Renew(
 		ctx, tripID, holderA, first.RuntimeEpoch, 30*time.Second,

@@ -730,6 +730,9 @@ inline constexpr EventAcknowledged::Impl_::Impl_(
         safe_message_(
             &::google::protobuf::internal::fixed_address_empty_string,
             ::_pbi::ConstantInitialized()),
+        resulting_current_plan_id_(
+            &::google::protobuf::internal::fixed_address_empty_string,
+            ::_pbi::ConstantInitialized()),
         disposition_{static_cast< ::liveroute::v1::EventDisposition >(0)},
         status_{static_cast< ::liveroute::v1::StatusCode >(0)},
         stale_reason_{static_cast< ::liveroute::v1::StaleReason >(0)},
@@ -2214,7 +2217,7 @@ const ::uint32_t
         ~0u,
         0x081, // bitmap
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_._has_bits_),
-        12, // hasbit index offset
+        13, // hasbit index offset
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_.disposition_),
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_.status_),
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_.retryable_),
@@ -2224,15 +2227,17 @@ const ::uint32_t
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_.resolved_observation_sequence_),
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_.replan_scheduled_),
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_.safe_message_),
-        2,
+        PROTOBUF_FIELD_OFFSET(::liveroute::v1::EventAcknowledged, _impl_.resulting_current_plan_id_),
         3,
-        5,
         4,
-        0,
-        7,
-        8,
         6,
+        5,
+        0,
+        8,
+        9,
+        7,
         1,
+        2,
         0x081, // bitmap
         PROTOBUF_FIELD_OFFSET(::liveroute::v1::ReplanResult, _impl_._has_bits_),
         11, // hasbit index offset
@@ -2409,11 +2414,11 @@ static const ::_pbi::MigrationSchema
         {499, sizeof(::liveroute::v1::CurrentPlanReplaced)},
         {504, sizeof(::liveroute::v1::ApplyTripEvent)},
         {545, sizeof(::liveroute::v1::EventAcknowledged)},
-        {566, sizeof(::liveroute::v1::ReplanResult)},
-        {585, sizeof(::liveroute::v1::PlannerError)},
-        {602, sizeof(::liveroute::v1::TripStateSnapshot)},
-        {617, sizeof(::liveroute::v1::PlannerStreamRequest)},
-        {652, sizeof(::liveroute::v1::PlannerStreamResponse)},
+        {568, sizeof(::liveroute::v1::ReplanResult)},
+        {587, sizeof(::liveroute::v1::PlannerError)},
+        {604, sizeof(::liveroute::v1::TripStateSnapshot)},
+        {619, sizeof(::liveroute::v1::PlannerStreamRequest)},
+        {654, sizeof(::liveroute::v1::PlannerStreamResponse)},
 };
 static const ::_pb::Message* PROTOBUF_NONNULL const file_default_instances[] = {
     &::liveroute::v1::_Location_default_instance_._instance,
@@ -2685,7 +2690,7 @@ const char descriptor_table_protodef_liveroute_2fv1_2fplanner_2eproto[] ABSL_ATT
     "\030! \001(\0132\034.liveroute.v1.AdvisoryUpdateH\000\022B"
     "\n\025current_plan_replaced\030\" \001(\0132!.liverout"
     "e.v1.CurrentPlanReplacedH\000B\007\n\005eventB\035\n\033_"
-    "command_expires_at_unix_ms\"\303\002\n\021EventAckn"
+    "command_expires_at_unix_ms\"\346\002\n\021EventAckn"
     "owledged\0223\n\013disposition\030\001 \001(\0162\036.liverout"
     "e.v1.EventDisposition\022(\n\006status\030\002 \001(\0162\030."
     "liveroute.v1.StatusCode\022\021\n\tretryable\030\003 \001"
@@ -2693,169 +2698,170 @@ const char descriptor_table_protodef_liveroute_2fv1_2fplanner_2eproto[] ABSL_ATT
     "StaleReason\022\020\n\010event_id\030\005 \001(\t\022\"\n\032resolve"
     "d_mutation_sequence\030\006 \001(\004\022%\n\035resolved_ob"
     "servation_sequence\030\007 \001(\004\022\030\n\020replan_sched"
-    "uled\030\010 \001(\010\022\024\n\014safe_message\030\t \001(\t\"\315\002\n\014Rep"
-    "lanResult\022(\n\006status\030\001 \001(\0162\030.liveroute.v1"
-    ".StatusCode\022\021\n\tretryable\030\002 \001(\010\022,\n\010propos"
-    "al\030\003 \001(\0132\032.liveroute.v1.PlanProposal\0224\n\014"
-    "notification\030\004 \001(\0162\036.liveroute.v1.Notifi"
-    "cationType\022-\n\007reasons\030\005 \003(\0162\034.liveroute."
-    "v1.PlanReasonCode\022)\n\005stats\030\006 \001(\0132\032.liver"
-    "oute.v1.PlannerStats\022,\n\007quality\030\007 \001(\0132\033."
-    "liveroute.v1.ResultQuality\022\024\n\014safe_messa"
-    "ge\030\010 \001(\t\"\202\002\n\014PlannerError\022(\n\006status\030\001 \001("
-    "\0162\030.liveroute.v1.StatusCode\022\021\n\tretryable"
-    "\030\002 \001(\010\022/\n\014stale_reason\030\003 \001(\0162\031.liveroute"
-    ".v1.StaleReason\022\024\n\014safe_message\030\004 \001(\t\022!\n"
-    "\031related_mutation_sequence\030\005 \001(\004\022$\n\034rela"
-    "ted_observation_sequence\030\006 \001(\004\022%\n\035relate"
-    "d_planner_state_version\030\007 \001(\004\"\361\001\n\021TripSt"
-    "ateSnapshot\022*\n\004trip\030\001 \001(\0132\034.liveroute.v1"
-    ".TripDefinition\022\025\n\rtrip_revision\030\002 \001(\004\022\""
-    "\n\032accepted_mutation_sequence\030\003 \001(\004\022#\n\033fi"
-    "nalized_mutation_sequence\030\004 \001(\004\022/\n\014curre"
-    "nt_plan\030\005 \001(\0132\031.liveroute.v1.CurrentPlan"
-    "\022\037\n\027snapshot_schema_version\030\006 \001(\r\"\307\005\n\024Pl"
-    "annerStreamRequest\022\022\n\nrequest_id\030\001 \001(\t\022\017"
-    "\n\007trip_id\030\002 \001(\t\022\025\n\rruntime_epoch\030\003 \001(\004\022\031"
-    "\n\021mutation_sequence\030\004 \001(\004\022\034\n\024observation"
-    "_sequence\030\005 \001(\004\022+\n\036expected_planner_stat"
-    "e_version\030\006 \001(\004H\001\210\001\001\022\032\n\022expires_at_unix_"
-    "ms\030\007 \001(\003\022#\n\026expected_trip_revision\030\010 \001(\004"
-    "H\002\210\001\001\022/\n\013open_stream\030\024 \001(\0132\030.liveroute.v"
-    "1.OpenStreamH\000\0225\n\016bootstrap_trip\030\025 \001(\0132\033"
-    ".liveroute.v1.BootstrapTripH\000\0223\n\013apply_e"
-    "vent\030\026 \001(\0132\034.liveroute.v1.ApplyTripEvent"
-    "H\000\0229\n\020request_snapshot\030\027 \001(\0132\035.liveroute"
-    ".v1.RequestSnapshotH\000\0227\n\017deactivate_trip"
-    "\030\030 \001(\0132\034.liveroute.v1.DeactivateTripH\000\022\""
-    "\n\004ping\030\031 \001(\0132\022.liveroute.v1.PingH\000\022N\n\033co"
-    "nfirm_finalized_mutations\030\032 \001(\0132\'.livero"
-    "ute.v1.ConfirmFinalizedMutationsH\000B\t\n\007pa"
-    "yloadB!\n\037_expected_planner_state_version"
-    "B\031\n\027_expected_trip_revision\"\336\005\n\025PlannerS"
-    "treamResponse\022\022\n\nrequest_id\030\001 \001(\t\022\017\n\007tri"
-    "p_id\030\002 \001(\t\022\025\n\rruntime_epoch\030\003 \001(\004\022\"\n\032acc"
-    "epted_mutation_sequence\030\004 \001(\004\022%\n\035accepte"
-    "d_observation_sequence\030\005 \001(\004\022\035\n\025planner_"
-    "state_version\030\006 \001(\004\022\025\n\rtrip_revision\030\007 \001"
-    "(\004\0221\n\014stream_ready\030\024 \001(\0132\031.liveroute.v1."
-    "StreamReadyH\000\022=\n\022event_acknowledged\030\025 \001("
-    "\0132\037.liveroute.v1.EventAcknowledgedH\000\0223\n\r"
-    "replan_result\030\026 \001(\0132\032.liveroute.v1.Repla"
-    "nResultH\000\0223\n\rtrip_snapshot\030\027 \001(\0132\032.liver"
-    "oute.v1.TripSnapshotH\000\0229\n\020trip_deactivat"
-    "ed\030\030 \001(\0132\035.liveroute.v1.TripDeactivatedH"
-    "\000\022+\n\005error\030\031 \001(\0132\032.liveroute.v1.PlannerE"
-    "rrorH\000\022\"\n\004pong\030\032 \001(\0132\022.liveroute.v1.Pong"
-    "H\000\022X\n finalized_mutations_acknowledged\030\033"
-    " \001(\0132,.liveroute.v1.FinalizedMutationsAc"
-    "knowledgedH\000\022;\n\021trip_bootstrapped\030\034 \001(\0132"
-    "\036.liveroute.v1.TripBootstrappedH\000B\t\n\007pay"
-    "load*\355\005\n\nStatusCode\022\033\n\027STATUS_CODE_UNSPE"
-    "CIFIED\020\000\022\022\n\016STATUS_CODE_OK\020\001\022\031\n\025STATUS_C"
-    "ODE_DUPLICATE\020\002\022\025\n\021STATUS_CODE_STALE\020\003\022 "
-    "\n\034STATUS_CODE_INVALID_ARGUMENT\020\004\022\037\n\033STAT"
-    "US_CODE_UNAUTHENTICATED\020\005\022!\n\035STATUS_CODE"
-    "_PERMISSION_DENIED\020\006\022\031\n\025STATUS_CODE_NOT_"
-    "FOUND\020\007\022&\n\"STATUS_CODE_IDEMPOTENCY_KEY_R"
-    "EUSED\020\010\022\035\n\031STATUS_CODE_INACTIVE_TRIP\020\t\022\""
-    "\n\036STATUS_CODE_RESOURCE_EXHAUSTED\020\n\022!\n\035ST"
-    "ATUS_CODE_DEADLINE_EXCEEDED\020\013\022\037\n\033STATUS_"
-    "CODE_COMMAND_EXPIRED\020\014\022\031\n\025STATUS_CODE_CA"
-    "NCELLED\020\r\022\032\n\026STATUS_CODE_INFEASIBLE\020\016\022$\n"
-    " STATUS_CODE_PROVIDER_UNAVAILABLE\020\017\022&\n\"S"
-    "TATUS_CODE_DURABILITY_UNAVAILABLE\020\020\022\033\n\027S"
-    "TATUS_CODE_UNAVAILABLE\020\021\022#\n\037STATUS_CODE_"
-    "UNSUPPORTED_VERSION\020\022\022\"\n\036STATUS_CODE_SNA"
-    "PSHOT_NOT_READY\020\023\022%\n!STATUS_CODE_SNAPSHO"
-    "T_INCOMPATIBLE\020\024\022\030\n\024STATUS_CODE_INTERNAL"
-    "\020\025\022 \n\034STATUS_CODE_MATRIX_TOO_LARGE\020\026*\366\001\n"
-    "\013StaleReason\022\034\n\030STALE_REASON_UNSPECIFIED"
-    "\020\000\022\026\n\022STALE_REASON_EPOCH\020\001\022\"\n\036STALE_REAS"
-    "ON_MUTATION_SEQUENCE\020\002\022%\n!STALE_REASON_O"
-    "BSERVATION_SEQUENCE\020\003\022\036\n\032STALE_REASON_TR"
-    "IP_REVISION\020\004\022&\n\"STALE_REASON_PLANNER_ST"
-    "ATE_VERSION\020\005\022\036\n\032STALE_REASON_PLAN_PROPO"
-    "SAL\020\006*\263\001\n\020EventDisposition\022!\n\035EVENT_DISP"
-    "OSITION_UNSPECIFIED\020\000\022\036\n\032EVENT_DISPOSITI"
-    "ON_ACCEPTED\020\001\022\037\n\033EVENT_DISPOSITION_DUPLI"
-    "CATE\020\002\022\033\n\027EVENT_DISPOSITION_STALE\020\003\022\036\n\032E"
-    "VENT_DISPOSITION_REJECTED\020\004*[\n\nTravelMod"
-    "e\022\033\n\027TRAVEL_MODE_UNSPECIFIED\020\000\022\027\n\023TRAVEL"
-    "_MODE_WALKING\020\001\022\027\n\023TRAVEL_MODE_DRIVING\020\002"
-    "*f\n\rActivityClass\022\036\n\032ACTIVITY_CLASS_UNSP"
-    "ECIFIED\020\000\022\030\n\024ACTIVITY_CLASS_FIXED\020\001\022\033\n\027A"
-    "CTIVITY_CLASS_FLEXIBLE\020\002*\241\001\n\rActivitySta"
-    "te\022\036\n\032ACTIVITY_STATE_UNSPECIFIED\020\000\022\032\n\026AC"
-    "TIVITY_STATE_PLANNED\020\001\022\032\n\026ACTIVITY_STATE"
-    "_STARTED\020\002\022\034\n\030ACTIVITY_STATE_COMPLETED\020\003"
-    "\022\032\n\026ACTIVITY_STATE_SKIPPED\020\004*a\n\014PlanDeci"
-    "sion\022\035\n\031PLAN_DECISION_UNSPECIFIED\020\000\022\030\n\024P"
-    "LAN_DECISION_ACCEPT\020\001\022\030\n\024PLAN_DECISION_R"
-    "EJECT\020\002*r\n\nPlanOrigin\022\033\n\027PLAN_ORIGIN_UNS"
-    "PECIFIED\020\000\022\035\n\031PLAN_ORIGIN_USER_AUTHORED\020"
-    "\001\022(\n$PLAN_ORIGIN_ACCEPTED_ENGINE_PROPOSA"
-    "L\020\002*p\n\016PlanEntryState\022 \n\034PLAN_ENTRY_STAT"
-    "E_UNSPECIFIED\020\000\022\036\n\032PLAN_ENTRY_STATE_SCHE"
-    "DULED\020\001\022\034\n\030PLAN_ENTRY_STATE_OMITTED\020\002*\336\001"
-    "\n\022SegmentDisposition\022#\n\037SEGMENT_DISPOSIT"
-    "ION_UNSPECIFIED\020\000\022!\n\035SEGMENT_DISPOSITION"
-    "_PRESERVED\020\001\022\035\n\031SEGMENT_DISPOSITION_MOVE"
-    "D\020\002\022!\n\035SEGMENT_DISPOSITION_SHORTENED\020\003\022\037"
-    "\n\033SEGMENT_DISPOSITION_SKIPPED\020\004\022\035\n\031SEGME"
-    "NT_DISPOSITION_ADDED\020\005*\373\001\n\020NotificationT"
-    "ype\022!\n\035NOTIFICATION_TYPE_UNSPECIFIED\020\000\022\032"
-    "\n\026NOTIFICATION_TYPE_NONE\020\001\022\'\n#NOTIFICATI"
-    "ON_TYPE_LOW_SLACK_WARNING\020\002\022\'\n#NOTIFICAT"
-    "ION_TYPE_CRITICAL_LATENESS\020\003\022+\n\'NOTIFICA"
-    "TION_TYPE_PLAN_CHANGE_SUGGESTED\020\004\022)\n%NOT"
-    "IFICATION_TYPE_INFEASIBLE_SCHEDULE\020\005*\243\003\n"
-    "\016PlanReasonCode\022 \n\034PLAN_REASON_CODE_UNSP"
-    "ECIFIED\020\000\022#\n\037PLAN_REASON_CODE_LATE_DEPAR"
-    "TURE\020\001\022#\n\037PLAN_REASON_CODE_ACTIVITY_DELA"
-    "Y\020\002\022$\n PLAN_REASON_CODE_ROUTE_DEVIATION\020"
-    "\003\022\"\n\036PLAN_REASON_CODE_HOURS_CHANGED\020\004\022!\n"
-    "\035PLAN_REASON_CODE_PLACE_CLOSED\020\005\022(\n$PLAN"
-    "_REASON_CODE_RESERVATION_AT_RISK\020\006\022!\n\035PL"
-    "AN_REASON_CODE_TRAVEL_DELAY\020\007\022\036\n\032PLAN_RE"
-    "ASON_CODE_USER_EDIT\020\010\022$\n PLAN_REASON_COD"
-    "E_DEADLINE_BUDGET\020\t\022%\n!PLAN_REASON_CODE_"
-    "NO_FEASIBLE_PLAN\020\n*\206\001\n\013PlanQuality\022\034\n\030PL"
-    "AN_QUALITY_UNSPECIFIED\020\000\022\031\n\025PLAN_QUALITY"
-    "_COMPLETE\020\001\022\034\n\030PLAN_QUALITY_BEST_SO_FAR\020"
-    "\002\022 \n\034PLAN_QUALITY_NO_NEW_PROPOSAL\020\003*\216\001\n\016"
-    "RoutingQuality\022\037\n\033ROUTING_QUALITY_UNSPEC"
-    "IFIED\020\000\022\031\n\025ROUTING_QUALITY_FRESH\020\001\022\037\n\033RO"
-    "UTING_QUALITY_STALE_CACHE\020\002\022\037\n\033ROUTING_Q"
-    "UALITY_UNAVAILABLE\020\003*m\n\rRecoveryState\022\036\n"
-    "\032RECOVERY_STATE_UNSPECIFIED\020\000\022\032\n\026RECOVER"
-    "Y_STATE_CURRENT\020\001\022 \n\034RECOVERY_STATE_NOT_"
-    "ADVANCING\020\002*\265\001\n\016SnapshotReason\022\037\n\033SNAPSH"
-    "OT_REASON_UNSPECIFIED\020\000\022\034\n\030SNAPSHOT_REAS"
-    "ON_PERIODIC\020\001\022$\n SNAPSHOT_REASON_DURABLE"
-    "_BOUNDARY\020\002\022 \n\034SNAPSHOT_REASON_DEACTIVAT"
-    "ION\020\003\022\034\n\030SNAPSHOT_REASON_SHUTDOWN\020\004*\321\001\n\022"
-    "DeactivationReason\022#\n\037DEACTIVATION_REASO"
-    "N_UNSPECIFIED\020\000\022\'\n#DEACTIVATION_REASON_B"
-    "ACKEND_REQUEST\020\001\022%\n!DEACTIVATION_REASON_"
-    "IDLE_EVICTION\020\002\022$\n DEACTIVATION_REASON_T"
-    "RIP_DELETED\020\003\022 \n\034DEACTIVATION_REASON_SHU"
-    "TDOWN\020\004*\274\001\n\014AdvisoryKind\022\035\n\031ADVISORY_KIN"
-    "D_UNSPECIFIED\020\000\022(\n$ADVISORY_KIND_RECOMME"
-    "NDATION_REFRESH\020\001\022!\n\035ADVISORY_KIND_WEATH"
-    "ER_CHANGED\020\002\022\037\n\033ADVISORY_KIND_CROWD_CHAN"
-    "GED\020\003\022\037\n\033ADVISORY_KIND_SOCIAL_UPDATE\020\0042l"
-    "\n\020LiveRoutePlanner\022X\n\tPlanTrips\022\".livero"
-    "ute.v1.PlannerStreamRequest\032#.liveroute."
-    "v1.PlannerStreamResponse(\0010\001BCZ>github.c"
-    "om/liveroute/liveroute/gen/go/liveroute/"
+    "uled\030\010 \001(\010\022\024\n\014safe_message\030\t \001(\t\022!\n\031resu"
+    "lting_current_plan_id\030\n \001(\t\"\315\002\n\014ReplanRe"
+    "sult\022(\n\006status\030\001 \001(\0162\030.liveroute.v1.Stat"
+    "usCode\022\021\n\tretryable\030\002 \001(\010\022,\n\010proposal\030\003 "
+    "\001(\0132\032.liveroute.v1.PlanProposal\0224\n\014notif"
+    "ication\030\004 \001(\0162\036.liveroute.v1.Notificatio"
+    "nType\022-\n\007reasons\030\005 \003(\0162\034.liveroute.v1.Pl"
+    "anReasonCode\022)\n\005stats\030\006 \001(\0132\032.liveroute."
+    "v1.PlannerStats\022,\n\007quality\030\007 \001(\0132\033.liver"
+    "oute.v1.ResultQuality\022\024\n\014safe_message\030\010 "
+    "\001(\t\"\202\002\n\014PlannerError\022(\n\006status\030\001 \001(\0162\030.l"
+    "iveroute.v1.StatusCode\022\021\n\tretryable\030\002 \001("
+    "\010\022/\n\014stale_reason\030\003 \001(\0162\031.liveroute.v1.S"
+    "taleReason\022\024\n\014safe_message\030\004 \001(\t\022!\n\031rela"
+    "ted_mutation_sequence\030\005 \001(\004\022$\n\034related_o"
+    "bservation_sequence\030\006 \001(\004\022%\n\035related_pla"
+    "nner_state_version\030\007 \001(\004\"\361\001\n\021TripStateSn"
+    "apshot\022*\n\004trip\030\001 \001(\0132\034.liveroute.v1.Trip"
+    "Definition\022\025\n\rtrip_revision\030\002 \001(\004\022\"\n\032acc"
+    "epted_mutation_sequence\030\003 \001(\004\022#\n\033finaliz"
+    "ed_mutation_sequence\030\004 \001(\004\022/\n\014current_pl"
+    "an\030\005 \001(\0132\031.liveroute.v1.CurrentPlan\022\037\n\027s"
+    "napshot_schema_version\030\006 \001(\r\"\307\005\n\024Planner"
+    "StreamRequest\022\022\n\nrequest_id\030\001 \001(\t\022\017\n\007tri"
+    "p_id\030\002 \001(\t\022\025\n\rruntime_epoch\030\003 \001(\004\022\031\n\021mut"
+    "ation_sequence\030\004 \001(\004\022\034\n\024observation_sequ"
+    "ence\030\005 \001(\004\022+\n\036expected_planner_state_ver"
+    "sion\030\006 \001(\004H\001\210\001\001\022\032\n\022expires_at_unix_ms\030\007 "
+    "\001(\003\022#\n\026expected_trip_revision\030\010 \001(\004H\002\210\001\001"
+    "\022/\n\013open_stream\030\024 \001(\0132\030.liveroute.v1.Ope"
+    "nStreamH\000\0225\n\016bootstrap_trip\030\025 \001(\0132\033.live"
+    "route.v1.BootstrapTripH\000\0223\n\013apply_event\030"
+    "\026 \001(\0132\034.liveroute.v1.ApplyTripEventH\000\0229\n"
+    "\020request_snapshot\030\027 \001(\0132\035.liveroute.v1.R"
+    "equestSnapshotH\000\0227\n\017deactivate_trip\030\030 \001("
+    "\0132\034.liveroute.v1.DeactivateTripH\000\022\"\n\004pin"
+    "g\030\031 \001(\0132\022.liveroute.v1.PingH\000\022N\n\033confirm"
+    "_finalized_mutations\030\032 \001(\0132\'.liveroute.v"
+    "1.ConfirmFinalizedMutationsH\000B\t\n\007payload"
+    "B!\n\037_expected_planner_state_versionB\031\n\027_"
+    "expected_trip_revision\"\336\005\n\025PlannerStream"
+    "Response\022\022\n\nrequest_id\030\001 \001(\t\022\017\n\007trip_id\030"
+    "\002 \001(\t\022\025\n\rruntime_epoch\030\003 \001(\004\022\"\n\032accepted"
+    "_mutation_sequence\030\004 \001(\004\022%\n\035accepted_obs"
+    "ervation_sequence\030\005 \001(\004\022\035\n\025planner_state"
+    "_version\030\006 \001(\004\022\025\n\rtrip_revision\030\007 \001(\004\0221\n"
+    "\014stream_ready\030\024 \001(\0132\031.liveroute.v1.Strea"
+    "mReadyH\000\022=\n\022event_acknowledged\030\025 \001(\0132\037.l"
+    "iveroute.v1.EventAcknowledgedH\000\0223\n\rrepla"
+    "n_result\030\026 \001(\0132\032.liveroute.v1.ReplanResu"
+    "ltH\000\0223\n\rtrip_snapshot\030\027 \001(\0132\032.liveroute."
+    "v1.TripSnapshotH\000\0229\n\020trip_deactivated\030\030 "
+    "\001(\0132\035.liveroute.v1.TripDeactivatedH\000\022+\n\005"
+    "error\030\031 \001(\0132\032.liveroute.v1.PlannerErrorH"
+    "\000\022\"\n\004pong\030\032 \001(\0132\022.liveroute.v1.PongH\000\022X\n"
+    " finalized_mutations_acknowledged\030\033 \001(\0132"
+    ",.liveroute.v1.FinalizedMutationsAcknowl"
+    "edgedH\000\022;\n\021trip_bootstrapped\030\034 \001(\0132\036.liv"
+    "eroute.v1.TripBootstrappedH\000B\t\n\007payload*"
+    "\355\005\n\nStatusCode\022\033\n\027STATUS_CODE_UNSPECIFIE"
+    "D\020\000\022\022\n\016STATUS_CODE_OK\020\001\022\031\n\025STATUS_CODE_D"
+    "UPLICATE\020\002\022\025\n\021STATUS_CODE_STALE\020\003\022 \n\034STA"
+    "TUS_CODE_INVALID_ARGUMENT\020\004\022\037\n\033STATUS_CO"
+    "DE_UNAUTHENTICATED\020\005\022!\n\035STATUS_CODE_PERM"
+    "ISSION_DENIED\020\006\022\031\n\025STATUS_CODE_NOT_FOUND"
+    "\020\007\022&\n\"STATUS_CODE_IDEMPOTENCY_KEY_REUSED"
+    "\020\010\022\035\n\031STATUS_CODE_INACTIVE_TRIP\020\t\022\"\n\036STA"
+    "TUS_CODE_RESOURCE_EXHAUSTED\020\n\022!\n\035STATUS_"
+    "CODE_DEADLINE_EXCEEDED\020\013\022\037\n\033STATUS_CODE_"
+    "COMMAND_EXPIRED\020\014\022\031\n\025STATUS_CODE_CANCELL"
+    "ED\020\r\022\032\n\026STATUS_CODE_INFEASIBLE\020\016\022$\n STAT"
+    "US_CODE_PROVIDER_UNAVAILABLE\020\017\022&\n\"STATUS"
+    "_CODE_DURABILITY_UNAVAILABLE\020\020\022\033\n\027STATUS"
+    "_CODE_UNAVAILABLE\020\021\022#\n\037STATUS_CODE_UNSUP"
+    "PORTED_VERSION\020\022\022\"\n\036STATUS_CODE_SNAPSHOT"
+    "_NOT_READY\020\023\022%\n!STATUS_CODE_SNAPSHOT_INC"
+    "OMPATIBLE\020\024\022\030\n\024STATUS_CODE_INTERNAL\020\025\022 \n"
+    "\034STATUS_CODE_MATRIX_TOO_LARGE\020\026*\366\001\n\013Stal"
+    "eReason\022\034\n\030STALE_REASON_UNSPECIFIED\020\000\022\026\n"
+    "\022STALE_REASON_EPOCH\020\001\022\"\n\036STALE_REASON_MU"
+    "TATION_SEQUENCE\020\002\022%\n!STALE_REASON_OBSERV"
+    "ATION_SEQUENCE\020\003\022\036\n\032STALE_REASON_TRIP_RE"
+    "VISION\020\004\022&\n\"STALE_REASON_PLANNER_STATE_V"
+    "ERSION\020\005\022\036\n\032STALE_REASON_PLAN_PROPOSAL\020\006"
+    "*\263\001\n\020EventDisposition\022!\n\035EVENT_DISPOSITI"
+    "ON_UNSPECIFIED\020\000\022\036\n\032EVENT_DISPOSITION_AC"
+    "CEPTED\020\001\022\037\n\033EVENT_DISPOSITION_DUPLICATE\020"
+    "\002\022\033\n\027EVENT_DISPOSITION_STALE\020\003\022\036\n\032EVENT_"
+    "DISPOSITION_REJECTED\020\004*[\n\nTravelMode\022\033\n\027"
+    "TRAVEL_MODE_UNSPECIFIED\020\000\022\027\n\023TRAVEL_MODE"
+    "_WALKING\020\001\022\027\n\023TRAVEL_MODE_DRIVING\020\002*f\n\rA"
+    "ctivityClass\022\036\n\032ACTIVITY_CLASS_UNSPECIFI"
+    "ED\020\000\022\030\n\024ACTIVITY_CLASS_FIXED\020\001\022\033\n\027ACTIVI"
+    "TY_CLASS_FLEXIBLE\020\002*\241\001\n\rActivityState\022\036\n"
+    "\032ACTIVITY_STATE_UNSPECIFIED\020\000\022\032\n\026ACTIVIT"
+    "Y_STATE_PLANNED\020\001\022\032\n\026ACTIVITY_STATE_STAR"
+    "TED\020\002\022\034\n\030ACTIVITY_STATE_COMPLETED\020\003\022\032\n\026A"
+    "CTIVITY_STATE_SKIPPED\020\004*a\n\014PlanDecision\022"
+    "\035\n\031PLAN_DECISION_UNSPECIFIED\020\000\022\030\n\024PLAN_D"
+    "ECISION_ACCEPT\020\001\022\030\n\024PLAN_DECISION_REJECT"
+    "\020\002*r\n\nPlanOrigin\022\033\n\027PLAN_ORIGIN_UNSPECIF"
+    "IED\020\000\022\035\n\031PLAN_ORIGIN_USER_AUTHORED\020\001\022(\n$"
+    "PLAN_ORIGIN_ACCEPTED_ENGINE_PROPOSAL\020\002*p"
+    "\n\016PlanEntryState\022 \n\034PLAN_ENTRY_STATE_UNS"
+    "PECIFIED\020\000\022\036\n\032PLAN_ENTRY_STATE_SCHEDULED"
+    "\020\001\022\034\n\030PLAN_ENTRY_STATE_OMITTED\020\002*\336\001\n\022Seg"
+    "mentDisposition\022#\n\037SEGMENT_DISPOSITION_U"
+    "NSPECIFIED\020\000\022!\n\035SEGMENT_DISPOSITION_PRES"
+    "ERVED\020\001\022\035\n\031SEGMENT_DISPOSITION_MOVED\020\002\022!"
+    "\n\035SEGMENT_DISPOSITION_SHORTENED\020\003\022\037\n\033SEG"
+    "MENT_DISPOSITION_SKIPPED\020\004\022\035\n\031SEGMENT_DI"
+    "SPOSITION_ADDED\020\005*\373\001\n\020NotificationType\022!"
+    "\n\035NOTIFICATION_TYPE_UNSPECIFIED\020\000\022\032\n\026NOT"
+    "IFICATION_TYPE_NONE\020\001\022\'\n#NOTIFICATION_TY"
+    "PE_LOW_SLACK_WARNING\020\002\022\'\n#NOTIFICATION_T"
+    "YPE_CRITICAL_LATENESS\020\003\022+\n\'NOTIFICATION_"
+    "TYPE_PLAN_CHANGE_SUGGESTED\020\004\022)\n%NOTIFICA"
+    "TION_TYPE_INFEASIBLE_SCHEDULE\020\005*\243\003\n\016Plan"
+    "ReasonCode\022 \n\034PLAN_REASON_CODE_UNSPECIFI"
+    "ED\020\000\022#\n\037PLAN_REASON_CODE_LATE_DEPARTURE\020"
+    "\001\022#\n\037PLAN_REASON_CODE_ACTIVITY_DELAY\020\002\022$"
+    "\n PLAN_REASON_CODE_ROUTE_DEVIATION\020\003\022\"\n\036"
+    "PLAN_REASON_CODE_HOURS_CHANGED\020\004\022!\n\035PLAN"
+    "_REASON_CODE_PLACE_CLOSED\020\005\022(\n$PLAN_REAS"
+    "ON_CODE_RESERVATION_AT_RISK\020\006\022!\n\035PLAN_RE"
+    "ASON_CODE_TRAVEL_DELAY\020\007\022\036\n\032PLAN_REASON_"
+    "CODE_USER_EDIT\020\010\022$\n PLAN_REASON_CODE_DEA"
+    "DLINE_BUDGET\020\t\022%\n!PLAN_REASON_CODE_NO_FE"
+    "ASIBLE_PLAN\020\n*\206\001\n\013PlanQuality\022\034\n\030PLAN_QU"
+    "ALITY_UNSPECIFIED\020\000\022\031\n\025PLAN_QUALITY_COMP"
+    "LETE\020\001\022\034\n\030PLAN_QUALITY_BEST_SO_FAR\020\002\022 \n\034"
+    "PLAN_QUALITY_NO_NEW_PROPOSAL\020\003*\216\001\n\016Routi"
+    "ngQuality\022\037\n\033ROUTING_QUALITY_UNSPECIFIED"
+    "\020\000\022\031\n\025ROUTING_QUALITY_FRESH\020\001\022\037\n\033ROUTING"
+    "_QUALITY_STALE_CACHE\020\002\022\037\n\033ROUTING_QUALIT"
+    "Y_UNAVAILABLE\020\003*m\n\rRecoveryState\022\036\n\032RECO"
+    "VERY_STATE_UNSPECIFIED\020\000\022\032\n\026RECOVERY_STA"
+    "TE_CURRENT\020\001\022 \n\034RECOVERY_STATE_NOT_ADVAN"
+    "CING\020\002*\265\001\n\016SnapshotReason\022\037\n\033SNAPSHOT_RE"
+    "ASON_UNSPECIFIED\020\000\022\034\n\030SNAPSHOT_REASON_PE"
+    "RIODIC\020\001\022$\n SNAPSHOT_REASON_DURABLE_BOUN"
+    "DARY\020\002\022 \n\034SNAPSHOT_REASON_DEACTIVATION\020\003"
+    "\022\034\n\030SNAPSHOT_REASON_SHUTDOWN\020\004*\321\001\n\022Deact"
+    "ivationReason\022#\n\037DEACTIVATION_REASON_UNS"
+    "PECIFIED\020\000\022\'\n#DEACTIVATION_REASON_BACKEN"
+    "D_REQUEST\020\001\022%\n!DEACTIVATION_REASON_IDLE_"
+    "EVICTION\020\002\022$\n DEACTIVATION_REASON_TRIP_D"
+    "ELETED\020\003\022 \n\034DEACTIVATION_REASON_SHUTDOWN"
+    "\020\004*\274\001\n\014AdvisoryKind\022\035\n\031ADVISORY_KIND_UNS"
+    "PECIFIED\020\000\022(\n$ADVISORY_KIND_RECOMMENDATI"
+    "ON_REFRESH\020\001\022!\n\035ADVISORY_KIND_WEATHER_CH"
+    "ANGED\020\002\022\037\n\033ADVISORY_KIND_CROWD_CHANGED\020\003"
+    "\022\037\n\033ADVISORY_KIND_SOCIAL_UPDATE\020\0042l\n\020Liv"
+    "eRoutePlanner\022X\n\tPlanTrips\022\".liveroute.v"
+    "1.PlannerStreamRequest\032#.liveroute.v1.Pl"
+    "annerStreamResponse(\0010\001BHZCgithub.com/li"
+    "veroute/liveroute/backend/gen/liveroute/"
     "v1;liveroutev1\370\001\001b\006proto3"
 };
 static ::absl::once_flag descriptor_table_liveroute_2fv1_2fplanner_2eproto_once;
 PROTOBUF_CONSTINIT const ::_pbi::DescriptorTable descriptor_table_liveroute_2fv1_2fplanner_2eproto = {
     false,
     false,
-    15065,
+    15105,
     descriptor_table_protodef_liveroute_2fv1_2fplanner_2eproto,
     "liveroute/v1/planner.proto",
     &descriptor_table_liveroute_2fv1_2fplanner_2eproto_once,
@@ -21037,7 +21043,8 @@ PROTOBUF_NDEBUG_INLINE EventAcknowledged::Impl_::Impl_(
       : _has_bits_{from._has_bits_},
         _cached_size_{0},
         event_id_(arena, from.event_id_),
-        safe_message_(arena, from.safe_message_) {}
+        safe_message_(arena, from.safe_message_),
+        resulting_current_plan_id_(arena, from.resulting_current_plan_id_) {}
 
 EventAcknowledged::EventAcknowledged(
     ::google::protobuf::Arena* PROTOBUF_NULLABLE arena,
@@ -21067,7 +21074,8 @@ PROTOBUF_NDEBUG_INLINE EventAcknowledged::Impl_::Impl_(
     ::google::protobuf::Arena* PROTOBUF_NULLABLE arena)
       : _cached_size_{0},
         event_id_(arena),
-        safe_message_(arena) {}
+        safe_message_(arena),
+        resulting_current_plan_id_(arena) {}
 
 inline void EventAcknowledged::SharedCtor(::_pb::Arena* PROTOBUF_NULLABLE arena) {
   new (&_impl_) Impl_(internal_visibility(), arena);
@@ -21088,6 +21096,7 @@ inline void EventAcknowledged::SharedDtor(MessageLite& self) {
   ABSL_DCHECK(this_.GetArena() == nullptr);
   this_._impl_.event_id_.Destroy();
   this_._impl_.safe_message_.Destroy();
+  this_._impl_.resulting_current_plan_id_.Destroy();
   this_._impl_.~Impl_();
 }
 
@@ -21134,16 +21143,16 @@ EventAcknowledged::GetClassData() const {
   return EventAcknowledged_class_data_.base();
 }
 PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1
-const ::_pbi::TcParseTable<4, 9, 0, 67, 2>
+const ::_pbi::TcParseTable<4, 10, 0, 92, 2>
 EventAcknowledged::_table_ = {
   {
     PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_._has_bits_),
     0, // no _extensions_
-    9, 120,  // max_field_number, fast_idx_mask
+    10, 120,  // max_field_number, fast_idx_mask
     offsetof(decltype(_table_), field_lookup_table),
-    4294966784,  // skipmap
+    4294966272,  // skipmap
     offsetof(decltype(_table_), field_entries),
-    9,  // num_field_entries
+    10,  // num_field_entries
     0,  // num_aux_entries
     offsetof(decltype(_table_), field_names),  // no aux_entries
     EventAcknowledged_class_data_.base(),
@@ -21155,33 +21164,35 @@ EventAcknowledged::_table_ = {
   }, {{
     {::_pbi::TcParser::MiniParse, {}},
     // .liveroute.v1.EventDisposition disposition = 1;
-    {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(EventAcknowledged, _impl_.disposition_), 2>(),
-     {8, 2, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.disposition_)}},
+    {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(EventAcknowledged, _impl_.disposition_), 3>(),
+     {8, 3, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.disposition_)}},
     // .liveroute.v1.StatusCode status = 2;
-    {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(EventAcknowledged, _impl_.status_), 3>(),
-     {16, 3, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.status_)}},
+    {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(EventAcknowledged, _impl_.status_), 4>(),
+     {16, 4, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.status_)}},
     // bool retryable = 3;
-    {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(EventAcknowledged, _impl_.retryable_), 5>(),
-     {24, 5, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.retryable_)}},
+    {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(EventAcknowledged, _impl_.retryable_), 6>(),
+     {24, 6, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.retryable_)}},
     // .liveroute.v1.StaleReason stale_reason = 4;
-    {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(EventAcknowledged, _impl_.stale_reason_), 4>(),
-     {32, 4, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.stale_reason_)}},
+    {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(EventAcknowledged, _impl_.stale_reason_), 5>(),
+     {32, 5, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.stale_reason_)}},
     // string event_id = 5;
     {::_pbi::TcParser::FastUS1,
      {42, 0, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.event_id_)}},
     // uint64 resolved_mutation_sequence = 6;
-    {::_pbi::TcParser::SingularVarintNoZag1<::uint64_t, offsetof(EventAcknowledged, _impl_.resolved_mutation_sequence_), 7>(),
-     {48, 7, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_mutation_sequence_)}},
+    {::_pbi::TcParser::SingularVarintNoZag1<::uint64_t, offsetof(EventAcknowledged, _impl_.resolved_mutation_sequence_), 8>(),
+     {48, 8, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_mutation_sequence_)}},
     // uint64 resolved_observation_sequence = 7;
-    {::_pbi::TcParser::SingularVarintNoZag1<::uint64_t, offsetof(EventAcknowledged, _impl_.resolved_observation_sequence_), 8>(),
-     {56, 8, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_observation_sequence_)}},
+    {::_pbi::TcParser::SingularVarintNoZag1<::uint64_t, offsetof(EventAcknowledged, _impl_.resolved_observation_sequence_), 9>(),
+     {56, 9, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_observation_sequence_)}},
     // bool replan_scheduled = 8;
-    {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(EventAcknowledged, _impl_.replan_scheduled_), 6>(),
-     {64, 6, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.replan_scheduled_)}},
+    {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(EventAcknowledged, _impl_.replan_scheduled_), 7>(),
+     {64, 7, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.replan_scheduled_)}},
     // string safe_message = 9;
     {::_pbi::TcParser::FastUS1,
      {74, 1, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.safe_message_)}},
-    {::_pbi::TcParser::MiniParse, {}},
+    // string resulting_current_plan_id = 10;
+    {::_pbi::TcParser::FastUS1,
+     {82, 2, 0, PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resulting_current_plan_id_)}},
     {::_pbi::TcParser::MiniParse, {}},
     {::_pbi::TcParser::MiniParse, {}},
     {::_pbi::TcParser::MiniParse, {}},
@@ -21191,39 +21202,43 @@ EventAcknowledged::_table_ = {
     65535, 65535
   }}, {{
     // .liveroute.v1.EventDisposition disposition = 1;
-    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.disposition_), _Internal::kHasBitsOffset + 2, 0,
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.disposition_), _Internal::kHasBitsOffset + 3, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kOpenEnum)},
     // .liveroute.v1.StatusCode status = 2;
-    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.status_), _Internal::kHasBitsOffset + 3, 0,
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.status_), _Internal::kHasBitsOffset + 4, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kOpenEnum)},
     // bool retryable = 3;
-    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.retryable_), _Internal::kHasBitsOffset + 5, 0,
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.retryable_), _Internal::kHasBitsOffset + 6, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kBool)},
     // .liveroute.v1.StaleReason stale_reason = 4;
-    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.stale_reason_), _Internal::kHasBitsOffset + 4, 0,
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.stale_reason_), _Internal::kHasBitsOffset + 5, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kOpenEnum)},
     // string event_id = 5;
     {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.event_id_), _Internal::kHasBitsOffset + 0, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
     // uint64 resolved_mutation_sequence = 6;
-    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_mutation_sequence_), _Internal::kHasBitsOffset + 7, 0,
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_mutation_sequence_), _Internal::kHasBitsOffset + 8, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kUInt64)},
     // uint64 resolved_observation_sequence = 7;
-    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_observation_sequence_), _Internal::kHasBitsOffset + 8, 0,
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_observation_sequence_), _Internal::kHasBitsOffset + 9, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kUInt64)},
     // bool replan_scheduled = 8;
-    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.replan_scheduled_), _Internal::kHasBitsOffset + 6, 0,
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.replan_scheduled_), _Internal::kHasBitsOffset + 7, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kBool)},
     // string safe_message = 9;
     {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.safe_message_), _Internal::kHasBitsOffset + 1, 0,
     (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
+    // string resulting_current_plan_id = 10;
+    {PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resulting_current_plan_id_), _Internal::kHasBitsOffset + 2, 0,
+    (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
   }},
   // no aux_entries
   {{
-    "\36\0\0\0\0\10\0\0\0\14\0\0\0\0\0\0"
+    "\36\0\0\0\0\10\0\0\0\14\31\0\0\0\0\0"
     "liveroute.v1.EventAcknowledged"
     "event_id"
     "safe_message"
+    "resulting_current_plan_id"
   }},
 };
 PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
@@ -21234,20 +21249,27 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   (void) cached_has_bits;
 
   cached_has_bits = _impl_._has_bits_[0];
-  if ((cached_has_bits & 0x00000003u) != 0) {
+  if ((cached_has_bits & 0x00000007u) != 0) {
     if ((cached_has_bits & 0x00000001u) != 0) {
       _impl_.event_id_.ClearNonDefaultToEmpty();
     }
     if ((cached_has_bits & 0x00000002u) != 0) {
       _impl_.safe_message_.ClearNonDefaultToEmpty();
     }
+    if ((cached_has_bits & 0x00000004u) != 0) {
+      _impl_.resulting_current_plan_id_.ClearNonDefaultToEmpty();
+    }
   }
-  if ((cached_has_bits & 0x000000fcu) != 0) {
+  if ((cached_has_bits & 0x000000f8u) != 0) {
     ::memset(&_impl_.disposition_, 0, static_cast<::size_t>(
-        reinterpret_cast<char*>(&_impl_.resolved_mutation_sequence_) -
-        reinterpret_cast<char*>(&_impl_.disposition_)) + sizeof(_impl_.resolved_mutation_sequence_));
+        reinterpret_cast<char*>(&_impl_.replan_scheduled_) -
+        reinterpret_cast<char*>(&_impl_.disposition_)) + sizeof(_impl_.replan_scheduled_));
   }
-  _impl_.resolved_observation_sequence_ = ::uint64_t{0u};
+  if ((cached_has_bits & 0x00000300u) != 0) {
+    ::memset(&_impl_.resolved_mutation_sequence_, 0, static_cast<::size_t>(
+        reinterpret_cast<char*>(&_impl_.resolved_observation_sequence_) -
+        reinterpret_cast<char*>(&_impl_.resolved_mutation_sequence_)) + sizeof(_impl_.resolved_observation_sequence_));
+  }
   _impl_._has_bits_.Clear();
   _internal_metadata_.Clear<::google::protobuf::UnknownFieldSet>();
 }
@@ -21268,7 +21290,7 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   (void)cached_has_bits;
 
   // .liveroute.v1.EventDisposition disposition = 1;
-  if ((this_._impl_._has_bits_[0] & 0x00000004u) != 0) {
+  if ((this_._impl_._has_bits_[0] & 0x00000008u) != 0) {
     if (this_._internal_disposition() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteEnumToArray(
@@ -21277,7 +21299,7 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   }
 
   // .liveroute.v1.StatusCode status = 2;
-  if ((this_._impl_._has_bits_[0] & 0x00000008u) != 0) {
+  if ((this_._impl_._has_bits_[0] & 0x00000010u) != 0) {
     if (this_._internal_status() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteEnumToArray(
@@ -21286,7 +21308,7 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   }
 
   // bool retryable = 3;
-  if ((this_._impl_._has_bits_[0] & 0x00000020u) != 0) {
+  if ((this_._impl_._has_bits_[0] & 0x00000040u) != 0) {
     if (this_._internal_retryable() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteBoolToArray(
@@ -21295,7 +21317,7 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   }
 
   // .liveroute.v1.StaleReason stale_reason = 4;
-  if ((this_._impl_._has_bits_[0] & 0x00000010u) != 0) {
+  if ((this_._impl_._has_bits_[0] & 0x00000020u) != 0) {
     if (this_._internal_stale_reason() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteEnumToArray(
@@ -21314,7 +21336,7 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   }
 
   // uint64 resolved_mutation_sequence = 6;
-  if ((this_._impl_._has_bits_[0] & 0x00000080u) != 0) {
+  if ((this_._impl_._has_bits_[0] & 0x00000100u) != 0) {
     if (this_._internal_resolved_mutation_sequence() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteUInt64ToArray(
@@ -21323,7 +21345,7 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   }
 
   // uint64 resolved_observation_sequence = 7;
-  if ((this_._impl_._has_bits_[0] & 0x00000100u) != 0) {
+  if ((this_._impl_._has_bits_[0] & 0x00000200u) != 0) {
     if (this_._internal_resolved_observation_sequence() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteUInt64ToArray(
@@ -21332,7 +21354,7 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
   }
 
   // bool replan_scheduled = 8;
-  if ((this_._impl_._has_bits_[0] & 0x00000040u) != 0) {
+  if ((this_._impl_._has_bits_[0] & 0x00000080u) != 0) {
     if (this_._internal_replan_scheduled() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteBoolToArray(
@@ -21347,6 +21369,16 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
       ::google::protobuf::internal::WireFormatLite::VerifyUtf8String(
           _s.data(), static_cast<int>(_s.length()), ::google::protobuf::internal::WireFormatLite::SERIALIZE, "liveroute.v1.EventAcknowledged.safe_message");
       target = stream->WriteStringMaybeAliased(9, _s, target);
+    }
+  }
+
+  // string resulting_current_plan_id = 10;
+  if ((this_._impl_._has_bits_[0] & 0x00000004u) != 0) {
+    if (!this_._internal_resulting_current_plan_id().empty()) {
+      const ::std::string& _s = this_._internal_resulting_current_plan_id();
+      ::google::protobuf::internal::WireFormatLite::VerifyUtf8String(
+          _s.data(), static_cast<int>(_s.length()), ::google::protobuf::internal::WireFormatLite::SERIALIZE, "liveroute.v1.EventAcknowledged.resulting_current_plan_id");
+      target = stream->WriteStringMaybeAliased(10, _s, target);
     }
   }
 
@@ -21390,50 +21422,57 @@ PROTOBUF_NOINLINE void EventAcknowledged::Clear() {
                                         this_._internal_safe_message());
       }
     }
-    // .liveroute.v1.EventDisposition disposition = 1;
+    // string resulting_current_plan_id = 10;
     if ((cached_has_bits & 0x00000004u) != 0) {
+      if (!this_._internal_resulting_current_plan_id().empty()) {
+        total_size += 1 + ::google::protobuf::internal::WireFormatLite::StringSize(
+                                        this_._internal_resulting_current_plan_id());
+      }
+    }
+    // .liveroute.v1.EventDisposition disposition = 1;
+    if ((cached_has_bits & 0x00000008u) != 0) {
       if (this_._internal_disposition() != 0) {
         total_size += 1 +
                       ::_pbi::WireFormatLite::EnumSize(this_._internal_disposition());
       }
     }
     // .liveroute.v1.StatusCode status = 2;
-    if ((cached_has_bits & 0x00000008u) != 0) {
+    if ((cached_has_bits & 0x00000010u) != 0) {
       if (this_._internal_status() != 0) {
         total_size += 1 +
                       ::_pbi::WireFormatLite::EnumSize(this_._internal_status());
       }
     }
     // .liveroute.v1.StaleReason stale_reason = 4;
-    if ((cached_has_bits & 0x00000010u) != 0) {
+    if ((cached_has_bits & 0x00000020u) != 0) {
       if (this_._internal_stale_reason() != 0) {
         total_size += 1 +
                       ::_pbi::WireFormatLite::EnumSize(this_._internal_stale_reason());
       }
     }
     // bool retryable = 3;
-    if ((cached_has_bits & 0x00000020u) != 0) {
+    if ((cached_has_bits & 0x00000040u) != 0) {
       if (this_._internal_retryable() != 0) {
         total_size += 2;
       }
     }
     // bool replan_scheduled = 8;
-    if ((cached_has_bits & 0x00000040u) != 0) {
+    if ((cached_has_bits & 0x00000080u) != 0) {
       if (this_._internal_replan_scheduled() != 0) {
         total_size += 2;
       }
     }
+  }
+  if ((cached_has_bits & 0x00000300u) != 0) {
     // uint64 resolved_mutation_sequence = 6;
-    if ((cached_has_bits & 0x00000080u) != 0) {
+    if ((cached_has_bits & 0x00000100u) != 0) {
       if (this_._internal_resolved_mutation_sequence() != 0) {
         total_size += ::_pbi::WireFormatLite::UInt64SizePlusOne(
             this_._internal_resolved_mutation_sequence());
       }
     }
-  }
-   {
     // uint64 resolved_observation_sequence = 7;
-    if ((cached_has_bits & 0x00000100u) != 0) {
+    if ((cached_has_bits & 0x00000200u) != 0) {
       if (this_._internal_resolved_observation_sequence() != 0) {
         total_size += ::_pbi::WireFormatLite::UInt64SizePlusOne(
             this_._internal_resolved_observation_sequence());
@@ -21473,39 +21512,50 @@ void EventAcknowledged::MergeImpl(::google::protobuf::MessageLite& to_msg, const
       }
     }
     if ((cached_has_bits & 0x00000004u) != 0) {
+      if (!from._internal_resulting_current_plan_id().empty()) {
+        _this->_internal_set_resulting_current_plan_id(from._internal_resulting_current_plan_id());
+      } else {
+        if (_this->_impl_.resulting_current_plan_id_.IsDefault()) {
+          _this->_internal_set_resulting_current_plan_id("");
+        }
+      }
+    }
+    if ((cached_has_bits & 0x00000008u) != 0) {
       if (from._internal_disposition() != 0) {
         _this->_impl_.disposition_ = from._impl_.disposition_;
       }
     }
-    if ((cached_has_bits & 0x00000008u) != 0) {
+    if ((cached_has_bits & 0x00000010u) != 0) {
       if (from._internal_status() != 0) {
         _this->_impl_.status_ = from._impl_.status_;
       }
     }
-    if ((cached_has_bits & 0x00000010u) != 0) {
+    if ((cached_has_bits & 0x00000020u) != 0) {
       if (from._internal_stale_reason() != 0) {
         _this->_impl_.stale_reason_ = from._impl_.stale_reason_;
       }
     }
-    if ((cached_has_bits & 0x00000020u) != 0) {
+    if ((cached_has_bits & 0x00000040u) != 0) {
       if (from._internal_retryable() != 0) {
         _this->_impl_.retryable_ = from._impl_.retryable_;
       }
     }
-    if ((cached_has_bits & 0x00000040u) != 0) {
+    if ((cached_has_bits & 0x00000080u) != 0) {
       if (from._internal_replan_scheduled() != 0) {
         _this->_impl_.replan_scheduled_ = from._impl_.replan_scheduled_;
       }
     }
-    if ((cached_has_bits & 0x00000080u) != 0) {
+  }
+  if ((cached_has_bits & 0x00000300u) != 0) {
+    if ((cached_has_bits & 0x00000100u) != 0) {
       if (from._internal_resolved_mutation_sequence() != 0) {
         _this->_impl_.resolved_mutation_sequence_ = from._impl_.resolved_mutation_sequence_;
       }
     }
-  }
-  if ((cached_has_bits & 0x00000100u) != 0) {
-    if (from._internal_resolved_observation_sequence() != 0) {
-      _this->_impl_.resolved_observation_sequence_ = from._impl_.resolved_observation_sequence_;
+    if ((cached_has_bits & 0x00000200u) != 0) {
+      if (from._internal_resolved_observation_sequence() != 0) {
+        _this->_impl_.resolved_observation_sequence_ = from._impl_.resolved_observation_sequence_;
+      }
     }
   }
   _this->_impl_._has_bits_[0] |= cached_has_bits;
@@ -21528,6 +21578,7 @@ void EventAcknowledged::InternalSwap(EventAcknowledged* PROTOBUF_RESTRICT PROTOB
   swap(_impl_._has_bits_[0], other->_impl_._has_bits_[0]);
   ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.event_id_, &other->_impl_.event_id_, arena);
   ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.safe_message_, &other->_impl_.safe_message_, arena);
+  ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.resulting_current_plan_id_, &other->_impl_.resulting_current_plan_id_, arena);
   ::google::protobuf::internal::memswap<
       PROTOBUF_FIELD_OFFSET(EventAcknowledged, _impl_.resolved_observation_sequence_)
       + sizeof(EventAcknowledged::_impl_.resolved_observation_sequence_)

@@ -3,7 +3,7 @@ syntax = "proto3";
 package liveroute.v1;
 
 option cc_enable_arenas = true;
-option go_package = "github.com/liveroute/liveroute/gen/go/liveroute/v1;liveroutev1";
+option go_package = "github.com/liveroute/liveroute/backend/gen/liveroute/v1;liveroutev1";
 
 service LiveRoutePlanner {
   rpc PlanTrips(stream PlannerStreamRequest)
@@ -510,6 +510,8 @@ message EventAcknowledged {
   uint64 resolved_observation_sequence = 7;
   bool replan_scheduled = 8;
   string safe_message = 9;
+  // Present only for accepted/duplicate canonical-first plan mirrors.
+  string resulting_current_plan_id = 10;
 }
 
 message ReplanResult {

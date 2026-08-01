@@ -37,6 +37,8 @@ constexpr std::string_view kActivityId =
     "33333333-3333-3333-3333-333333333333";
 constexpr std::string_view kPlanId =
     "44444444-4444-4444-4444-444444444444";
+constexpr std::string_view kReplacementPlanId =
+    "66666666-6666-6666-6666-666666666666";
 constexpr std::string_view kEventId =
     "55555555-5555-5555-5555-555555555555";
 
@@ -200,6 +202,32 @@ void fill_route_deviation_event(
   deviation->mutable_location()->set_latitude(40.0);
   deviation->mutable_location()->set_longitude(-74.0);
   deviation->set_distance_from_route_meters(25);
+}
+
+void fill_current_plan_replaced_event(
+    ::liveroute::v1::PlannerStreamRequest& request,
+    std::string request_id) {
+  const auto now = now_ms();
+  request.set_request_id(std::move(request_id));
+  request.set_trip_id(kTripId);
+  request.set_runtime_epoch(8);
+  request.set_mutation_sequence(2);
+  request.set_expected_trip_revision(1);
+  request.set_expires_at_unix_ms(now + 5000);
+  auto* event = request.mutable_apply_event();
+  event->set_event_id("67676767-6767-6767-6767-676767676767");
+  event->set_occurred_at_unix_ms(now);
+  auto* plan =
+      event->mutable_current_plan_replaced()->mutable_current_plan();
+  plan->set_plan_id(kReplacementPlanId);
+  plan->set_plan_revision(2);
+  plan->set_origin(::liveroute::v1::PLAN_ORIGIN_USER_AUTHORED);
+  plan->set_created_at_unix_ms(now);
+  auto* segment = plan->add_segments();
+  segment->set_activity_id(kActivityId);
+  segment->set_state(::liveroute::v1::PLAN_ENTRY_STATE_SCHEDULED);
+  segment->set_scheduled_start_unix_ms(now + 600000);
+  segment->set_scheduled_end_unix_ms(now + 660000);
 }
 
 }  // namespace
@@ -486,6 +514,40 @@ int main() {
       response.trip_bootstrapped().current_plan_id() != kPlanId) {
     return 1;
   }
+
+  request.Clear();
+  fill_current_plan_replaced_event(
+      request, "20202020-2020-2020-2020-202020202020");
+  if (!fourth_stream->Write(request) ||
+      !fourth_stream->Read(&response) ||
+      !response.has_event_acknowledged() ||
+      response.event_acknowledged().status() !=
+          ::liveroute::v1::STATUS_CODE_OK ||
+      response.event_acknowledged().resulting_current_plan_id() !=
+          kReplacementPlanId ||
+      response.event_acknowledged().resolved_mutation_sequence() != 2 ||
+      response.trip_revision() != 2) {
+    return 1;
+  }
+  if (!fourth_stream->Read(&response) ||
+      response.request_id() !=
+          "20202020-2020-2020-2020-202020202020" ||
+      !response.has_replan_result()) {
+    return 1;
+  }
+
+  request.set_request_id("21212121-2121-2121-2121-212121212121");
+  if (!fourth_stream->Write(request) ||
+      !fourth_stream->Read(&response)) return 1;
+  if (!response.has_event_acknowledged()) return 1;
+  if (response.event_acknowledged().status() !=
+      ::liveroute::v1::STATUS_CODE_DUPLICATE) return 1;
+  if (response.event_acknowledged().resulting_current_plan_id() !=
+      kReplacementPlanId) return 1;
+  if (response.event_acknowledged().resolved_mutation_sequence() != 2) {
+    return 1;
+  }
+  if (response.trip_revision() != 2) return 1;
 
   request.Clear();
   request.set_request_id("17171717-1717-1717-1717-171717171717");

@@ -360,7 +360,9 @@ Payload fields:
 - `AdvisoryUpdate`: 1 `AdvisoryKind kind`, 2 `string source`, 3 `bytes opaque_payload`, with a configured byte limit. Candidate search never reads opaque provider data; an adapter must normalize any advisory effect first.
 - `CurrentPlanReplaced`: 1 `CurrentPlan current_plan`. It is already canonical in PostgreSQL when delivered. C++ validates transport/domain compatibility, mirrors it, invalidates prior proposal work, and never rejects it for nonoptimality or schedule feasibility.
 
-`EventAcknowledged`: 1 `EventDisposition disposition`, 2 `StatusCode status`, 3 `bool retryable`, 4 `StaleReason stale_reason`, 5 `string event_id`, 6 `uint64 resolved_mutation_sequence`, 7 `uint64 resolved_observation_sequence`, 8 `bool replan_scheduled`, 9 `string safe_message`.
+`EventAcknowledged`: 1 `EventDisposition disposition`, 2 `StatusCode status`, 3 `bool retryable`, 4 `StaleReason stale_reason`, 5 `string event_id`, 6 `uint64 resolved_mutation_sequence`, 7 `uint64 resolved_observation_sequence`, 8 `bool replan_scheduled`, 9 `string safe_message`, 10 `string resulting_current_plan_id`.
+
+Field 10 is required as a canonical lowercase UUID exactly when a canonical-first `TripEdited` or `CurrentPlanReplaced` resolves as `ACCEPTED` or `DUPLICATE`. It identifies the `CurrentPlan` actually installed in C++ and must equal the plan carried by that event. It is absent for every runtime-first or observation event and for stale, rejected, inactive, or internal outcomes. The backend must compare field 10, the response envelope's `trip_revision`, and field 6 against the stored mirror event before marking runtime sync complete. A missing, malformed, or mismatched value is an `INTERNAL` compatibility fault: leave the mirror unresolved, pause later runtime-first dispatch, and recover through corrected replay or a verified full canonical bootstrap. This field is an additive wire-compatible V1 correction; checked-in generated bindings and the descriptor baseline are updated together.
 
 `ReplanResult`: 1 `StatusCode status`, 2 `bool retryable`, 3 `PlanProposal proposal`, 4 `NotificationType notification`, 5 `repeated PlanReasonCode reasons`, 6 `PlannerStats stats`, 7 `ResultQuality quality`, 8 `string safe_message`.
 
@@ -740,6 +742,7 @@ The payload is exact serialized `StoredPlanProposal` bytes and must agree with t
 - `outcome_status text null`, checked against the stable status strings when non-null
 - `outcome_payload jsonb null`
 - `resulting_trip_revision bigint null`
+- `resulting_current_plan_id uuid null`; required exactly for `canonical_first` intents and references the immutable plan created by that command
 - `resulting_planner_state_version bigint null`
 - `planned_current_plan_id uuid null`; required only for `accept_proposal`, generated during runtime-first recording and copied into every retry
 - `planned_current_plan_payload bytea null` and `planned_current_plan_checksum_sha256 bytea null`; both required only for `accept_proposal`, with checksum exactly 32 bytes and payload decoding to the planned id/revision/origin/source metadata
@@ -747,6 +750,8 @@ The payload is exact serialized `StoredPlanProposal` bytes and must agree with t
 - `recorded_at timestamptz not null`
 - `finalized_at timestamptz null`
 - unique `(trip_id, message_id)`, `(trip_id, event_id)`, and `(trip_id, mutation_sequence)`
+
+Add a composite foreign key from `(trip_id, resulting_current_plan_id)` to `itinerary_plans(trip_id, id)`. `resulting_current_plan_id` is non-null exactly when `application_order = 'canonical_first'`; runtime-first proposal acceptance continues to use the separate pre-dispatch `planned_current_plan_id`. Mirror acknowledgement and replay correlation read this typed intent column and never infer identity from the live `trips.current_plan_id` or parse an undocumented path from `planner_outbox.event_payload`. Forward migration 3 backfills pre-existing canonical intents only by the unique `(trip_id, plan_revision = resulting_trip_revision)` plan row and fails rather than guessing if canonical history is inconsistent.
 
 `planner_outbox`:
 
@@ -768,6 +773,20 @@ The payload is exact serialized `StoredPlanProposal` bytes and must agree with t
 - unique `(trip_id, mutation_sequence)`
 
 The outbox does not persist a dispatch-authority runtime epoch or a reusable `request_id`. An optional audit epoch may be logged outside the payload but is never read to authorize replay.
+
+For `event_schema_version = 1`, `event_payload` is exactly a JSON object with
+the two members `format` and `protobuf_base64`. `format` is the literal
+`liveroute.v1.ApplyTripEvent/protobuf;version=1`; `protobuf_base64` is padded
+RFC 4648 standard Base64 of deterministic Protobuf serialization of exactly
+one `liveroute.v1.ApplyTripEvent`. Writers emit the members in that order.
+Readers reject missing, duplicate, or unknown members, non-canonical Base64,
+non-deterministic Protobuf encodings, an empty `event_id`, a non-positive
+`occurred_at_unix_ms`, or an unset event oneof. The stored event contains the
+stable event id, occurrence time, optional logical command expiry, and typed
+event body only. The dispatcher supplies `request_id`, `trip_id`, current
+lease epoch, mutation/observation sequences, expected versions, and attempt
+expiry in the outer `PlannerStreamRequest`; those transport-authority values
+are never persisted in `event_payload`.
 
 `planner_snapshots`:
 
@@ -820,7 +839,7 @@ Required indexes cover owner-to-trip lookup, immutable plan history `(trip_id, p
 2. If the trip exists, authorize without revealing another owner's data and compare the existing creation intent algorithm/digest. Return its stored result on an exact match; otherwise return `INVALID_ARGUMENT` without mutating either trip.
 3. Validate the complete trip/activity/current-plan draft and normalize payload bytes before writes.
 4. Insert the trip at `trip_revision = 1`, `next_mutation_sequence = 2`, `finalized_mutation_sequence = 1`, plus normalized activities/windows/delays and immutable `USER_AUTHORED` `CurrentPlan` revision 1. The deferred foreign key permits the trip and current plan to be inserted together.
-5. Insert an applied `canonical_first` command intent at mutation sequence 1 with expected trip revision 0, resulting revision 1, and `runtime_sync_state = 'not_required'`. No planner outbox exists because a new trip has no active C++ state.
+5. Insert an applied `canonical_first` command intent at mutation sequence 1 with expected trip revision 0, resulting revision 1, `resulting_current_plan_id` equal to the initial plan id, and `runtime_sync_state = 'not_required'`. No planner outbox exists because a new trip has no active C++ state.
 6. Commit, then emit `canonical_committed`. A later activation uses a full bootstrap that initializes both C++ watermarks to 1.
 
 `replace_current_plan` and `trip_edited` use the same transaction shape:
@@ -828,10 +847,10 @@ Required indexes cover owner-to-trip lookup, immutable plan history `(trip_id, p
 1. Lock the trip; verify owner, expected trip revision, idempotency digest, no unresolved runtime-first command, and available bounded canonical-mirror capacity. Earlier pending canonical-first mirrors are allowed.
 2. For `trip_edited`, validate and apply the normalized activity operation in the transaction's post-edit model. Validate its complete `UserPlanDraft`; for `replace_current_plan`, validate the draft against the unchanged activity set. Assign the next plan revision under the trip lock and serialize an exact `USER_AUTHORED` `CurrentPlan`.
 3. Allocate mutation sequence `N`; apply any activity edit, insert the immutable plan, update `trips.current_plan_id`, trip revision, next mutation sequence, and finalized mutation watermark, and mark any pending proposal `superseded`.
-4. Insert an applied `canonical_first` command intent and a pending lease-neutral `TripEdited(N)` or `CurrentPlanReplaced(N)` outbox row with the prior expected trip revision. The mirror row is inserted even when the trip is inactive so a snapshot-based future activation cannot miss the canonical-first change.
+4. Insert an applied `canonical_first` command intent containing the exact `resulting_current_plan_id` and a pending lease-neutral `TripEdited(N)` or `CurrentPlanReplaced(N)` outbox row with the prior expected trip revision. The mirror row is inserted even when the trip is inactive so a snapshot-based future activation cannot miss the canonical-first change.
 5. Set the intent `runtime_sync_state = 'pending'`, commit, then emit `canonical_committed`. Product success does not wait for C++.
 
-Mirror rows never expire logically and dispatch in mutation-sequence order. On C++ acknowledgement, lock trip/intent/outbox, verify the resulting revision/current-plan id and sequence, mark the row accepted and the intent runtime sync `synced`, commit, then send `ConfirmFinalizedMutations(N)` and emit `runtime_synced`. A full canonical bootstrap through `N` may resolve every pending canonical-first mirror row with sequence `<= N` identically after verifying the bootstrapped trip revision/current-plan id. Unexpected normalized-data rejection sets the affected outbox `paused_internal` and intent runtime sync `paused_internal`; it preserves PostgreSQL state and requires repair/rebootstrap.
+Mirror rows never expire logically and dispatch in mutation-sequence order. On C++ acknowledgement, lock trip/intent/outbox, verify the response-envelope resulting revision, field 10 current-plan id against the intent's immutable `resulting_current_plan_id`, and the resolved sequence, mark the row accepted and the intent runtime sync `synced`, commit, then send `ConfirmFinalizedMutations(N)` and emit `runtime_synced`. Never compare an individual mirror acknowledgement with the live `trips.current_plan_id`, because later canonical edits may already have advanced it. A full canonical bootstrap through `N` may resolve every pending canonical-first mirror row with sequence `<= N` identically after verifying the bootstrapped trip revision/current-plan id. Unexpected normalized-data rejection sets the affected outbox `paused_internal` and intent runtime sync `paused_internal`; it preserves PostgreSQL state and requires repair/rebootstrap.
 
 ### Proposal persistence transaction
 
@@ -888,6 +907,7 @@ Stream reconnection separately uses full-jitter backoff from 100 milliseconds ca
 - Snapshot schema version 1 is the only V1 compatible version.
 - Checksum is SHA-256 over the exact payload bytes; size must equal the declared size and remain under the configured maximum.
 - Metadata must not be older than the stored valid snapshot, must not exceed the trip's finalized mutation watermark, and must match the decoded `TripStateSnapshot`.
+- Snapshot recency is ordered by `(source_runtime_epoch, source_planner_state_version, covered_finalized_mutation_sequence, trip_revision)`, newest first. A higher runtime epoch is newer even though its planner-state version resets; across an epoch change, trip revision and the covered finalized watermark must not regress. `created_at` and snapshot id are deterministic descending tie-breakers only and never override version recency.
 - Unknown schema versions and checksum/parse/metadata failures mark the candidate invalid; they never replace a valid snapshot.
 - The backend retains the two newest non-invalid compatible snapshots per trip. It may delete older compatible snapshots only in the same transaction that commits a new valid snapshot. Invalid rows retain metadata but may have payload purged by a later maintenance policy; V1 does not need such maintenance.
 - Snapshot commit and deletion of terminal outbox rows with `mutation_sequence <= covered_finalized_mutation_sequence` occur atomically.
@@ -1050,6 +1070,15 @@ OSRM `fallback_speed` is forbidden in V1, so unreachable cells are never fabrica
 - C++ generation runs on `linux/amd64` from the exact `cpp_grpc_toolchain` digest in `config/tool-images.lock`. It first asserts `protoc --version` is `libprotoc 31.1`, `pkg-config --modversion protobuf` is `31.1.0`, and `pkg-config --modversion grpc++` is `1.78.1`.
 - From the repository root, invoke `/opt/grpc/bin/protoc -I proto --cpp_out=gen/cpp --grpc_out=gen/cpp --plugin=protoc-gen-grpc=/opt/grpc/bin/grpc_cpp_plugin` with input files sorted by UTF-8 repository-relative path. Generated `*.pb.h`, `*.pb.cc`, `*.grpc.pb.h`, and `*.grpc.pb.cc` are checked in. No host compiler/plugin is permitted.
 - CI runs Buf checks, regenerates C++ outputs in a clean temporary tree with that image, byte-compares them with `gen/cpp`, compiles them against the same Protobuf/gRPC runtime versions, and fails on any difference.
+- Go generation uses `protoc` 31.1, `protoc-gen-go` 1.36.6, and
+  `protoc-gen-go-grpc` 1.5.1 from `docker/go-proto/Dockerfile`. Both image
+  stages use the immutable `linux/amd64` base digests recorded under
+  `go_proto_toolchain` in `config/tool-images.lock`; plugin module versions are
+  exact `go install module@version` inputs. Checked-in bindings live under
+  `backend/gen/liveroute/v1`, use Protobuf-Go 1.36.11 and gRPC-Go 1.82.1 at
+  runtime, and are regenerated into a temporary directory and byte-compared by
+  `scripts/check-go-proto-generation.sh`. Host `protoc` or Go plugins are not
+  permitted.
 - Removed fields/enums are deprecated and their names/numbers reserved; no number is reused. An incompatible change creates package `liveroute.v2`.
 
 ### WebSocket JSON
