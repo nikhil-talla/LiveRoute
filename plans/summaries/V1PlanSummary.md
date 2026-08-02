@@ -18,7 +18,7 @@ C++ planner
         |
         | provider adapters
         v
-OSRM / hours provider
+OSRM / optional hours importer
 ```
 
 V1 uses CLI, load, and integration clients. The React/TypeScript browser is planned for V1.5.
@@ -124,7 +124,12 @@ Each activity-set edit includes the complete resulting user plan, so canonical a
 
 The client supplies activity names, coordinates, hours, reservations, durations, priorities, and an ordered initial schedule. The backend validates structural invariants and atomically persists the trip plus user-authored current plan. C++ receives the normalized trip/current plan during bootstrap and treats it as the baseline for suggested replanning.
 
-V1 hours come from the versioned seed shape and pinned tzdata defined in `plans/LiveRouteV1ContractSpec.md`; C++ receives only normalized UTC windows. A frontend destination-search or geocoding API is not currently defined in the contract. Adding place lookup would be a separate V1/V1.5 provider decision.
+V1 hours are user-entered normalized UTC `open_windows`; the backend persists
+them and C++ consumes them as authoritative constraints. The versioned seed
+shape and pinned tzdata in `plans/LiveRouteV1ContractSpec.md` support an
+optional importer and deterministic fixture, not a serving-path place lookup.
+A frontend destination-search or geocoding API is not currently defined in the
+contract. Adding place lookup would be a separate V1/V1.5 provider decision.
 
 ## Lease Ownership
 
@@ -185,7 +190,8 @@ C++ is responsible for:
 - owning active trip state;
 - mirroring initial/current user plans and applying ordered live edits;
 - validating event ordering and versions;
-- acquiring route and hours data through provider adapters;
+- acquiring route data through a provider adapter and consuming normalized
+  user-authored hours constraints;
 - evaluating the user plan and running later suggested replans;
 - deciding whether accepted events require replanning;
 - discarding stale planner results;
