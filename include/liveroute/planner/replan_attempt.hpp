@@ -28,6 +28,14 @@ struct ReplanAttemptResult {
     const ProposalSource& source, const domain::TripEventPayload& trigger,
     const ReplanFacts& facts, const ReplanBudget& budget);
 
+// Worker-owned scratch overload. The storage is reset and reused by the beam
+// traversal; the caller must keep it confined to one planner worker.
+[[nodiscard]] ReplanAttemptResult run_replan_attempt(
+    const BeamSearchInput& input, std::span<const domain::Activity> activities,
+    const ProposalSource& source, const domain::TripEventPayload& trigger,
+    const ReplanFacts& facts, const ReplanBudget& budget,
+    PlannerScratch& scratch);
+
 // Wraps a successful attempt with the exact stored-proposal quality and
 // metadata fields. Stage timings and routing/recovery quality are supplied by
 // the owning runtime; failed/no-proposal attempts return nullopt.

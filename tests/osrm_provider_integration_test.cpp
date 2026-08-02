@@ -25,16 +25,28 @@ bool check_mode(liveroute::routing::OsrmTravelTimeProvider& provider,
     return false;
   }
   const auto& matrix = result.matrix();
-  return matrix.location_count() == 2 && matrix.at(0, 0).reachable &&
-         matrix.at(1, 1).reachable && matrix.at(0, 1).reachable &&
-         matrix.at(0, 1).duration > std::chrono::seconds::zero() &&
-         matrix.at(0, 1).distance_meters > 0;
+  if (result.quality() != liveroute::routing::TravelTimeLookupQuality::kFresh ||
+      matrix.location_count() != 2 || !matrix.at(0, 0).reachable ||
+      !matrix.at(1, 1).reachable || !matrix.at(0, 1).reachable ||
+      matrix.at(0, 1).duration <= std::chrono::seconds::zero() ||
+      matrix.at(0, 1).distance_meters == 0) {
+    return false;
+  }
+  const auto cached = provider.get_matrix(
+      locations, mode, std::chrono::system_clock::now(),
+      std::chrono::steady_clock::now() + std::chrono::seconds{2}, {});
+  return cached.has_matrix() &&
+         cached.quality() == liveroute::routing::TravelTimeLookupQuality::kFresh &&
+         cached.matrix().location_count() == 2 && cached.matrix().at(0, 1).reachable &&
+         cached.matrix().at(0, 1).duration == matrix.at(0, 1).duration &&
+         cached.matrix().at(0, 1).distance_meters == matrix.at(0, 1).distance_meters;
 }
 
 }  // namespace
 
 int main() {
   liveroute::routing::OsrmTravelTimeProvider provider({
+      .dataset_version = "test-osrm-dataset-v1",
       .car_endpoint = endpoint("LIVEROUTE_OSRM_CAR_ENDPOINT", "http://osrm-car:5000"),
       .foot_endpoint = endpoint("LIVEROUTE_OSRM_FOOT_ENDPOINT", "http://osrm-foot:5000"),
       .max_locations = 65,
@@ -44,6 +56,7 @@ int main() {
       .per_profile_concurrency = 2,
       .connect_timeout = std::chrono::milliseconds{100},
       .request_timeout = std::chrono::milliseconds{750},
+      .route_cache = liveroute::routing::RouteMatrixCacheConfig{},
   });
   if (!check_mode(provider, liveroute::domain::TravelMode::kDriving) ||
       !check_mode(provider, liveroute::domain::TravelMode::kWalking)) {

@@ -135,6 +135,19 @@ int main() {
     return 1;
   }
 
+  PlannerScratch reusable_scratch;
+  const auto reused = run_replan_attempt(
+      input, std::span<const Activity>{&place, 1}, source(plan), trigger,
+      ReplanFacts{}, budget(), reusable_scratch);
+  if (reused.search.outcome != result.search.outcome ||
+      !reused.proposal.has_value() ||
+      reused.proposal->proposal.revised_suffix.size() !=
+          result.proposal->proposal.revised_suffix.size() ||
+      reused.proposal->changes_current_plan !=
+          result.proposal->changes_current_plan) {
+    return 1;
+  }
+
   const auto limited = run_replan_attempt(
       input, std::span<const Activity>{&place, 1}, source(plan), trigger,
       ReplanFacts{}, budget(100, 1));

@@ -34,6 +34,30 @@ bool check_no_table() {
          !result.matrix().at(1, 0).reachable;
 }
 
+bool check_rectangular_grid() {
+  const auto result = liveroute::routing::parse_osrm_table_response_grid(
+      R"({"code":"Ok","durations":[[0,1.01,2.01],[3.01,4.01,5.01]],"distances":[[0,10.01,20.01],[30.01,40.01,50.01]]})",
+      2, 3);
+  if (!std::holds_alternative<liveroute::routing::OsrmTableGrid>(result)) {
+    return false;
+  }
+  const auto& grid = std::get<liveroute::routing::OsrmTableGrid>(result);
+  return grid.row_count == 2 && grid.column_count == 3 && !grid.no_table &&
+         grid.at(1, 2).duration == std::chrono::seconds{6} &&
+         grid.at(1, 2).distance_meters == 51;
+}
+
+bool check_rectangular_no_table() {
+  const auto result = liveroute::routing::parse_osrm_table_response_grid(
+      R"({"code":"NoTable"})", 2, 3);
+  if (!std::holds_alternative<liveroute::routing::OsrmTableGrid>(result)) {
+    return false;
+  }
+  const auto& grid = std::get<liveroute::routing::OsrmTableGrid>(result);
+  return grid.no_table && grid.row_count == 2 && grid.column_count == 3 &&
+         !grid.at(0, 0).reachable && !grid.at(1, 1).reachable;
+}
+
 bool check_codes() {
   return liveroute::routing::is_recognized_osrm_error_response(
              R"({ "code" : "NoSegment", "message":"x" })") &&
@@ -68,7 +92,9 @@ bool check_malformed_matrices() {
 }  // namespace
 
 int main() {
-  if (!check_ok_and_rounding() || !check_no_table() || !check_codes() ||
+  if (!check_ok_and_rounding() || !check_no_table() ||
+      !check_rectangular_grid() || !check_rectangular_no_table() ||
+      !check_codes() ||
       !check_malformed_matrices()) {
     std::cerr << "OSRM response test failed\n";
     return 1;

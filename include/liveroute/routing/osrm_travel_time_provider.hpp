@@ -3,13 +3,16 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "liveroute/routing/route_matrix_cache.hpp"
 #include "liveroute/routing/travel_time_provider.hpp"
 
 namespace liveroute::routing {
 
 struct OsrmTravelTimeProviderConfig {
+  std::string dataset_version;
   std::string car_endpoint;
   std::string foot_endpoint;
   std::size_t max_locations{};
@@ -19,6 +22,7 @@ struct OsrmTravelTimeProviderConfig {
   std::size_t per_profile_concurrency{};
   std::chrono::milliseconds connect_timeout{};
   std::chrono::milliseconds request_timeout{};
+  std::optional<RouteMatrixCacheConfig> route_cache;
 };
 
 class OsrmTravelTimeProvider final : public TravelTimeProvider {

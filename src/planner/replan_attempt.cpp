@@ -8,7 +8,17 @@ ReplanAttemptResult run_replan_attempt(
     const BeamSearchInput& input, std::span<const domain::Activity> activities,
     const ProposalSource& source, const domain::TripEventPayload& trigger,
     const ReplanFacts& facts, const ReplanBudget& budget) {
-  auto search = run_beam_search(input, budget);
+  PlannerScratch scratch;
+  return run_replan_attempt(input, activities, source, trigger, facts, budget,
+                            scratch);
+}
+
+ReplanAttemptResult run_replan_attempt(
+    const BeamSearchInput& input, std::span<const domain::Activity> activities,
+    const ProposalSource& source, const domain::TripEventPayload& trigger,
+    const ReplanFacts& facts, const ReplanBudget& budget,
+    PlannerScratch& scratch) {
+  auto search = run_beam_search(input, budget, scratch);
 
   std::optional<AssembledProposal> proposal;
   if (search.has_complete_candidate() && search.best_decisions.has_value() &&

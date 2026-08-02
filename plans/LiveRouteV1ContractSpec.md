@@ -165,7 +165,8 @@ Examples:
 - A deadline returns a valid partial proposal: `OK` + `BEST_SO_FAR`.
 - OSRM fails and no proposal can be computed: `PROVIDER_UNAVAILABLE`.
 - The requested matrix exceeds the fixed V1 limit: `MATRIX_TOO_LARGE`; retrying the same points unchanged cannot succeed.
-- A future explicitly allowed stale cache produces a proposal: `OK` + `STALE_CACHE`.
+- A Phase 17 stale fallback admitted by `liveroute-route-cache-v1` produces a
+  proposal: `OK` + `STALE_CACHE`.
 - PostgreSQL is down but still-valid-lease telemetry is accepted: `OK` + `NOT_ADVANCING`.
 
 Telemetry has a separate disposition: `ACCEPTED`, `COALESCED`, `DROPPED`, or `REJECTED`. A dropped/coalesced obsolete sample is not a planner error.
@@ -950,6 +951,12 @@ The normative data lock is `config/tzdata.lock`: IANA release `2026c`, artifact 
 
 ### Operating-hours provider boundary
 
+The authoritative V1 serving input is the user's normalized activity
+`open_windows`, persisted by the backend and mirrored to C++. Replanning never
+performs a place-hours lookup. The provider boundary below is an optional local
+import/normalization adapter for seed data; it may produce windows before a user
+plan is persisted, but its source metadata is not authoritative planner input.
+
 The internal transport-independent types are:
 
 - `LocalDate`: a valid proleptic-Gregorian date formatted externally as exactly `YYYY-MM-DD`, from `1970-01-01` through `9999-12-31`.
@@ -960,7 +967,7 @@ The internal transport-independent types are:
 
 `PlaceHoursProvider::get_hours(PlaceId, LocalDateRange, Deadline, std::stop_token)` returns `HoursLookupResult`. It performs no planner search and never exposes local civil-time or provider payload types to the planner. The successful `open_windows` are the union of intervals whose local opening date is in the requested half-open range. They are converted with the place's zone, sorted, and coalesced when they overlap or touch; each returned window has `opens_at_unix_ms < closes_at_unix_ms`.
 
-The V1 seeded provider loads `schema/hours/liveroute-v1-hours-seed.schema.json` once at startup. Additional semantic validation is mandatory:
+When enabled, the V1 seeded provider loads `schema/hours/liveroute-v1-hours-seed.schema.json` once at startup. Additional semantic validation is mandatory for that importer:
 
 - top-level `tzdata_release` exactly equals `config/tzdata.lock`;
 - `places` are strictly sorted by `place_id` and contain no duplicate place id;
@@ -1010,7 +1017,7 @@ Readiness means dependency usability rather than mere process existence:
 
 - PostgreSQL liveness: container process; readiness: `pg_isready` plus expected Goose migration version.
 - OSRM car/foot readiness: fixed small Table request succeeds with expected dimensions.
-- C++ liveness/readiness: standard gRPC health service reports `liveroute.v1.LiveRoutePlanner` as `SERVING` only after queues/executors/config initialize and seeded hours completes its full-domain semantic/DST validation. A defensive post-readiness seeded-source invariant failure changes the base service to `NOT_SERVING`. The service separately reports `liveroute.v1.LiveRoutePlanner/osrm-car` and `/osrm-foot` as `SERVING` only after their fixed Table probes pass.
+- C++ liveness/readiness: standard gRPC health service reports `liveroute.v1.LiveRoutePlanner` as `SERVING` after queues/executors and required serving configuration initialize. If the optional seeded-hours importer is enabled, it must also complete its full-domain semantic/DST validation before the base service becomes `SERVING`; a defensive post-readiness seeded-source invariant failure changes the base service to `NOT_SERVING`. Manual-hours serving does not require or initialize that importer. The service separately reports `liveroute.v1.LiveRoutePlanner/osrm-car` and `/osrm-foot` as `SERVING` only after their fixed Table probes pass.
 - Backend `/healthz`: event loop/process is alive; it does not query dependencies.
 - Backend `/readyz`: migrations are current, PostgreSQL ping succeeds, at least one planner stream is `StreamReady`, and both named OSRM profile health services report `SERVING`.
 - A backend that loses readiness may keep existing connections long enough to emit bounded transient errors, but Compose/test admission waits for `/readyz`.
@@ -1057,7 +1064,504 @@ Recognized OSRM codes map exactly:
 | `TooBig` | `MATRIX_TOO_LARGE` | false | Same public result as the LiveRoute preflight limit. If preflight admitted it, also mark the profile unready because configured limits disagree. |
 | `InvalidUrl`, `InvalidService`, `InvalidVersion`, `InvalidOptions`, `InvalidQuery`, or `InvalidValue` | `INTERNAL` | false | The validated adapter generated an invalid request for the pinned endpoint. |
 
-OSRM `fallback_speed` is forbidden in V1, so unreachable cells are never fabricated. A stale route cache, once implemented, may replace a provider error only under the separately configured cache policy and must return `OK` with `routing_quality = STALE_CACHE`.
+OSRM `fallback_speed` is forbidden in V1, so unreachable cells are never fabricated. The Phase 17 route cache may replace only the completely covered `PROVIDER_UNAVAILABLE` case admitted by `liveroute-route-cache-v1` below and must return `OK` with `routing_quality = STALE_CACHE`.
+
+## Benchmark Artifact and Aggregation Contract
+
+Phase 16 benchmark output is a machine-readable artifact, not parsed console
+text. Each measured process invocation writes one UTF-8 JSON document validated
+by `schema/benchmark/liveroute-benchmark-v1.schema.json`. JSON numbers are finite
+integers unless a field explicitly says otherwise; durations are unsigned integer
+microseconds. Human-readable tables are derived output and are never aggregation
+input.
+
+The root object has exactly these required members and the optional
+`attachments` member defined below:
+
+- `schema_version`: fixed string `liveroute.benchmark.v1`;
+- `run_id`: UUID generated for this invocation;
+- `started_at`: UTC RFC 3339 timestamp;
+- `benchmark_name`: stable executable/report name;
+- `dimensions`: an object with exactly `mode`, nullable `workload_profile`,
+  nullable `seed`, `parameters`, `build`, `environment`, `protocol_version`,
+  `planner_policy_version`, `osrm_dataset_version`, `route_cache_policy_version`,
+  and `route_cache_enabled`. `mode` is one of `runtime`, `grpc`, `websocket`,
+  `planner`, `serialization`, `shard-runtime`, `osrm`, or `hours`.
+  `route_cache_policy_version` is null while the cache is unavailable/disabled
+  and otherwise equals `liveroute-route-cache-v1`. `parameters` contains every
+  consumed benchmark CLI and service-config value as a lexicographically named
+  finite integer, Boolean, or string; omission of a consumed value is invalid.
+  `build` has exactly
+  nullable 40-lowercase-hex `git_commit`, Boolean `worktree_dirty`, `build_type`,
+  `compiler_id`, `compiler_version`, `target_arch`, and
+  `container_image_digest`. `environment` has exactly `os_name`,
+  `kernel_version`, `cpu_model`, `logical_cpu_count`, nullable
+  `cpu_quota_millicores`, and `memory_limit_bytes`. Unavailable nullable values
+  remain JSON `null`; they are not guessed;
+- `measurement`: object containing excluded `warmup_operations`, included
+  `measured_operations`, `elapsed_microseconds`, and `completed_operations`;
+- `counters`: object from stable metric name to unsigned integer count;
+- `histograms`: object from stable stage name to `{unit, count,
+  sum_microseconds, max_microseconds, upper_bounds_microseconds,
+  bucket_counts}`;
+- `gauges`: object from stable gauge name to `{last, maximum}`.
+
+`attachments`, when present, maps only `callgrind` and/or
+`compiler_vectorization_report` to an exact `{relative_path, sha256}` object.
+The path is relative to `artifacts/benchmarks/` and the digest covers the
+retained bytes; it uses `/` separators and contains no empty, `.` or `..` path
+segment. Attachments are evidence identities, not benchmark dimensions, and
+therefore do not affect compatible-run partitioning.
+
+Every histogram uses the same 19 non-cumulative buckets with inclusive upper
+bounds `1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000,
+50000, 100000, 250000, 500000, 1000000, null`, where final `null` means positive
+infinity. `bucket_counts` has exactly 19 entries, its sum equals `count`, and
+`sum_microseconds`/`max_microseconds` cover the same observations. Empty
+histograms have zero count/sum/max and all-zero buckets. A benchmark must retain
+raw bucket counts; emitting only p50/p95/p99 is invalid.
+
+V1 counter names are `accepted_events`, `duplicate_events`, `stale_events`,
+`dropped_critical_events`, `dropped_high_events`, `dropped_normal_events`,
+`dropped_advisory_events`, `coalesced_updates`, `replan_triggers`,
+`replan_cancellations`, `rejected_overload_requests`, `deadline_misses`,
+`osrm_failures`, `hours_provider_failures`, `infeasible_replans`,
+`route_cache_fresh_hits`, `route_cache_misses`, `route_cache_stale_hits`,
+`route_cache_insertions`, `route_cache_evictions`, `planner_allocation_calls`,
+`planner_allocated_bytes`, `planner_allocation_scope_overflows`,
+`planner_expansions`, `planner_candidates`, `profile_instructions`,
+`profile_data_references`, `profile_l1d_misses`, `profile_ll_data_misses`,
+`profile_branches`, and `profile_branch_misses`. V1
+histogram names are
+`deserialization`, `queue_wait`, `event_application`, `osrm_request`,
+`hours_provider_request`, `matrix_conversion`, `planner`, `serialization`,
+`total_request`, `acknowledgement`, `route_cache_lookup`, `route_cache_hit_path`,
+and `osrm_backed_path`. V1 gauge names are the four priority queue depths plus
+`route_cache_entries` and `route_cache_bytes`. A metric irrelevant to a benchmark
+is absent; a relevant metric with no observations is present with zero values.
+Unknown names require a new artifact schema version rather than silent discard.
+
+The `deserialization` histogram measures only application-controlled adapter
+work. For WebSocket it begins when `coder/websocket` returns a text message and
+ends after strict JSON parsing plus client-envelope schema validation produces
+the internal validated envelope. For gRPC it begins at C++ `OnReadDone` entry,
+after gRPC has produced the generated request object, and ends after envelope
+validation plus Protobuf-to-domain conversion produces the internal request.
+Rejected messages are observed when validation terminates. WebSocket framing,
+gRPC HTTP/2 processing, and framework-internal Protobuf wire decoding are not
+included or claimed. `hours_provider_request`, `hours_provider_failures`, and
+any future hours-cache metric are relevant only when the optional hours-import
+adapter is actually exercised; they are absent from ordinary manual-hours V1
+artifacts.
+
+The report generator accepts one or more raw artifacts and partitions them by
+byte-for-byte equality of `benchmark_name` plus the RFC-8785 canonical bytes of
+the schema-validated `dimensions` object. It never combines different seeds,
+workloads, build types, hardware, provider datasets, planner policies, or cache
+policies. Within one partition it:
+
+- sums measurement operation/duration fields and counters using checked `uint64`
+  arithmetic;
+- sums corresponding histogram bucket counts/count/sum, takes the maximum of
+  `max_microseconds`, and rejects different bucket boundaries;
+- computes p50/p95/p99 from the merged histogram as the first inclusive bucket
+  whose cumulative count reaches `ceil(percentile * count / 100)`; it never
+  averages per-run percentiles. A percentile selecting the final bucket is JSON
+  `null` and renders as `>1000000 us`, not as zero or a fabricated exact value;
+- stores exact throughput primitives as summed `completed_operations` and
+  `elapsed_microseconds`, derives integer
+  `throughput_millioperations_per_second = floor(completed_operations *`
+  `1,000,000,000 / elapsed_microseconds)` with checked arithmetic, and represents
+  every other rate as an integer `{numerator, denominator}` pair from summed
+  primitives rather than averaging per-run rates;
+- reports each gauge's maximum as the maximum across runs and `last` from the
+  latest `(started_at, run_id)` artifact;
+- sorts output groups by canonical dimensions and metric names so input-file
+  order cannot change the result.
+
+The aggregate artifact is one JSON document validated by
+`schema/benchmark/liveroute-benchmark-aggregate-v1.schema.json`, with
+`schema_version = liveroute.benchmark.aggregate.v1` and a `groups` array holding
+the dimensions, run count, merged primitives, derived throughput, and derived
+p50/p95/p99. Integer overflow, schema mismatch, duplicated `run_id`, incomplete
+metric shape, or zero aggregate elapsed time fails generation. V1 does not define
+a universal regression threshold: before/after artifacts are evidence and are
+shown as separate compatible groups. Raw and aggregate artifacts live under
+`artifacts/benchmarks/`, are excluded from Git, and contain no token, precise
+location, request body, database URL, or raw provider response.
+
+## Phase 18 Allocation Measurement and Acceptance
+
+Allocation evidence is planner-scoped, not a process-global total. The benchmark
+executable may provide benchmark-only replacements for every throwing,
+`nothrow`, array, and aligned global allocation/deallocation function so ordinary
+standard-library allocations cannot escape measurement. Those hooks must not
+allocate, must preserve standard allocation semantics, and update counters only
+when a thread-local `PlannerAllocationScope` is active. The serving binary does
+not replace global allocation functions, and allocations on unrelated threads
+are never attributed to an active planner attempt. Counter overflow or nested
+scope misuse increments `planner_allocation_scope_overflows`, invalidates the run,
+and is never saturated or reported as a successful measurement.
+
+The measured scope is exactly one attempt on one planner worker:
+
+1. Fixture construction, immutable `TripState`, normalized hours/facts,
+   `TravelTimeMatrix`, trigger/context construction, provider work, and any
+   scratch warm-up complete before the scope starts.
+2. The scope starts immediately before `assemble_beam_search_input` and includes
+   input assembly, proposal-source/budget construction, `run_replan_attempt`,
+   beam search, decision reconstruction, `PlanProposal`/metadata construction,
+   `PlannerStats`, and `assemble_stored_plan_proposal` including its validation.
+3. It ends immediately after the optional `StoredPlanProposal` or terminal
+   no-proposal result is fully constructed. Runtime status mapping, generation
+   commit, completion-queue capture, Protobuf/JSON serialization, persistence,
+   logging, metrics snapshotting, and benchmark-artifact construction are outside
+   the scope.
+
+One successful call to an allocation function counts once and adds its requested
+byte size; reallocations count as the actual allocation calls/bytes performed.
+Frees, retained capacity, and bytes allocated before scope entry do not reduce
+the totals. The same start/end boundary defines the planner-latency histogram
+used for Phase 18 comparison. Process-wide allocator/RSS/perf measurements may
+be reported as supplemental diagnostics but cannot replace the scoped acceptance
+numbers.
+
+The fixed baseline suite is `planner-allocation-v1`. It runs in the pinned
+`RelWithDebInfo` C++ image with one planner worker and no concurrent provider,
+transport, logging, or cache activity. It uses the same deterministic feasible
+fixture and seed `1` at suffix sizes `4, 8, 16, 32, 64`, with beam width `32`,
+`max_candidates = 4096`, `max_expansions = 16384`, and a 60-second benchmark-only
+attempt deadline that must never be hit. Each process performs 10 excluded
+warm-up attempts and 200 measured attempts per suffix size using the same
+worker-owned `PlannerScratch`; five independent process runs produce five raw
+artifacts per baseline or candidate. A result/proposal canonical digest is
+checked on every attempt so an optimization cannot trade correctness or search
+work for allocation reduction. Baseline and candidate artifacts must have equal
+dimensions except for explicit `variant` and build identity, and aggregation
+compares corresponding suffix-size groups rather than combining them.
+
+Immediately before the first Phase 18 change, the unoptimized correctness-passing
+Phase 17 build is measured and its actual calls/replan, bytes/replan, latency
+percentiles, throughput, artifact run ids, and SHA-256 digests are recorded in
+`plans/summaries/optimizations.md`; no absolute baseline number is invented in a
+plan. The Phase 18 candidate target is quantitative:
+
+- across the five suffix-size groups with equal operation weighting, allocation
+  calls per replan are at most 50% of baseline and allocated bytes per replan are
+  at most 60% of baseline;
+- no individual suffix-size group may increase calls/replan, bytes/replan, or
+  planner p99 to a worse fixed histogram bucket;
+- aggregate completed-operations throughput is at least 95% of baseline, no
+  attempt hits its deadline, allocation-scope overflow is zero, and canonical
+  result digests and all correctness tests remain identical.
+
+If the aggregate target is not reached, Phase 18 is not represented as a measured
+success. Individual experiments may still be retained only when their own
+compatible artifacts show a reduction in calls or bytes, no worse p99 bucket,
+throughput at least 95% of their baseline, and a maintainability reason recorded
+in the optimization ledger. Neutral, rejected, or reverted experiments remain in
+that ledger with their measurements; illustrative numbers in older planning text
+are never substituted for actual artifacts.
+
+## Phase 19 Data Layout, Benchmark, and Profiling Contract
+
+Phase 19 changes only the private in-memory representation used by planner hot
+loops. `BeamSearchInput`, `PlanningActivity`, domain objects, proposal output,
+the lexicographic objective, candidate set/order, budgets, and every wire or
+storage contract remain unchanged. The accepted Phase 18 build is the Phase 19
+array-of-structures baseline.
+
+The candidate implementation is an internal `PlannerActivityColumns` owned and
+reused by one planner worker's `PlannerScratch`. It is built exactly once after
+`BeamSearchInput::is_valid()` succeeds and before initial scoring. Public
+standalone generation/scoring entry points may build a temporary equivalent
+view, but the beam candidate loop uses the one prepared view and performs no
+conversion back to `PlanningActivity`. Proposal reconstruction may read the
+original input after search completes.
+
+For `N` remaining activities, all per-activity columns have exactly `N` entries
+in authoritative suffix order:
+
+- `activity_ids` (`ActivityId`), `original_trip_ordinals` (`size_t`), and
+  `matrix_location_indices` (`size_t`, exactly the activity index plus one);
+- `priority_ranks` and `utility_scores` (`int32`);
+- `minimum_duration_ms`, `scheduled_duration_ms`, `preferred_duration_ms`, and
+  `maximum_duration_ms` (`int64`). Scheduled duration is the exact current-plan
+  interval for a scheduled activity; otherwise it is
+  `max(1, preferred_duration_seconds) * 1000`. Every seconds-to-milliseconds
+  conversion is checked. These columns preserve duration validation and do not
+  authorize shortening;
+- `earliest_open_ms`, `latest_close_ms`, `baseline_start_ms`,
+  `baseline_end_ms`, `reservation_start_ms`, `reservation_latest_start_ms`, and
+  `mandatory_deadline_ms` (`int64`). An absent optional value stores zero and is
+  read only when its corresponding flag is set;
+- `flags` (`uint16`) with fixed bits: bit 0 baseline scheduled, bit 1 mandatory,
+  bit 2 movable, bit 3 skippable, bit 4 reservation present, bit 5 mandatory
+  deadline present, and bit 6 found closed. Other bits are zero in V1.
+
+Because an activity can have multiple open windows, earliest/latest columns are
+only rejection bounds. Exact feasibility uses flattened `window_opens_ms` and
+`window_closes_ms` (`int64`) plus `window_offsets` (`size_t`) of length `N + 1`;
+activity `i` owns the half-open range `[window_offsets[i],
+window_offsets[i + 1])`. Opens/closes remain paired, sorted, nonoverlapping, and
+equivalent to the normalized input. An empty range stores zero in that
+activity's earliest/latest columns, and those bounds are not read. Parallel
+`sorted_ordinals` (`size_t`) and `sorted_activity_indices` (`uint8`) vectors have
+`N` entries and provide binary ordinal lookup without imposing a new numeric
+limit on the stable ordinal; the index vector also defines increasing
+original-trip-ordinal expansion order. All column/window vectors reuse worker
+capacity and are cleared without releasing it between attempts. No column owns
+strings, provider objects, Protobuf, JSON, or database state.
+`TravelTimeMatrix` remains the separate immutable row-major matrix.
+
+Only generator feasibility, protected-activity lower-bound evaluation, ordinal/
+matrix-index lookup, scoring, and beam expansion may consume the column view.
+Candidate/result types and deterministic comparators do not change. Batch
+scoring is permitted only for siblings already emitted in normative order and
+must produce the same score and retention order as scalar scoring. Explicit
+prefetch or vectorization is optional, must be isolated behind an internal
+implementation path, and is retained only under the same evidence gate; Phase
+19 does not require either technique when the compiler/profile does not support
+it.
+
+Phase 19 has two schema-validated benchmark names. Both reuse the exact
+`planner-allocation-v1` fixture, seed, suffix sizes `4, 8, 16, 32, 64`, beam
+width `32`, `max_candidates = 4096`, `max_expansions = 16384`, 60-second
+benchmark-only deadline, single planner worker, planner boundary, result digest,
+and isolation rules. Their required `parameters` include `variant`
+(`aos-baseline` or `soa-candidate`), `layout_version` (`aos-v1` or `soa-v1`),
+`suffix_size`, all three search limits, `attempt_deadline_ms`, and
+`result_digest`.
+
+- `planner-layout-timing-v1` performs 10 excluded warmups and 200 measured
+  attempts per suffix in each of five independent processes. It emits planner
+  latency, elapsed/completed operations, allocation calls/bytes/overflows,
+  deadline misses, expansions, and admitted candidates. The profiler is not
+  active during timing.
+- `planner-layout-profile-v1` performs one excluded warmup and one instrumented
+  attempt per suffix in each of three independent processes. It emits
+  expansions/candidates plus Callgrind totals normalized into
+  `profile_instructions = Ir`, `profile_data_references = Dr + Dw`,
+  `profile_l1d_misses = D1mr + D1mw`, `profile_ll_data_misses = DLmr + DLmw`,
+  `profile_branches = Bc + Bi`, and `profile_branch_misses = Bcm + Bim`, using
+  checked `uint64` addition. Its parameters also contain `profiler_name =
+  callgrind`, `profiler_version = 3.22.0`, and fixed cache geometry. It requires
+  a `callgrind` attachment containing the retained raw file's relative path and
+  SHA-256. Profiled wall time is diagnostic only and is never compared with
+  native timing.
+
+The reproducible profiler stage derives from the locked amd64 C++ tool image and
+extracts, without host installation or an unpinned `apt install`, Ubuntu
+`valgrind_3.22.0-0ubuntu3_amd64.deb` whose SHA-256 is
+`744e081e5cf3d5c598b499dbb7d2250ea3f2869dde4a4d7b231fe6114f347d7d`.
+The implementation records the built profiler-image digest in
+`config/tool-images.lock` before accepting evidence. The invocation is exactly:
+
+```text
+valgrind --tool=callgrind --cache-sim=yes --branch-sim=yes
+  --instr-atstart=no --collect-atstart=no
+  --I1=32768,8,64 --D1=32768,8,64 --LL=8388608,16,64
+  --callgrind-out-file=ARTIFACT PROFILE_BENCHMARK_ARGUMENTS
+```
+
+The benchmark uses `CALLGRIND_START_INSTRUMENTATION` immediately before the
+Phase 18 planner boundary and `CALLGRIND_STOP_INSTRUMENTATION` immediately after
+it. Profiling runs with network disabled, one process/worker, and no provider,
+transport, cache, logging, or artifact-writing activity inside collection.
+Missing events, more than one `events`/`summary` set, counter overflow, a
+nonzero Valgrind exit, or a raw-file digest mismatch invalidates the run. The
+pinned GCC build also emits one vectorization report for planner translation
+units with `-fopt-info-vec-optimized-missed`; its compiler version, command, file
+digest, and findings are recorded in `plans/summaries/optimizations.md`. Native
+`perf`, Heaptrack, and flame graphs may supplement diagnosis but are neither
+required nor accepted in place of these artifacts.
+
+Baseline and candidate must have identical result digests and identical summed
+expansion/candidate counts for each suffix; zero admitted candidates invalidates
+a profile run. A data-layout change is retained only when all of these gates
+pass, using checked integer cross-multiplication rather than rounded displayed
+rates. When a guarded baseline counter is zero, the candidate counter must also
+be zero:
+
+- combined native completed-operation throughput for suffix sizes `16, 32, 64`
+  is at least 105% of baseline; every individual suffix retains at least 95% of
+  baseline throughput and has no worse planner p99 histogram bucket;
+- across profiled suffix sizes `16, 32, 64`, admitted-candidate-weighted L1 data
+  misses per candidate are at most 90% of baseline, or instructions per
+  candidate are at most 95% of baseline;
+- instructions, data references, L1 data misses, last-level data misses, and
+  branch misses per candidate each remain at most 105% of baseline for every
+  individual suffix;
+- allocation calls and bytes per operation do not exceed 105% of the accepted
+  Phase 18 build, deadline misses and allocation-scope overflows remain zero,
+  canonical results match, and all planner/correctness tests pass.
+
+If these gates do not pass, Phase 19 is completed as a measured neutral or
+rejected experiment: the SoA/prefetch/vectorization change is reverted, the
+existing representation remains authoritative, and the actual artifacts and
+reason are recorded in the optimization ledger. A neutral result is useful
+evidence but is not described as an optimization.
+
+## Phase 20 Tail-Latency Experiment Contract
+
+Phase 20 does not change search budgets, provider timeouts, queue priorities,
+cache warmup, user-visible results, or overload/status behavior without a
+separate contract decision. Its initial V1 scope is three independent,
+semantics-preserving AoS planner experiments against the accepted post-Phase-19
+serving path:
+
+1. `validated-input`: after `run_beam_search` validates its immutable input once,
+   internal candidate generation, lower-bound generation, and child scoring omit
+   repeated full-input validation; public standalone generation/scoring continues
+   to validate every call;
+2. `lower-bound-scratch`: the protected-activity lower-bound check reuses a
+   worker-owned byte bitmap instead of allocating a new bitmap per child;
+3. `partial-beam-selection`: when hard-feasible children exceed `beam_width`,
+   `partial_sort` orders exactly the retained prefix under the unchanged total
+   comparator instead of sorting discarded children. At or below the width, the
+   existing full sort remains.
+
+An internal three-bit benchmark mask selects these experiments: bit 0 is
+`validated-input`, bit 1 is `lower-bound-scratch`, and bit 2 is
+`partial-beam-selection`. Serving uses only the bits retained by evidence. The
+mask affects computation strategy only; every mask must produce identical
+outcome, decisions, score, result digest, expansion count, candidate count,
+truncation/deadline/cancellation flags, and budget behavior.
+
+`planner-tail-v1` reuses the Phase 19 native fixture, planner boundary, suffix
+sizes `4, 8, 16, 32, 64`, seed `1`, beam `32`, `max_candidates = 4096`,
+`max_expansions = 16384`, 60-second benchmark-only deadline, 10 excluded warmups,
+200 measured attempts, and five independent processes per variant. Variants are
+`tail-baseline` (mask 0), `validated-input` (mask 1),
+`lower-bound-scratch` (mask 2), `partial-beam-selection` (mask 4), and
+`combined-candidate` (mask 7, all three experiments together). Required
+counters are deadline misses, allocation calls/bytes/scope overflows,
+expansions, and candidates; the planner histogram and canonical result digest
+are required.
+
+An individual experiment is retained only when correctness/work counts match,
+deadlines and scope overflows remain zero, every suffix preserves at least 95%
+of baseline throughput with no worse p99 bucket, neither allocation measure
+exceeds 105% of baseline, and at least one material benefit occurs: combined
+suffix-16/32/64 throughput reaches 102% of baseline, a suffix of size 8 or larger
+improves by at least one p99 bucket, or one allocation measure falls to at most
+95% while combined throughput remains at least 98%. Comparisons use summed
+primitives and checked integer cross-multiplication.
+
+The mask-7 combined candidate is measured independently against mask 0 to
+detect interactions. It must preserve all correctness/work/deadline/allocation
+guards, have no worse per-suffix p99 bucket or throughput below 95%, and provide
+at least one of the same material benefits. A bit failing its individual gate
+cannot be rescued by mask 7. The serving candidate is the OR of individually
+retained bits; if that is a nonzero subset other than mask 7, measure that exact
+subset as an additional `combined-candidate` five-process variant and apply the
+same combined gates. Mask 0 needs no duplicate measurement. A failed individual
+or combined experiment is disabled in serving and recorded as neutral/rejected.
+Phase 20 may truthfully complete with fewer than three retained changes, but
+documentation must say that three targeted experiments were measured rather
+than claiming three improvements. Existing many-trips, hot-trip, bursty-GPS,
+and provider-timeout load checks must still pass to verify bounded rejection/
+coalescing/cancellation; their instrumented p99 is reported by stage and never
+blended with planner-only latency.
+
+## V1 Route-Cache Policy
+
+Phase 17 caches individual raw provider `RouteEstimate` pairs outside the planner
+and assembles an immutable `TravelTimeMatrix` after lookup/fill. Trip-specific
+delay overlays and planner state are not cached. The policy identifier is
+`liveroute-route-cache-v1` and is included in benchmark dimensions.
+
+The key is the tuple `(origin_cell, destination_cell,
+departure_time_bucket, travel_mode, provider_dataset_version)`:
+
+- A coordinate cell is two signed E5 integers. Each latitude/longitude is
+  multiplied by `100000` and rounded to the nearest integer, with exact halves
+  rounded away from zero after finite/range validation. Missing pairs are fetched
+  using those E5 grid-point coordinates divided by `100000`, so cache contents do
+  not depend on which request first populated a cell. The maximum per-axis
+  displacement is `0.000005` degree. The compact key never stores the original
+  floating-point coordinate.
+- The generic time-dependent-provider bucket is
+  `floor(departure_unix_ms / 900000)` (15 UTC minutes), using mathematical floor
+  for pre-epoch values. The pinned V1 OSRM Table provider is time-independent and
+  therefore always uses the reserved bucket `0`; it must not create artificial
+  misses as wall time advances.
+- `travel_mode` distinguishes driving and walking. The exact locked OSRM dataset
+  version/profile identity is part of `provider_dataset_version`; a different
+  dataset or profile cannot hit an old entry.
+
+At startup, distinct exact provider dataset/profile identity strings are sorted
+by UTF-8 bytes and assigned bounded nonzero `uint32` namespace ids; V1 has only
+the car and foot identities. The cache retains that complete id-to-string table,
+so a compact entry key stores the namespace id without accepting hash collisions
+as identity. Hash input is the full key encoded as two's-complement big-endian
+origin/destination E5 `int32` components, big-endian departure-bucket `int64`,
+one-byte travel mode (`1` walking, `2` driving), matching the V1 wire enum, and
+big-endian namespace
+`uint32`. FNV-1a-64 with offset basis `14695981039346656037` and prime
+`1099511628211` hashes those bytes; `hash % shard_count` selects ownership. Full
+key equality still resolves hash collisions. Namespace-table storage counts
+toward the memory bound, and a provider-identity/config reload constructs a new
+empty cache rather than reinterpreting old namespace ids.
+
+The initial local configuration added with the cache implementation is exact:
+
+```yaml
+route_cache:
+  enabled: true
+  policy_version: liveroute-route-cache-v1
+  shard_count: 16
+  max_entries: 131072
+  max_bytes: 67108864
+  coordinate_scale: 100000
+  time_bucket_seconds: 900
+  fresh_ttl_seconds: 21600
+  stale_if_error_max_age_seconds: 86400
+  eviction_scan_limit: 64
+```
+
+The cache is process-local, non-persistent, and starts empty. Hashing the complete
+key selects one of 16 shards; a shard owns its lock, entries, byte/entry budget,
+and second-chance clock hand. The global entry/byte bounds are divided equally
+between shards and startup fails if the configured fixed storage plus index and
+eviction metadata exceeds `max_bytes`. Keys, values, timestamps, occupancy, and
+eviction metadata all count toward the byte bound. No untracked per-entry heap
+allocation or unbounded auxiliary index is allowed.
+
+An inserted successful reachable or unreachable estimate is fresh for 21,600
+seconds from `inserted_at` measured by monotonic time. Hits do not extend this
+deadline. Provider failures and malformed/partial matrices are never cached.
+Fresh lookup is bounded; an expired entry behaves as a miss but may remain for
+stale fallback until its total age exceeds 86,400 seconds. Insertion first reuses
+an empty or over-age slot. Otherwise the per-shard second-chance hand examines at
+most 64 slots, clears encountered reference bits, evicts the first unreferenced
+slot, and, if all 64 were referenced, evicts the 64th slot. Thus eviction work is
+bounded even under a fully hot cache. Concurrent misses are allowed to issue
+duplicate provider requests; the existing bounded provider executor/concurrency
+limit is the V1 stampede bound, and no unbounded waiter/single-flight table is
+introduced.
+
+For a matrix request, all fresh pair hits are retained. If any pair misses, form
+the ordered unique set of source cells having at least one miss and destination
+cells having at least one miss, then make one OSRM Table request for their
+sources-by-destinations cross-product using canonical E5 representatives. This
+may refresh extra pairs from that bounded cross-product; every returned valid
+pair is inserted. It never makes one provider request per missing pair. The
+result is successful only when every required pair is freshly hit or successfully
+fetched. If that provider request returns
+`PROVIDER_UNAVAILABLE`, the adapter may instead use stale entries only when every
+otherwise-missing pair has an entry no older than 86,400 seconds; the whole result
+then returns `OK` with `routing_quality = STALE_CACHE`. Stale data is not used for
+`CANCELLED`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `MATRIX_TOO_LARGE`,
+`INVALID_ARGUMENT`, or `INTERNAL`, is never mixed with an incomplete matrix, and
+use does not refresh its age. A dataset/profile version change constructs a new
+empty cache after provider readiness succeeds; no old entry is reinterpreted
+under a new namespace.
+
+Metrics separately count fresh hits, misses, stale-fallback hits, insertions, and
+evictions, and report lookup latency and current/maximum logical bytes and entry
+count. Cache-hit p99 and OSRM-backed p99 are separate benchmark histograms; a
+mixed total may be shown only in addition to, never instead of, those two paths.
 
 ## Compatibility Mechanism
 
@@ -1137,6 +1641,30 @@ In addition to the existing planner/runtime/OSRM tests, V1 requires:
 - seeded-hours readiness tests cover a gap/fold beyond the last explicit TZif transition via POSIX-footer recurrence, an ambiguous next-day close resolved by the preceding opening-date exception, the upper requestable-date boundary, and defensive post-readiness `INVALID_SOURCE`/`NOT_SERVING` behavior;
 - US DST nonexistent/ambiguous time, explicit fall-back offset, Arizona/Hawaii non-DST behavior, overnight hours, exceptional closures, source-version changes, and exact UTC window coalescing normalize correctly;
 - OSRM `Ok`/null, `NoTable`, `NoSegment`, `TooBig`, every invalid-request code, `NotImplemented`, unknown code, HTTP 429/4xx/5xx, malformed JSON, wrong dimensions, mismatched nulls, nonfinite/negative/overflow numbers, timeout, cancellation, queue/byte/location limits map to the exact table above;
+- benchmark raw/aggregate JSON schemas reject missing dimensions, unknown metric
+  names, malformed bucket shapes, duplicate run ids, overflow, zero elapsed time,
+  and incompatible aggregation; golden tests prove merged-bucket percentile,
+  summed-throughput/rate, latest-gauge, and input-order behavior;
+- planner-allocation tests cover every global allocation-function form, inactive
+  and unrelated-thread exclusion, nested-scope/overflow invalidation, exact scope
+  boundaries, scratch warm-up exclusion, allocation/byte accounting, identical
+  canonical result digests, and baseline/candidate target evaluation;
+- planner-layout tests cover every column/flag and absent-value encoding,
+  multiple/empty flattened-window ranges, capacity reuse, input/view equivalence,
+  scalar-versus-column generation/scoring/lower-bound/search equivalence, exact
+  candidate/expansion counts, and unchanged interruption/budget behavior;
+- Phase 19 benchmark/profile tests reject layout/variant mismatches, missing or
+  duplicated Callgrind event sets, unchecked event sums, wrong simulated-cache
+  geometry/tool version, raw-profile digest mismatch, profiled timing used as
+  native evidence, and every failed retention guard; a golden Callgrind fixture
+  proves exact event-name mapping and checked ratio comparison;
+- route-cache tests cover positive/unreachable entries, exact E5 half rounding
+  including negative coordinates, pre-epoch 15-minute floor buckets, OSRM bucket
+  zero, canonical key bytes/FNV hash/shard selection, mode/dataset namespace
+  isolation and reload, fresh/expired/over-age boundaries, no TTL refresh
+  on hit, bounded second-chance eviction, byte/entry limits, partial-hit
+  cross-product fill, concurrent duplicate misses, and exact allowed/forbidden
+  stale-fallback statuses with complete-matrix enforcement;
 - invalid/zero/unbounded/inconsistent configuration fails startup;
 - shutdown while a durable response, finalization confirmation, snapshot, provider request, and planner job are in flight either drains within the deadline or leaves recoverable outbox state;
 - Protobuf baseline and JSON corpus cover `CurrentPlan`, `PlanProposal`, canonical-first `TripEdited`/`CurrentPlanReplaced`, `create_trip`, `trip_edited`, `replace_current_plan`, proposal decisions, and `MATRIX_TOO_LARGE`; pinned generated C++ output, JSON schema manifest/digest/corpus, hours-seed schema/semantics, and previous database migration compatibility checks run in the standard check target.

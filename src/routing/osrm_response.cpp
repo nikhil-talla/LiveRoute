@@ -253,16 +253,18 @@ using OptionalNumberMatrix = std::vector<std::vector<std::optional<double>>>;
 
 std::optional<OptionalNumberMatrix> matrix_member(
     const JsonValue::Object& value, std::string_view key,
-    std::size_t expected_location_count) {
+    std::size_t expected_row_count, std::size_t expected_column_count) {
   const auto iterator = value.find(key);
   if (iterator == value.end()) return std::nullopt;
   const auto* rows = std::get_if<JsonValue::Array>(&iterator->second.value);
-  if (rows == nullptr || rows->size() != expected_location_count) return std::nullopt;
+  if (rows == nullptr || rows->size() != expected_row_count) return std::nullopt;
   OptionalNumberMatrix result;
   result.reserve(rows->size());
   for (const auto& row_value : *rows) {
     const auto* row = std::get_if<JsonValue::Array>(&row_value.value);
-    if (row == nullptr || row->size() != expected_location_count) return std::nullopt;
+    if (row == nullptr || row->size() != expected_column_count) {
+      return std::nullopt;
+    }
     auto& output_row = result.emplace_back();
     output_row.reserve(row->size());
     for (const auto& cell : *row) {
@@ -284,64 +286,80 @@ TravelTimeLookupResult provider_error(TravelTimeProviderError error) {
 
 }  // namespace
 
-TravelTimeLookupResult parse_osrm_table_response(
-    std::string_view response, std::size_t expected_location_count) {
-  if (expected_location_count == 0 ||
-      expected_location_count > std::numeric_limits<std::size_t>::max() /
-                                    expected_location_count) {
-    return provider_error(TravelTimeProviderError::kProviderUnavailable);
+const domain::RouteEstimate& OsrmTableGrid::at(std::size_t row,
+                                                std::size_t column) const {
+  if (row >= row_count || column >= column_count) {
+    throw std::out_of_range("OSRM table grid index out of range");
+  }
+  return estimates[row * column_count + column];
+}
+
+OsrmTableGridResult parse_osrm_table_response_grid(
+    std::string_view response, std::size_t expected_row_count,
+    std::size_t expected_column_count) {
+  if (expected_row_count == 0 || expected_column_count == 0 ||
+      expected_row_count > std::numeric_limits<std::size_t>::max() /
+                               expected_column_count) {
+    return TravelTimeProviderError::kProviderUnavailable;
   }
   try {
     const auto root = JsonParser{response}.parse();
     const auto* root_object = object(root);
     if (root_object == nullptr) {
-      return provider_error(TravelTimeProviderError::kProviderUnavailable);
+      return TravelTimeProviderError::kProviderUnavailable;
     }
     const auto* code = string_member(*root_object, "code");
     if (code == nullptr) {
-      return provider_error(TravelTimeProviderError::kProviderUnavailable);
+      return TravelTimeProviderError::kProviderUnavailable;
     }
+    const auto entry_count = expected_row_count * expected_column_count;
     if (*code == "NoTable") {
       std::vector<domain::RouteEstimate> estimates(
-          expected_location_count * expected_location_count);
-      for (std::size_t index = 0; index < expected_location_count; ++index) {
-        estimates[index * expected_location_count + index].reachable = true;
+          entry_count, domain::RouteEstimate{.duration = {},
+                                              .distance_meters = 0,
+                                              .reachable = false});
+      if (expected_row_count == expected_column_count) {
+        for (std::size_t index = 0; index < expected_row_count; ++index) {
+          estimates[index * expected_column_count + index].reachable = true;
+        }
       }
-      return TravelTimeLookupResult{domain::TravelTimeMatrix{
-          expected_location_count, std::move(estimates)}};
+      return OsrmTableGrid{expected_row_count, expected_column_count,
+                           std::move(estimates), true};
     }
     if (*code == "NoSegment") {
-      return provider_error(TravelTimeProviderError::kProviderUnavailable);
+      return TravelTimeProviderError::kProviderUnavailable;
     }
     if (*code == "TooBig") {
-      return provider_error(TravelTimeProviderError::kMatrixTooLarge);
+      return TravelTimeProviderError::kMatrixTooLarge;
     }
     if (*code == "InvalidUrl" || *code == "InvalidService" ||
         *code == "InvalidVersion" || *code == "InvalidOptions" ||
         *code == "InvalidQuery" || *code == "InvalidValue" ||
         *code == "NotImplemented") {
-      return provider_error(TravelTimeProviderError::kInternal);
+      return TravelTimeProviderError::kInternal;
     }
     if (*code != "Ok") {
-      return provider_error(TravelTimeProviderError::kInternal);
+      return TravelTimeProviderError::kInternal;
     }
-    const auto durations = matrix_member(
-        *root_object, "durations", expected_location_count);
-    const auto distances = matrix_member(
-        *root_object, "distances", expected_location_count);
+    const auto durations = matrix_member(*root_object, "durations",
+                                         expected_row_count,
+                                         expected_column_count);
+    const auto distances = matrix_member(*root_object, "distances",
+                                         expected_row_count,
+                                         expected_column_count);
     if (!durations.has_value() || !distances.has_value()) {
-      return provider_error(TravelTimeProviderError::kProviderUnavailable);
+      return TravelTimeProviderError::kProviderUnavailable;
     }
     std::vector<domain::RouteEstimate> estimates;
-    estimates.reserve(expected_location_count * expected_location_count);
+    estimates.reserve(entry_count);
     constexpr auto max_uint32 =
         static_cast<double>(std::numeric_limits<std::uint32_t>::max());
-    for (std::size_t row = 0; row < expected_location_count; ++row) {
-      for (std::size_t column = 0; column < expected_location_count; ++column) {
+    for (std::size_t row = 0; row < expected_row_count; ++row) {
+      for (std::size_t column = 0; column < expected_column_count; ++column) {
         const auto duration = (*durations)[row][column];
         const auto distance = (*distances)[row][column];
         if (duration.has_value() != distance.has_value()) {
-          return provider_error(TravelTimeProviderError::kProviderUnavailable);
+          return TravelTimeProviderError::kProviderUnavailable;
         }
         if (!duration.has_value()) {
           estimates.push_back({std::chrono::seconds::zero(), 0, false});
@@ -350,18 +368,30 @@ TravelTimeLookupResult parse_osrm_table_response(
         if (*duration < 0.0 || *distance < 0.0 ||
             std::ceil(*duration) > max_uint32 ||
             std::ceil(*distance) > max_uint32) {
-          return provider_error(TravelTimeProviderError::kProviderUnavailable);
+          return TravelTimeProviderError::kProviderUnavailable;
         }
         estimates.push_back({
             std::chrono::seconds{static_cast<std::uint32_t>(std::ceil(*duration))},
             static_cast<std::uint32_t>(std::ceil(*distance)), true});
       }
     }
-    return TravelTimeLookupResult{domain::TravelTimeMatrix{
-        expected_location_count, std::move(estimates)}};
+    return OsrmTableGrid{expected_row_count, expected_column_count,
+                         std::move(estimates), false};
   } catch (const std::exception&) {
-    return provider_error(TravelTimeProviderError::kProviderUnavailable);
+    return TravelTimeProviderError::kProviderUnavailable;
   }
+}
+
+TravelTimeLookupResult parse_osrm_table_response(
+    std::string_view response, std::size_t expected_location_count) {
+  const auto parsed = parse_osrm_table_response_grid(
+      response, expected_location_count, expected_location_count);
+  if (const auto* error = std::get_if<TravelTimeProviderError>(&parsed)) {
+    return provider_error(*error);
+  }
+  const auto& grid = std::get<OsrmTableGrid>(parsed);
+  return TravelTimeLookupResult{domain::TravelTimeMatrix{
+      grid.row_count, grid.estimates}};
 }
 
 bool is_recognized_osrm_error_response(std::string_view response) {

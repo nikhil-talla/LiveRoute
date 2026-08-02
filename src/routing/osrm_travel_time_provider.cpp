@@ -40,7 +40,9 @@ void append_double(std::string& output, double value) {
 }
 
 std::string make_url(std::string_view endpoint, std::string_view profile,
-                     std::span<const domain::Location> locations) {
+                     std::span<const domain::Location> locations,
+                     std::span<const std::size_t> sources,
+                     std::span<const std::size_t> destinations) {
   std::string result{endpoint};
   if (result.back() == '/') result.pop_back();
   result.append("/table/v1/").append(profile).push_back('/');
@@ -52,7 +54,19 @@ std::string make_url(std::string_view endpoint, std::string_view profile,
     result.push_back(',');
     append_double(result, location.latitude);
   }
-  result.append("?annotations=duration,distance");
+  result.append("?sources=");
+  const auto append_indexes = [&result](std::span<const std::size_t> indexes) {
+    bool first_index = true;
+    for (const auto index : indexes) {
+      if (!first_index) result.push_back(';');
+      first_index = false;
+      result.append(std::to_string(index));
+    }
+  };
+  append_indexes(sources);
+  result.append("&destinations=");
+  append_indexes(destinations);
+  result.append("&annotations=duration,distance");
   return result;
 }
 
@@ -132,8 +146,14 @@ class OsrmTravelTimeProvider::Impl {
         config_.max_encoded_request_bytes == 0 || config_.max_response_bytes == 0 ||
         config_.per_profile_concurrency == 0 || config_.connect_timeout.count() <= 0 ||
         config_.request_timeout.count() <= 0 ||
-        config_.connect_timeout > config_.request_timeout) {
+        config_.connect_timeout > config_.request_timeout ||
+        (config_.route_cache.has_value() && config_.dataset_version.empty())) {
       throw std::invalid_argument("invalid OSRM provider configuration");
+    }
+    if (config_.route_cache.has_value() && config_.route_cache->enabled) {
+      cache_.emplace(*config_.route_cache,
+                     std::vector<std::string>{config_.dataset_version + ":car",
+                                              config_.dataset_version + ":foot"});
     }
     car_slots_.reserve(config_.per_profile_concurrency);
     foot_slots_.reserve(config_.per_profile_concurrency);
@@ -183,18 +203,216 @@ class OsrmTravelTimeProvider::Impl {
       default:
         return provider_error(TravelTimeProviderError::kInvalidArgument);
     }
-    const auto url = make_url(endpoint, profile, locations);
-    if (url.size() > config_.max_encoded_request_bytes) {
-      return provider_error(TravelTimeProviderError::kMatrixTooLarge);
+    if (!cache_.has_value()) {
+      std::vector<std::size_t> indexes(locations.size());
+      for (std::size_t index = 0; index < indexes.size(); ++index) {
+        indexes[index] = index;
+      }
+      const auto url = make_url(endpoint, profile, locations, indexes, indexes);
+      if (url.size() > config_.max_encoded_request_bytes) {
+        return provider_error(TravelTimeProviderError::kMatrixTooLarge);
+      }
+      auto lease = acquire(*slots);
+      if (lease.slot == nullptr) {
+        return provider_error(TravelTimeProviderError::kResourceExhausted);
+      }
+      const auto result = perform(*lease.slot, url, locations.size(),
+                                  locations.size(), deadline, stop_token);
+      if (const auto* error = std::get_if<TravelTimeProviderError>(&result)) {
+        return provider_error(*error);
+      }
+      const auto& grid = std::get<OsrmTableGrid>(result);
+      return TravelTimeLookupResult{domain::TravelTimeMatrix{
+          grid.row_count, grid.estimates}};
     }
-    auto lease = acquire(*slots);
-    if (lease.slot == nullptr) {
-      return provider_error(TravelTimeProviderError::kResourceExhausted);
-    }
-    return perform(*lease.slot, url, locations.size(), deadline, stop_token);
+    return get_matrix_cached(locations, mode, endpoint, profile, *slots,
+                             deadline, stop_token);
   }
 
  private:
+  struct Cell {
+    std::int32_t latitude_e5{};
+    std::int32_t longitude_e5{};
+
+    friend bool operator==(const Cell&, const Cell&) = default;
+  };
+
+  static Cell cell_for(const domain::Location& location) {
+    const auto latitude = RouteMatrixCache::coordinate_e5(location.latitude);
+    const auto longitude =
+        RouteMatrixCache::coordinate_e5(location.longitude);
+    if (!latitude.has_value() || !longitude.has_value()) {
+      throw std::invalid_argument("location cannot be encoded for route cache");
+    }
+    return Cell{*latitude, *longitude};
+  }
+
+  static domain::Location location_for(Cell cell) {
+    return {.latitude = static_cast<double>(cell.latitude_e5) / 100000.0,
+            .longitude = static_cast<double>(cell.longitude_e5) / 100000.0};
+  }
+
+  static std::size_t find_cell(const std::vector<Cell>& cells, Cell cell) {
+    const auto found = std::find(cells.begin(), cells.end(), cell);
+    return static_cast<std::size_t>(found - cells.begin());
+  }
+
+  RouteCacheKey cache_key(Cell origin, Cell destination,
+                          domain::TravelMode mode) const {
+    const auto identity = config_.dataset_version +
+                           (mode == domain::TravelMode::kDriving ? ":car"
+                                                                  : ":foot");
+    return {.origin_latitude_e5 = origin.latitude_e5,
+            .origin_longitude_e5 = origin.longitude_e5,
+            .destination_latitude_e5 = destination.latitude_e5,
+            .destination_longitude_e5 = destination.longitude_e5,
+            .departure_bucket = 0,
+            .travel_mode = mode,
+            .provider_namespace = cache_->provider_namespace(identity)};
+  }
+
+  TravelTimeLookupResult get_matrix_cached(
+      std::span<const domain::Location> locations, domain::TravelMode mode,
+      std::string_view endpoint, std::string_view profile,
+      std::vector<std::unique_ptr<CurlSlot>>& slots,
+      domain::Deadline deadline, std::stop_token stop_token) {
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<Cell> cells;
+    cells.reserve(locations.size());
+    for (const auto& location : locations) cells.push_back(cell_for(location));
+
+    const auto cell_key = [&](std::size_t origin, std::size_t destination) {
+      return cache_key(cells[origin], cells[destination], mode);
+    };
+    std::vector<std::optional<domain::RouteEstimate>> assembled(
+        locations.size() * locations.size());
+    std::vector<Cell> source_cells;
+    std::vector<Cell> destination_cells;
+    bool has_miss = false;
+    for (std::size_t origin = 0; origin < locations.size(); ++origin) {
+      for (std::size_t destination = 0; destination < locations.size();
+           ++destination) {
+        const auto index = origin * locations.size() + destination;
+        assembled[index] = cache_->lookup_fresh(cell_key(origin, destination),
+                                                now);
+        if (assembled[index].has_value()) continue;
+        has_miss = true;
+        if (find_cell(source_cells, cells[origin]) == source_cells.size()) {
+          source_cells.push_back(cells[origin]);
+        }
+        if (find_cell(destination_cells, cells[destination]) ==
+            destination_cells.size()) {
+          destination_cells.push_back(cells[destination]);
+        }
+      }
+    }
+    if (!has_miss) {
+      std::vector<domain::RouteEstimate> estimates;
+      estimates.reserve(assembled.size());
+      for (const auto& estimate : assembled) estimates.push_back(*estimate);
+      return TravelTimeLookupResult{
+          domain::TravelTimeMatrix{locations.size(), std::move(estimates)}};
+    }
+
+    std::vector<Cell> combined_cells = source_cells;
+    for (const auto destination : destination_cells) {
+      if (find_cell(combined_cells, destination) == combined_cells.size()) {
+        combined_cells.push_back(destination);
+      }
+    }
+    std::vector<domain::Location> combined_locations;
+    combined_locations.reserve(combined_cells.size());
+    for (const auto cell : combined_cells) {
+      combined_locations.push_back(location_for(cell));
+    }
+    std::vector<std::size_t> source_indexes;
+    std::vector<std::size_t> destination_indexes;
+    source_indexes.reserve(source_cells.size());
+    destination_indexes.reserve(destination_cells.size());
+    for (const auto source : source_cells) {
+      source_indexes.push_back(find_cell(combined_cells, source));
+    }
+    for (const auto destination : destination_cells) {
+      destination_indexes.push_back(find_cell(combined_cells, destination));
+    }
+    const auto url = make_url(endpoint, profile, combined_locations,
+                              source_indexes, destination_indexes);
+    if (url.size() > config_.max_encoded_request_bytes) {
+      return provider_error(TravelTimeProviderError::kMatrixTooLarge);
+    }
+    auto lease = acquire(slots);
+    if (lease.slot == nullptr) {
+      return provider_error(TravelTimeProviderError::kResourceExhausted);
+    }
+    const auto result = perform(*lease.slot, url, source_cells.size(),
+                                destination_cells.size(), deadline,
+                                stop_token);
+    if (const auto* error = std::get_if<TravelTimeProviderError>(&result)) {
+      if (*error != TravelTimeProviderError::kProviderUnavailable) {
+        return provider_error(*error);
+      }
+      for (std::size_t origin = 0; origin < locations.size(); ++origin) {
+        for (std::size_t destination = 0; destination < locations.size();
+             ++destination) {
+          const auto index = origin * locations.size() + destination;
+          if (assembled[index].has_value()) continue;
+          assembled[index] = cache_->lookup_stale(
+              cell_key(origin, destination), now);
+          if (!assembled[index].has_value()) {
+            return provider_error(*error);
+          }
+        }
+      }
+      std::vector<domain::RouteEstimate> estimates;
+      estimates.reserve(assembled.size());
+      for (const auto& estimate : assembled) estimates.push_back(*estimate);
+      return TravelTimeLookupResult{
+          domain::TravelTimeMatrix{locations.size(), std::move(estimates)},
+          TravelTimeLookupQuality::kStaleCache};
+    }
+
+    const auto& grid = std::get<OsrmTableGrid>(result);
+    for (std::size_t source = 0; source < source_cells.size(); ++source) {
+      for (std::size_t destination = 0; destination < destination_cells.size();
+           ++destination) {
+        auto estimate = grid.at(source, destination);
+        if (grid.no_table && source_cells[source] == destination_cells[destination]) {
+          estimate = {.duration = std::chrono::seconds::zero(),
+                      .distance_meters = 0,
+                      .reachable = true};
+        }
+        cache_->insert(cache_key(source_cells[source], destination_cells[destination],
+                                 mode), estimate, now);
+      }
+    }
+    for (std::size_t origin = 0; origin < locations.size(); ++origin) {
+      for (std::size_t destination = 0; destination < locations.size();
+           ++destination) {
+        const auto index = origin * locations.size() + destination;
+        if (assembled[index].has_value()) continue;
+        const auto source = find_cell(source_cells, cells[origin]);
+        const auto target = find_cell(destination_cells, cells[destination]);
+        auto estimate = grid.at(source, target);
+        if (grid.no_table && cells[origin] == cells[destination]) {
+          estimate = {.duration = std::chrono::seconds::zero(),
+                      .distance_meters = 0,
+                      .reachable = true};
+        }
+        assembled[index] = estimate;
+      }
+    }
+    std::vector<domain::RouteEstimate> estimates;
+    estimates.reserve(assembled.size());
+    for (const auto& estimate : assembled) {
+      if (!estimate.has_value()) {
+        return provider_error(TravelTimeProviderError::kProviderUnavailable);
+      }
+      estimates.push_back(*estimate);
+    }
+    return TravelTimeLookupResult{
+        domain::TravelTimeMatrix{locations.size(), std::move(estimates)}};
+  }
+
   static SlotLease acquire(std::vector<std::unique_ptr<CurlSlot>>& slots) {
     for (auto& slot : slots) {
       std::unique_lock lock{slot->mutex, std::try_to_lock};
@@ -203,12 +421,13 @@ class OsrmTravelTimeProvider::Impl {
     return {};
   }
 
-  TravelTimeLookupResult perform(CurlSlot& slot, const std::string& url,
-                                 std::size_t location_count,
-                                 domain::Deadline deadline,
-                                 std::stop_token stop_token) {
+  OsrmTableGridResult perform(CurlSlot& slot, const std::string& url,
+                              std::size_t row_count,
+                              std::size_t column_count,
+                              domain::Deadline deadline,
+                              std::stop_token stop_token) {
     auto* easy = curl_easy_init();
-    if (easy == nullptr) return provider_error(TravelTimeProviderError::kInternal);
+    if (easy == nullptr) return TravelTimeProviderError::kInternal;
     struct EasyCleanup {
       CURL* value;
       ~EasyCleanup() { curl_easy_cleanup(value); }
@@ -237,7 +456,7 @@ class OsrmTravelTimeProvider::Impl {
                      static_cast<long>(total_timeout.count()));
 
     if (curl_multi_add_handle(slot.multi, easy) != CURLM_OK) {
-      return provider_error(TravelTimeProviderError::kInternal);
+      return TravelTimeProviderError::kInternal;
     }
     struct MultiRemoval {
       CURLM* multi;
@@ -254,7 +473,7 @@ class OsrmTravelTimeProvider::Impl {
       if (multi_code == CURLM_OK) multi_code = curl_multi_perform(slot.multi, &running);
     }
     if (multi_code != CURLM_OK) {
-      return provider_error(TravelTimeProviderError::kInternal);
+      return TravelTimeProviderError::kInternal;
     }
     CURLcode easy_code = CURLE_FAILED_INIT;
     int messages{};
@@ -265,41 +484,43 @@ class OsrmTravelTimeProvider::Impl {
       }
     }
     if (stop_token.stop_requested()) {
-      return provider_error(TravelTimeProviderError::kCancelled);
+      return TravelTimeProviderError::kCancelled;
     }
     if (std::chrono::steady_clock::now() >= deadline ||
         easy_code == CURLE_OPERATION_TIMEDOUT) {
-      return provider_error(TravelTimeProviderError::kDeadlineExceeded);
+      return TravelTimeProviderError::kDeadlineExceeded;
     }
     if (response.exceeded) {
-      return provider_error(TravelTimeProviderError::kResourceExhausted);
+      return TravelTimeProviderError::kResourceExhausted;
     }
     if (easy_code != CURLE_OK) {
-      return provider_error(TravelTimeProviderError::kProviderUnavailable);
+      return TravelTimeProviderError::kProviderUnavailable;
     }
 
     long status{};
     if (curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status) != CURLE_OK) {
-      return provider_error(TravelTimeProviderError::kInternal);
+      return TravelTimeProviderError::kInternal;
     }
-    const auto parsed = parse_osrm_table_response(response.body, location_count);
+    const auto parsed = parse_osrm_table_response_grid(
+        response.body, row_count, column_count);
     if (status == 429) {
-      return provider_error(TravelTimeProviderError::kResourceExhausted);
+      return TravelTimeProviderError::kResourceExhausted;
     }
     if (status >= 500) {
-      return provider_error(TravelTimeProviderError::kProviderUnavailable);
+      return TravelTimeProviderError::kProviderUnavailable;
     }
     if (status >= 400 && status < 500) {
       if (is_recognized_osrm_error_response(response.body)) return parsed;
-      return provider_error(TravelTimeProviderError::kInternal);
+      return TravelTimeProviderError::kInternal;
     }
     if (status < 200 || status >= 300) {
-      return provider_error(TravelTimeProviderError::kInternal);
+      return TravelTimeProviderError::kInternal;
     }
     return parsed;
   }
 
   OsrmTravelTimeProviderConfig config_;
+  std::optional<RouteMatrixCache> cache_;
   std::vector<std::unique_ptr<CurlSlot>> car_slots_;
   std::vector<std::unique_ptr<CurlSlot>> foot_slots_;
 };

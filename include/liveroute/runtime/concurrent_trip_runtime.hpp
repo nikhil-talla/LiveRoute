@@ -232,6 +232,7 @@ class ConcurrentTripRuntime {
   [[nodiscard]] RuntimeObservationMetrics observation_metrics() const noexcept;
   [[nodiscard]] RuntimeExecutionMetrics execution_metrics() const noexcept;
   [[nodiscard]] MetricsSnapshot metrics() const noexcept;
+  void observe_deserialization(std::uint64_t microseconds) noexcept;
 
  private:
   class Impl;

@@ -51,6 +51,9 @@ make_travel_time_provider() {
   };
   return std::make_unique<liveroute::routing::OsrmTravelTimeProvider>(
       liveroute::routing::OsrmTravelTimeProviderConfig{
+          .dataset_version = endpoint(
+              "LIVEROUTE_OSRM_DATASET_VERSION",
+              "geofabrik-rhode-island-260701-osrm-v26.5.0-mld-v1"),
           .car_endpoint = endpoint("LIVEROUTE_OSRM_CAR_ENDPOINT",
                                    "http://osrm-car:5000"),
           .foot_endpoint = endpoint("LIVEROUTE_OSRM_FOOT_ENDPOINT",
@@ -62,6 +65,7 @@ make_travel_time_provider() {
           .per_profile_concurrency = 2,
           .connect_timeout = std::chrono::milliseconds{100},
           .request_timeout = std::chrono::milliseconds{750},
+          .route_cache = liveroute::routing::RouteMatrixCacheConfig{},
       });
 #else
   return std::make_unique<UnavailableTravelTimeProvider>();

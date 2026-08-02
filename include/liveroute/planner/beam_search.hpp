@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -139,6 +140,102 @@ struct BeamScratchCandidate {
   CandidateScore score;
 };
 
+// Private worker-owned columnar view. It is derived from one valid
+// BeamSearchInput and never crosses the planner boundary.
+struct PlannerActivityColumns {
+  std::vector<domain::ActivityId> activity_ids;
+  std::vector<std::size_t> original_trip_ordinals;
+  std::vector<std::size_t> matrix_location_indices;
+  std::vector<std::int32_t> priority_ranks;
+  std::vector<std::int32_t> utility_scores;
+  std::vector<std::int64_t> minimum_duration_ms;
+  std::vector<std::int64_t> scheduled_duration_ms;
+  std::vector<std::int64_t> preferred_duration_ms;
+  std::vector<std::int64_t> maximum_duration_ms;
+  std::vector<std::int64_t> earliest_open_ms;
+  std::vector<std::int64_t> latest_close_ms;
+  std::vector<std::int64_t> baseline_start_ms;
+  std::vector<std::int64_t> baseline_end_ms;
+  std::vector<std::int64_t> reservation_start_ms;
+  std::vector<std::int64_t> reservation_latest_start_ms;
+  std::vector<std::int64_t> mandatory_deadline_ms;
+  std::vector<std::uint16_t> flags;
+  std::vector<std::int64_t> window_opens_ms;
+  std::vector<std::int64_t> window_closes_ms;
+  std::vector<std::size_t> window_offsets;
+  std::vector<std::size_t> sorted_ordinals;
+  std::vector<std::uint8_t> sorted_activity_indices;
+
+  void reset() noexcept {
+    activity_ids.clear();
+    original_trip_ordinals.clear();
+    matrix_location_indices.clear();
+    priority_ranks.clear();
+    utility_scores.clear();
+    minimum_duration_ms.clear();
+    scheduled_duration_ms.clear();
+    preferred_duration_ms.clear();
+    maximum_duration_ms.clear();
+    earliest_open_ms.clear();
+    latest_close_ms.clear();
+    baseline_start_ms.clear();
+    baseline_end_ms.clear();
+    reservation_start_ms.clear();
+    reservation_latest_start_ms.clear();
+    mandatory_deadline_ms.clear();
+    flags.clear();
+    window_opens_ms.clear();
+    window_closes_ms.clear();
+    window_offsets.clear();
+    sorted_ordinals.clear();
+    sorted_activity_indices.clear();
+  }
+};
+
+struct PlannerScoreScratch {
+  std::vector<bool> decided;
+  std::vector<bool> changed;
+  std::vector<bool> common_scheduled;
+  std::vector<std::int32_t> priority_ranks;
+  std::vector<std::size_t> candidate_common_order;
+  std::vector<std::size_t> baseline_common_order;
+  std::vector<std::size_t> baseline_common_positions;
+  std::vector<std::size_t> candidate_common_positions;
+
+  void reset() noexcept {
+    decided.clear();
+    changed.clear();
+    common_scheduled.clear();
+    priority_ranks.clear();
+    candidate_common_order.clear();
+    baseline_common_order.clear();
+    baseline_common_positions.clear();
+    candidate_common_positions.clear();
+  }
+
+  void prepare(std::size_t activity_count, std::size_t decision_count) {
+    decided.resize(activity_count);
+    changed.resize(activity_count);
+    common_scheduled.resize(activity_count);
+    std::fill(decided.begin(), decided.end(), false);
+    std::fill(changed.begin(), changed.end(), false);
+    std::fill(common_scheduled.begin(), common_scheduled.end(), false);
+    priority_ranks.clear();
+    candidate_common_order.clear();
+    candidate_common_order.reserve(decision_count);
+    baseline_common_order.clear();
+    baseline_common_positions.resize(activity_count);
+    candidate_common_positions.resize(activity_count);
+  }
+};
+
+inline constexpr std::uint8_t kTailValidatedInput = 1U << 0U;
+inline constexpr std::uint8_t kTailLowerBoundScratch = 1U << 1U;
+inline constexpr std::uint8_t kTailPartialBeamSelection = 1U << 2U;
+inline constexpr std::uint8_t kTailAllOptimizations =
+    kTailValidatedInput | kTailLowerBoundScratch |
+    kTailPartialBeamSelection;
+
 // Worker-owned reusable storage. Candidate paths are represented by parent
 // indices so expansion does not copy every prior decision into every child.
 struct PlannerScratch {
@@ -150,6 +247,17 @@ struct PlannerScratch {
   std::vector<ExpansionDecision> working_decisions;
   std::vector<ExpansionDecision> comparison_left;
   std::vector<ExpansionDecision> comparison_right;
+  PlannerActivityColumns activity_columns;
+  std::vector<std::uint8_t> protected_decided;
+  // The measured Phase 19 SoA experiment is disabled in serving/runtime
+  // scratch after its native timing gate failed. Benchmark code may opt in to
+  // reproduce the rejected candidate against this accepted AoS path.
+  bool use_soa{false};
+  // The measured Phase 20 experiments are disabled in serving/runtime scratch
+  // after their predeclared tail-latency gates failed. Benchmark code may opt
+  // in to reproduce each candidate against this accepted mask-zero path.
+  std::uint8_t tail_optimization_mask{0};
+  PlannerScoreScratch score;
 
   void reset() noexcept {
     path_nodes.clear();
@@ -160,8 +268,18 @@ struct PlannerScratch {
     working_decisions.clear();
     comparison_left.clear();
     comparison_right.clear();
+    activity_columns.reset();
+    protected_decided.clear();
+    score.reset();
   }
 };
+
+[[nodiscard]] std::optional<CandidateScore> score_candidate(
+    const BeamSearchInput& input, std::span<const ExpansionDecision> decisions,
+    PlannerScoreScratch& scratch);
+[[nodiscard]] std::optional<CandidateScore> score_candidate(
+    const BeamSearchInput& input, std::span<const ExpansionDecision> decisions,
+    PlannerScoreScratch& scratch, const PlannerActivityColumns& columns);
 
 // Runs the deterministic finite V1 beam traversal. A bounded search that
 // discarded feasible partials or exhausted a candidate budget never reports

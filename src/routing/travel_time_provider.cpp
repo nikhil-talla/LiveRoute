@@ -9,6 +9,10 @@ TravelTimeLookupResult::TravelTimeLookupResult(domain::TravelTimeMatrix matrix)
     : value_(std::move(matrix)) {}
 
 TravelTimeLookupResult::TravelTimeLookupResult(
+    domain::TravelTimeMatrix matrix, TravelTimeLookupQuality quality)
+    : value_(std::move(matrix)), quality_(quality) {}
+
+TravelTimeLookupResult::TravelTimeLookupResult(
     TravelTimeProviderError error) noexcept
     : value_(error) {}
 
@@ -28,6 +32,13 @@ TravelTimeProviderError TravelTimeLookupResult::error() const {
     throw std::logic_error("travel-time lookup did not return an error");
   }
   return std::get<TravelTimeProviderError>(value_);
+}
+
+TravelTimeLookupQuality TravelTimeLookupResult::quality() const {
+  if (!has_matrix()) {
+    throw std::logic_error("travel-time lookup did not return a matrix");
+  }
+  return quality_;
 }
 
 FixedTravelTimeProvider::FixedTravelTimeProvider(

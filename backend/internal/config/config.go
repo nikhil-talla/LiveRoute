@@ -10,17 +10,18 @@ import (
 )
 
 type Config struct {
-	ProtocolVersion    string    `yaml:"protocol_version"`
-	Limits             Limits    `yaml:"limits"`
-	Runtime            Runtime   `yaml:"runtime"`
-	Executors          Executors `yaml:"executors"`
-	Stream             Stream    `yaml:"stream"`
-	WebSocket          WebSocket `yaml:"websocket"`
-	Database           Database  `yaml:"database"`
-	Planner            Planner   `yaml:"planner"`
-	Hours              Hours     `yaml:"hours"`
-	Routing            Routing   `yaml:"routing"`
-	ShutdownDeadlineMS int       `yaml:"shutdown_deadline_ms"`
+	ProtocolVersion    string     `yaml:"protocol_version"`
+	Limits             Limits     `yaml:"limits"`
+	Runtime            Runtime    `yaml:"runtime"`
+	Executors          Executors  `yaml:"executors"`
+	Stream             Stream     `yaml:"stream"`
+	WebSocket          WebSocket  `yaml:"websocket"`
+	Database           Database   `yaml:"database"`
+	Planner            Planner    `yaml:"planner"`
+	Hours              Hours      `yaml:"hours"`
+	Routing            Routing    `yaml:"routing"`
+	RouteCache         RouteCache `yaml:"route_cache"`
+	ShutdownDeadlineMS int        `yaml:"shutdown_deadline_ms"`
 }
 
 type Limits struct {
@@ -104,6 +105,19 @@ type Routing struct {
 	RequestTimeoutMS       int    `yaml:"request_timeout_ms"`
 }
 
+type RouteCache struct {
+	Enabled                   bool   `yaml:"enabled"`
+	PolicyVersion             string `yaml:"policy_version"`
+	ShardCount                int    `yaml:"shard_count"`
+	MaxEntries                int    `yaml:"max_entries"`
+	MaxBytes                  int    `yaml:"max_bytes"`
+	CoordinateScale           int    `yaml:"coordinate_scale"`
+	TimeBucketSeconds         int    `yaml:"time_bucket_seconds"`
+	FreshTTLSeconds           int    `yaml:"fresh_ttl_seconds"`
+	StaleIfErrorMaxAgeSeconds int    `yaml:"stale_if_error_max_age_seconds"`
+	EvictionScanLimit         int    `yaml:"eviction_scan_limit"`
+}
+
 func Load(path string) (Config, error) {
 	if path == "" {
 		return Config{}, errors.New("configuration path is required")
@@ -174,6 +188,14 @@ func (config Config) Validate() error {
 		"routing.per_profile_concurrency":                  config.Routing.PerProfileConcurrency,
 		"routing.connect_timeout_ms":                       config.Routing.ConnectTimeoutMS,
 		"routing.request_timeout_ms":                       config.Routing.RequestTimeoutMS,
+		"route_cache.shard_count":                          config.RouteCache.ShardCount,
+		"route_cache.max_entries":                          config.RouteCache.MaxEntries,
+		"route_cache.max_bytes":                            config.RouteCache.MaxBytes,
+		"route_cache.coordinate_scale":                     config.RouteCache.CoordinateScale,
+		"route_cache.time_bucket_seconds":                  config.RouteCache.TimeBucketSeconds,
+		"route_cache.fresh_ttl_seconds":                    config.RouteCache.FreshTTLSeconds,
+		"route_cache.stale_if_error_max_age_seconds":       config.RouteCache.StaleIfErrorMaxAgeSeconds,
+		"route_cache.eviction_scan_limit":                  config.RouteCache.EvictionScanLimit,
 		"shutdown_deadline_ms":                             config.ShutdownDeadlineMS,
 	}
 	for name, value := range positive {
@@ -192,11 +214,24 @@ func (config Config) Validate() error {
 		config.Planner.AttemptTimeoutMS >= config.Database.LeaseDurationMS {
 		return errors.New("configuration timing bounds are inconsistent")
 	}
-	if len(config.WebSocket.AllowedOrigins) == 0 || config.Hours.SeedFilePath == "" ||
-		len(config.Hours.SeedFileSHA256) != 64 || config.Hours.TZDataRelease == "" ||
-		config.Hours.TZDataZoneInfoPath == "" || config.Routing.DatasetVersion == "" ||
+	if len(config.WebSocket.AllowedOrigins) == 0 || config.Routing.DatasetVersion == "" ||
 		config.Routing.CarEndpoint == "" || config.Routing.FootEndpoint == "" {
-		return errors.New("configuration origin and hours settings are incomplete")
+		return errors.New("configuration origin and routing settings are incomplete")
+	}
+	hoursConfigured := config.Hours.SeedFilePath != "" || config.Hours.SeedFileSHA256 != "" ||
+		config.Hours.TZDataRelease != "" || config.Hours.TZDataZoneInfoPath != ""
+	if hoursConfigured && (config.Hours.SeedFilePath == "" ||
+		len(config.Hours.SeedFileSHA256) != 64 || config.Hours.TZDataRelease == "" ||
+		config.Hours.TZDataZoneInfoPath == "") {
+		return errors.New("optional hours importer settings are incomplete")
+	}
+	if config.RouteCache.PolicyVersion != "liveroute-route-cache-v1" ||
+		config.RouteCache.ShardCount != 16 || config.RouteCache.MaxEntries != 131072 ||
+		config.RouteCache.MaxBytes != 67108864 || config.RouteCache.CoordinateScale != 100000 ||
+		config.RouteCache.TimeBucketSeconds != 900 || config.RouteCache.FreshTTLSeconds != 21600 ||
+		config.RouteCache.StaleIfErrorMaxAgeSeconds != 86400 ||
+		config.RouteCache.EvictionScanLimit != 64 {
+		return errors.New("configuration route_cache policy does not match liveroute-route-cache-v1")
 	}
 	return nil
 }

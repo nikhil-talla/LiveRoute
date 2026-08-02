@@ -63,6 +63,7 @@ type Config struct {
 	MaxOutstandingResyncIDs     int
 	OnMessage                   func(context.Context, AuthenticatedMessage)
 	Now                         func() time.Time
+	transportMetrics            *TransportMetrics
 }
 
 func (c Config) validate() error {
@@ -99,7 +100,15 @@ func NewHandler(config Config) (*Handler, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	config.transportMetrics = &TransportMetrics{}
 	return &Handler{config: config, sessions: make(map[*session]struct{})}, nil
+}
+
+func (h *Handler) TransportMetrics() TransportMetricsSnapshot {
+	if h == nil || h.config.transportMetrics == nil {
+		return TransportMetricsSnapshot{}
+	}
+	return h.config.transportMetrics.snapshot()
 }
 
 // SetOnMessage configures the authenticated-message callback before ServeHTTP
@@ -278,11 +287,16 @@ func (s *session) run(parent context.Context) {
 			s.close(websocket.StatusProtocolError, "text frames required")
 			return
 		}
+		// The transport framework has delivered text bytes. Time only the
+		// application-controlled admission work from here through validation.
+		admissionStarted := time.Now()
 		if int64(len(raw)) > s.config.DecodedMessageLimit {
+			s.config.transportMetrics.observeDeserialization(time.Since(admissionStarted))
 			s.close(websocket.StatusMessageTooBig, "message too large")
 			return
 		}
 		envelope, err := s.config.Validator.ValidateClient(raw)
+		s.config.transportMetrics.observeDeserialization(time.Since(admissionStarted))
 		if err != nil {
 			s.close(websocket.StatusProtocolError, "invalid message")
 			return

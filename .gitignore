@@ -1,5 +1,8 @@
 build/
 out/
 
+# Generated benchmark measurements and aggregate reports
+/artifacts/benchmarks/
+
 # Downloaded and generated OSRM datasets
 /data/osrm/

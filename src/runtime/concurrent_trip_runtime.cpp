@@ -104,8 +104,12 @@ struct MatrixFailure {
   bool retryable;
 };
 
-using MatrixAcquisition =
-    std::variant<domain::TravelTimeMatrix, MatrixFailure>;
+struct AcquiredMatrix {
+  domain::TravelTimeMatrix matrix;
+  domain::RoutingQuality routing_quality{domain::RoutingQuality::kFresh};
+};
+
+using MatrixAcquisition = std::variant<AcquiredMatrix, MatrixFailure>;
 
 [[nodiscard]] MatrixFailure map_provider_error(
     routing::TravelTimeProviderError error) noexcept {
@@ -184,15 +188,19 @@ struct RouteRequest {
     return MatrixFailure{RuntimePlanningStatus::kInvalidArgument, false};
   }
   if (request->locations.size() == 1) {
-    return domain::TravelTimeMatrix{
-        1, {domain::RouteEstimate{.duration = std::chrono::seconds::zero(),
-                                  .distance_meters = 0,
-                                  .reachable = true}}};
+    return AcquiredMatrix{
+        .matrix = domain::TravelTimeMatrix{
+            1, {domain::RouteEstimate{
+                    .duration = std::chrono::seconds::zero(),
+                    .distance_meters = 0,
+                    .reachable = true}}},
+        .routing_quality = domain::RoutingQuality::kFresh};
   }
 
   const auto provider_start = std::chrono::steady_clock::now();
   std::optional<domain::TravelTimeMatrix> walking;
   std::optional<domain::TravelTimeMatrix> driving;
+  auto routing_quality = domain::RoutingQuality::kFresh;
   for (const auto mode :
        {domain::TravelMode::kWalking, domain::TravelMode::kDriving}) {
     if (std::find(request->destination_modes.begin(),
@@ -219,6 +227,9 @@ struct RouteRequest {
       walking = result.matrix();
     } else {
       driving = result.matrix();
+    }
+    if (result.quality() == routing::TravelTimeLookupQuality::kStaleCache) {
+      routing_quality = domain::RoutingQuality::kStaleCache;
     }
   }
   const auto provider_end = std::chrono::steady_clock::now();
@@ -247,7 +258,9 @@ struct RouteRequest {
   const auto conversion_end = std::chrono::steady_clock::now();
   timings.matrix_conversion_microseconds =
       elapsed_microseconds(conversion_start, conversion_end);
-  return domain::TravelTimeMatrix{count, std::move(estimates)};
+  return AcquiredMatrix{.matrix = domain::TravelTimeMatrix{count,
+                                                           std::move(estimates)},
+                        .routing_quality = routing_quality};
 }
 
 [[nodiscard]] RuntimePlanningStatus map_search_outcome(
@@ -1075,17 +1088,21 @@ class ConcurrentTripRuntime::Impl {
                 return;
               }
 
-              auto immutable_matrix = std::make_shared<domain::TravelTimeMatrix>(
-                  std::move(std::get<domain::TravelTimeMatrix>(matrix)));
+              auto acquired = std::move(std::get<AcquiredMatrix>(matrix));
+              auto immutable_matrix =
+                  std::make_shared<domain::TravelTimeMatrix>(
+                      std::move(acquired.matrix));
               if (!executors_.planner().try_submit(
                       [this, trip_id, pending_work, stop,
-                       reserved, immutable_matrix](
+                       reserved, immutable_matrix,
+                       routing_quality = acquired.routing_quality](
                           std::stop_token planner_executor_stop) mutable {
                         std::stop_callback shutdown_callback(
                             planner_executor_stop,
                             [stop] { stop->request_stop(); });
                         run_planner(trip_id, std::move(*pending_work), stop,
-                                    reserved, immutable_matrix);
+                                    reserved, immutable_matrix,
+                                    routing_quality);
                       })) {
                 planning_attempts_completed_.fetch_add(
                     1, std::memory_order_relaxed);
@@ -1113,7 +1130,9 @@ class ConcurrentTripRuntime::Impl {
       const domain::TripId& trip_id, PendingPlanning pending,
       const std::shared_ptr<std::stop_source>& stop,
       const std::shared_ptr<ShardedExecutor::CompletionReservation>& reserved,
-      const std::shared_ptr<domain::TravelTimeMatrix>& matrix) {
+      const std::shared_ptr<domain::TravelTimeMatrix>& matrix,
+      domain::RoutingQuality routing_quality) {
+    thread_local planner::PlannerScratch planner_scratch;
     const auto planner_start = std::chrono::steady_clock::now();
     const auto input = planner::assemble_beam_search_input(
         pending.seed.state, pending.context.current_time,
@@ -1168,7 +1187,7 @@ class ConcurrentTripRuntime::Impl {
     };
     auto attempt = planner::run_replan_attempt(
         *input, pending.seed.state.activities, source, pending.seed.trigger,
-        *facts, budget);
+        *facts, budget, planner_scratch);
     if (attempt.search.deadline_hit) {
       deadline_misses_.fetch_add(1, std::memory_order_relaxed);
       metrics_.increment(MetricCounter::kDeadlineMisses);
@@ -1199,7 +1218,7 @@ class ConcurrentTripRuntime::Impl {
     };
     auto stored = planner::assemble_stored_plan_proposal(
         attempt, pending.seed.state.activities, stats,
-        domain::RoutingQuality::kFresh, pending.context.recovery_state);
+        routing_quality, pending.context.recovery_state);
     const auto status = map_search_outcome(attempt.search.outcome);
     post_completion(
         trip_id, reserved,
@@ -1436,6 +1455,12 @@ ConcurrentTripRuntime::execution_metrics() const noexcept {
 
 MetricsSnapshot ConcurrentTripRuntime::metrics() const noexcept {
   return impl_->metrics();
+}
+
+void ConcurrentTripRuntime::observe_deserialization(
+    std::uint64_t microseconds) noexcept {
+  impl_->metrics_.observe_microseconds(MetricHistogram::kDeserialization,
+                                       microseconds);
 }
 
 }  // namespace liveroute::runtime

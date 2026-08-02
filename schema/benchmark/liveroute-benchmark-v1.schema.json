@@ -1,0 +1,992 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liveroute.local/schema/benchmark/liveroute-benchmark-v1.schema.json",
+  "title": "LiveRoute benchmark raw artifact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "started_at",
+    "benchmark_name",
+    "dimensions",
+    "measurement",
+    "counters",
+    "histograms",
+    "gauges"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "liveroute.benchmark.v1"
+    },
+    "run_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "started_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "benchmark_name": {
+      "$ref": "#/$defs/name"
+    },
+    "dimensions": {
+      "$ref": "#/$defs/dimensions"
+    },
+    "measurement": {
+      "$ref": "#/$defs/measurement"
+    },
+    "counters": {
+      "$ref": "#/$defs/counters"
+    },
+    "histograms": {
+      "$ref": "#/$defs/histograms"
+    },
+    "gauges": {
+      "$ref": "#/$defs/gauges"
+    },
+    "attachments": {
+      "$ref": "#/$defs/attachments"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "benchmark_name": {
+            "const": "planner-allocation-v1"
+          }
+        },
+        "required": [
+          "benchmark_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "dimensions": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/dimensions"
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "planner"
+                  },
+                  "parameters": {
+                    "required": [
+                      "attempt_deadline_ms",
+                      "beam_width",
+                      "max_candidates",
+                      "max_expansions",
+                      "suffix_size",
+                      "variant"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "measurement": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/measurement"
+              },
+              {
+                "properties": {
+                  "warmup_operations": {
+                    "const": 10
+                  },
+                  "measured_operations": {
+                    "const": 200
+                  },
+                  "completed_operations": {
+                    "const": 200
+                  }
+                }
+              }
+            ]
+          },
+          "counters": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/counters"
+              },
+              {
+                "required": [
+                  "deadline_misses",
+                  "planner_allocation_calls",
+                  "planner_allocated_bytes",
+                  "planner_allocation_scope_overflows"
+                ]
+              }
+            ]
+          },
+          "histograms": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/histograms"
+              },
+              {
+                "required": [
+                  "planner"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "benchmark_name": {
+            "const": "planner-layout-timing-v1"
+          }
+        },
+        "required": [
+          "benchmark_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "dimensions": {
+            "properties": {
+              "mode": {
+                "const": "planner"
+              },
+              "parameters": {
+                "$ref": "#/$defs/plannerLayoutParameters"
+              }
+            }
+          },
+          "measurement": {
+            "properties": {
+              "warmup_operations": {
+                "const": 10
+              },
+              "measured_operations": {
+                "const": 200
+              },
+              "completed_operations": {
+                "const": 200
+              }
+            }
+          },
+          "counters": {
+            "required": [
+              "deadline_misses",
+              "planner_allocation_calls",
+              "planner_allocated_bytes",
+              "planner_allocation_scope_overflows",
+              "planner_candidates",
+              "planner_expansions"
+            ],
+            "properties": {
+              "planner_candidates": {
+                "$ref": "#/$defs/positiveUint64"
+              },
+              "planner_expansions": {
+                "$ref": "#/$defs/positiveUint64"
+              }
+            }
+          },
+          "histograms": {
+            "required": [
+              "planner"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "benchmark_name": {
+            "const": "planner-layout-profile-v1"
+          }
+        },
+        "required": [
+          "benchmark_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "dimensions": {
+            "properties": {
+              "mode": {
+                "const": "planner"
+              },
+              "parameters": {
+                "$ref": "#/$defs/plannerLayoutProfileParameters"
+              }
+            }
+          },
+          "measurement": {
+            "properties": {
+              "warmup_operations": {
+                "const": 1
+              },
+              "measured_operations": {
+                "const": 1
+              },
+              "completed_operations": {
+                "const": 1
+              }
+            }
+          },
+          "counters": {
+            "required": [
+              "deadline_misses",
+              "planner_candidates",
+              "planner_expansions",
+              "profile_branches",
+              "profile_branch_misses",
+              "profile_data_references",
+              "profile_instructions",
+              "profile_l1d_misses",
+              "profile_ll_data_misses"
+            ],
+            "properties": {
+              "planner_candidates": {
+                "$ref": "#/$defs/positiveUint64"
+              },
+              "planner_expansions": {
+                "$ref": "#/$defs/positiveUint64"
+              }
+            }
+          },
+          "attachments": {
+            "required": [
+              "callgrind"
+            ]
+          }
+        },
+        "required": [
+          "attachments"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "benchmark_name": {
+            "const": "planner-tail-v1"
+          }
+        },
+        "required": [
+          "benchmark_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "dimensions": {
+            "properties": {
+              "mode": {
+                "const": "planner"
+              },
+              "parameters": {
+                "$ref": "#/$defs/plannerTailParameters"
+              }
+            }
+          },
+          "measurement": {
+            "properties": {
+              "warmup_operations": {
+                "const": 10
+              },
+              "measured_operations": {
+                "const": 200
+              },
+              "completed_operations": {
+                "const": 200
+              }
+            }
+          },
+          "counters": {
+            "required": [
+              "deadline_misses",
+              "planner_allocation_calls",
+              "planner_allocated_bytes",
+              "planner_allocation_scope_overflows",
+              "planner_candidates",
+              "planner_expansions"
+            ],
+            "properties": {
+              "planner_candidates": {
+                "$ref": "#/$defs/positiveUint64"
+              },
+              "planner_expansions": {
+                "$ref": "#/$defs/positiveUint64"
+              }
+            }
+          },
+          "histograms": {
+            "required": [
+              "planner"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uint64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "positiveUint64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parameterValue": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      ]
+    },
+    "plannerLayoutParameters": {
+      "type": "object",
+      "required": [
+        "attempt_deadline_ms",
+        "beam_width",
+        "layout_version",
+        "max_candidates",
+        "max_expansions",
+        "result_digest",
+        "suffix_size",
+        "variant"
+      ],
+      "properties": {
+        "attempt_deadline_ms": {
+          "const": 60000
+        },
+        "beam_width": {
+          "const": 32
+        },
+        "max_candidates": {
+          "const": 4096
+        },
+        "max_expansions": {
+          "const": 16384
+        },
+        "result_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "suffix_size": {
+          "enum": [
+            4,
+            8,
+            16,
+            32,
+            64
+          ]
+        },
+        "variant": {
+          "enum": [
+            "aos-baseline",
+            "soa-candidate"
+          ]
+        },
+        "layout_version": {
+          "enum": [
+            "aos-v1",
+            "soa-v1"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "variant": {
+              "const": "aos-baseline"
+            },
+            "layout_version": {
+              "const": "aos-v1"
+            }
+          }
+        },
+        {
+          "properties": {
+            "variant": {
+              "const": "soa-candidate"
+            },
+            "layout_version": {
+              "const": "soa-v1"
+            }
+          }
+        }
+      ]
+    },
+    "plannerLayoutProfileParameters": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/plannerLayoutParameters"
+        },
+        {
+          "required": [
+            "profiler_cache_geometry",
+            "profiler_name",
+            "profiler_version"
+          ],
+          "properties": {
+            "profiler_cache_geometry": {
+              "const": "I1=32768,8,64;D1=32768,8,64;LL=8388608,16,64"
+            },
+            "profiler_name": {
+              "const": "callgrind"
+            },
+            "profiler_version": {
+              "const": "3.22.0"
+            }
+          }
+        }
+      ]
+    },
+    "plannerTailParameters": {
+      "type": "object",
+      "required": [
+        "attempt_deadline_ms",
+        "beam_width",
+        "layout_version",
+        "max_candidates",
+        "max_expansions",
+        "result_digest",
+        "suffix_size",
+        "tail_optimization_mask",
+        "variant"
+      ],
+      "properties": {
+        "attempt_deadline_ms": {
+          "const": 60000
+        },
+        "beam_width": {
+          "const": 32
+        },
+        "layout_version": {
+          "const": "aos-v1"
+        },
+        "max_candidates": {
+          "const": 4096
+        },
+        "max_expansions": {
+          "const": 16384
+        },
+        "result_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "suffix_size": {
+          "enum": [4, 8, 16, 32, 64]
+        },
+        "tail_optimization_mask": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "variant": {
+          "enum": [
+            "tail-baseline",
+            "validated-input",
+            "lower-bound-scratch",
+            "partial-beam-selection",
+            "combined-candidate"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "variant": { "const": "tail-baseline" },
+            "tail_optimization_mask": { "const": 0 }
+          }
+        },
+        {
+          "properties": {
+            "variant": { "const": "validated-input" },
+            "tail_optimization_mask": { "const": 1 }
+          }
+        },
+        {
+          "properties": {
+            "variant": { "const": "lower-bound-scratch" },
+            "tail_optimization_mask": { "const": 2 }
+          }
+        },
+        {
+          "properties": {
+            "variant": { "const": "partial-beam-selection" },
+            "tail_optimization_mask": { "const": 4 }
+          }
+        },
+        {
+          "properties": {
+            "variant": { "const": "combined-candidate" },
+            "tail_optimization_mask": { "minimum": 1, "maximum": 7 }
+          }
+        }
+      ]
+    },
+    "parameters": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/parameterValue"
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "sha256"
+      ],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^(?!.*//)(?!.*(?:^|/)\\.(?:/|$))(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "attachments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "callgrind": {
+          "$ref": "#/$defs/attachment"
+        },
+        "compiler_vectorization_report": {
+          "$ref": "#/$defs/attachment"
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "git_commit",
+        "worktree_dirty",
+        "build_type",
+        "compiler_id",
+        "compiler_version",
+        "target_arch",
+        "container_image_digest"
+      ],
+      "properties": {
+        "git_commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "worktree_dirty": {
+          "type": "boolean"
+        },
+        "build_type": {
+          "type": "string",
+          "enum": [
+            "Release",
+            "RelWithDebInfo"
+          ]
+        },
+        "compiler_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "compiler_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "target_arch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "container_image_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os_name",
+        "kernel_version",
+        "cpu_model",
+        "logical_cpu_count",
+        "cpu_quota_millicores",
+        "memory_limit_bytes"
+      ],
+      "properties": {
+        "os_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kernel_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cpu_model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "logical_cpu_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "cpu_quota_millicores": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_limit_bytes": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/positiveUint64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "workload_profile",
+        "seed",
+        "parameters",
+        "build",
+        "environment",
+        "protocol_version",
+        "planner_policy_version",
+        "osrm_dataset_version",
+        "route_cache_policy_version",
+        "route_cache_enabled"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "runtime",
+            "grpc",
+            "websocket",
+            "planner",
+            "serialization",
+            "shard-runtime",
+            "osrm",
+            "hours"
+          ]
+        },
+        "workload_profile": {
+          "oneOf": [
+            {
+              "enum": [
+                "steady-location",
+                "bursty-gps",
+                "reservation-heavy",
+                "operating-hours",
+                "place-closed",
+                "many-trips",
+                "hot-trip",
+                "provider-timeout"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seed": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/positiveUint64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        },
+        "build": {
+          "$ref": "#/$defs/build"
+        },
+        "environment": {
+          "$ref": "#/$defs/environment"
+        },
+        "protocol_version": {
+          "const": "liveroute.v1"
+        },
+        "planner_policy_version": {
+          "const": "liveroute-v1-lexicographic-1"
+        },
+        "osrm_dataset_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "route_cache_policy_version": {
+          "oneOf": [
+            {
+              "const": "liveroute-route-cache-v1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "route_cache_enabled": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "route_cache_enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "route_cache_enabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "route_cache_policy_version": {
+                "const": "liveroute-route-cache-v1"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "route_cache_policy_version": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "warmup_operations",
+        "measured_operations",
+        "elapsed_microseconds",
+        "completed_operations"
+      ],
+      "properties": {
+        "warmup_operations": {
+          "$ref": "#/$defs/uint64"
+        },
+        "measured_operations": {
+          "$ref": "#/$defs/positiveUint64"
+        },
+        "elapsed_microseconds": {
+          "$ref": "#/$defs/positiveUint64"
+        },
+        "completed_operations": {
+          "$ref": "#/$defs/positiveUint64"
+        }
+      }
+    },
+    "counterValue": {
+      "$ref": "#/$defs/uint64"
+    },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accepted_events": { "$ref": "#/$defs/counterValue" },
+        "duplicate_events": { "$ref": "#/$defs/counterValue" },
+        "stale_events": { "$ref": "#/$defs/counterValue" },
+        "dropped_critical_events": { "$ref": "#/$defs/counterValue" },
+        "dropped_high_events": { "$ref": "#/$defs/counterValue" },
+        "dropped_normal_events": { "$ref": "#/$defs/counterValue" },
+        "dropped_advisory_events": { "$ref": "#/$defs/counterValue" },
+        "coalesced_updates": { "$ref": "#/$defs/counterValue" },
+        "replan_triggers": { "$ref": "#/$defs/counterValue" },
+        "replan_cancellations": { "$ref": "#/$defs/counterValue" },
+        "rejected_overload_requests": { "$ref": "#/$defs/counterValue" },
+        "deadline_misses": { "$ref": "#/$defs/counterValue" },
+        "osrm_failures": { "$ref": "#/$defs/counterValue" },
+        "hours_provider_failures": { "$ref": "#/$defs/counterValue" },
+        "infeasible_replans": { "$ref": "#/$defs/counterValue" },
+        "route_cache_fresh_hits": { "$ref": "#/$defs/counterValue" },
+        "route_cache_misses": { "$ref": "#/$defs/counterValue" },
+        "route_cache_stale_hits": { "$ref": "#/$defs/counterValue" },
+        "route_cache_insertions": { "$ref": "#/$defs/counterValue" },
+        "route_cache_evictions": { "$ref": "#/$defs/counterValue" },
+        "planner_allocation_calls": { "$ref": "#/$defs/counterValue" },
+        "planner_allocated_bytes": { "$ref": "#/$defs/counterValue" },
+        "planner_allocation_scope_overflows": { "$ref": "#/$defs/counterValue" },
+        "planner_expansions": { "$ref": "#/$defs/counterValue" },
+        "planner_candidates": { "$ref": "#/$defs/counterValue" },
+        "profile_instructions": { "$ref": "#/$defs/counterValue" },
+        "profile_data_references": { "$ref": "#/$defs/counterValue" },
+        "profile_l1d_misses": { "$ref": "#/$defs/counterValue" },
+        "profile_ll_data_misses": { "$ref": "#/$defs/counterValue" },
+        "profile_branches": { "$ref": "#/$defs/counterValue" },
+        "profile_branch_misses": { "$ref": "#/$defs/counterValue" }
+      }
+    },
+    "upperBounds": {
+      "type": "array",
+      "minItems": 19,
+      "maxItems": 19,
+      "prefixItems": [
+        { "const": 1 },
+        { "const": 5 },
+        { "const": 10 },
+        { "const": 25 },
+        { "const": 50 },
+        { "const": 100 },
+        { "const": 250 },
+        { "const": 500 },
+        { "const": 1000 },
+        { "const": 2500 },
+        { "const": 5000 },
+        { "const": 10000 },
+        { "const": 25000 },
+        { "const": 50000 },
+        { "const": 100000 },
+        { "const": 250000 },
+        { "const": 500000 },
+        { "const": 1000000 },
+        { "type": "null" }
+      ],
+      "items": false
+    },
+    "bucketCounts": {
+      "type": "array",
+      "minItems": 19,
+      "maxItems": 19,
+      "items": {
+        "$ref": "#/$defs/uint64"
+      }
+    },
+    "histogram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unit",
+        "count",
+        "sum_microseconds",
+        "max_microseconds",
+        "upper_bounds_microseconds",
+        "bucket_counts"
+      ],
+      "properties": {
+        "unit": { "const": "microseconds" },
+        "count": { "$ref": "#/$defs/uint64" },
+        "sum_microseconds": { "$ref": "#/$defs/uint64" },
+        "max_microseconds": { "$ref": "#/$defs/uint64" },
+        "upper_bounds_microseconds": { "$ref": "#/$defs/upperBounds" },
+        "bucket_counts": { "$ref": "#/$defs/bucketCounts" }
+      }
+    },
+    "histograms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deserialization": { "$ref": "#/$defs/histogram" },
+        "queue_wait": { "$ref": "#/$defs/histogram" },
+        "event_application": { "$ref": "#/$defs/histogram" },
+        "osrm_request": { "$ref": "#/$defs/histogram" },
+        "hours_provider_request": { "$ref": "#/$defs/histogram" },
+        "matrix_conversion": { "$ref": "#/$defs/histogram" },
+        "planner": { "$ref": "#/$defs/histogram" },
+        "serialization": { "$ref": "#/$defs/histogram" },
+        "total_request": { "$ref": "#/$defs/histogram" },
+        "acknowledgement": { "$ref": "#/$defs/histogram" },
+        "route_cache_lookup": { "$ref": "#/$defs/histogram" },
+        "route_cache_hit_path": { "$ref": "#/$defs/histogram" },
+        "osrm_backed_path": { "$ref": "#/$defs/histogram" }
+      }
+    },
+    "gauge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "last",
+        "maximum"
+      ],
+      "properties": {
+        "last": { "$ref": "#/$defs/uint64" },
+        "maximum": { "$ref": "#/$defs/uint64" }
+      }
+    },
+    "gauges": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "critical_queue_depth": { "$ref": "#/$defs/gauge" },
+        "high_queue_depth": { "$ref": "#/$defs/gauge" },
+        "normal_queue_depth": { "$ref": "#/$defs/gauge" },
+        "advisory_queue_depth": { "$ref": "#/$defs/gauge" },
+        "route_cache_entries": { "$ref": "#/$defs/gauge" },
+        "route_cache_bytes": { "$ref": "#/$defs/gauge" }
+      }
+    }
+  }
+}

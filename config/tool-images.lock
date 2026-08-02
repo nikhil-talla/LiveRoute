@@ -18,6 +18,14 @@ images:
     websocket_libcurl_version: 8.5.0
     websocket_libcurl_source_sha256: 42ab8db9e20d8290a3b633e7fbb3cec15db34df65fd1015ef8ac1e4723750eeb
     websocket_libcurl_build: config/curl-websocket.lock
+  phase19_profiler:
+    parent: cpp_grpc_toolchain
+    platform: linux/amd64
+    valgrind_version: 3.22.0
+    valgrind_deb_url: https://archive.ubuntu.com/ubuntu/pool/main/v/valgrind/valgrind_3.22.0-0ubuntu3_amd64.deb
+    valgrind_deb_sha256: 744e081e5cf3d5c598b499dbb7d2250ea3f2869dde4a4d7b231fe6114f347d7d
+    install_policy: checksum-verify-and-dpkg-deb-extract
+    evidence_image_digest_policy: record-built-content-digest-before-profiling
   go_proto_toolchain:
     platform: linux/amd64
     build_file: docker/go-proto/Dockerfile

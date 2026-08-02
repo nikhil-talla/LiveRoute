@@ -75,4 +75,16 @@ routing:
   connect_timeout_ms: 100
   request_timeout_ms: 750
 
+route_cache:
+  enabled: true
+  policy_version: liveroute-route-cache-v1
+  shard_count: 16
+  max_entries: 131072
+  max_bytes: 67108864
+  coordinate_scale: 100000
+  time_bucket_seconds: 900
+  fresh_ttl_seconds: 21600
+  stale_if_error_max_age_seconds: 86400
+  eviction_scan_limit: 64
+
 shutdown_deadline_ms: 10000

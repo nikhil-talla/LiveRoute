@@ -566,6 +566,10 @@ int main() {
   fourth_stream->WritesDone();
   if (!fourth_stream->Finish().ok()) return 1;
 
+  const auto deserialization = runtime.metrics().histogram(
+      liveroute::runtime::MetricHistogram::kDeserialization);
+  if (deserialization.count == 0) return 1;
+
   server->Shutdown();
   runtime.stop_accepting();
   return 0;

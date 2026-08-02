@@ -118,6 +118,10 @@ func TestHandlerAuthenticatesAndAnswersApplicationPing(t *testing.T) {
 	if pongEnvelope["kind"] != "pong" || pongEnvelope["in_reply_to_message_id"] != ping["message_id"] {
 		t.Fatalf("unexpected pong envelope: %s", pong)
 	}
+	metrics := handler.TransportMetrics().Deserialization
+	if metrics.Count != 2 || metrics.PercentileMicroseconds(50) == 0 {
+		t.Fatalf("unexpected transport deserialization metrics: %+v", metrics)
+	}
 }
 
 func TestHandlerClosesUnauthenticatedTripMessage(t *testing.T) {

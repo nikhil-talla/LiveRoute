@@ -225,7 +225,7 @@ Mutation and observation sequences start at 1; zero means not applicable. Option
 
 Event priority is derived by the C++ admission/domain layer from event type and current trip state; callers cannot promote their own work.
 
-Trip/bootstrap domain messages contain canonical UUIDs, coordinates, travel mode, activity ordering, completed prefix/current activity, fixed or flexible classification, user priority/utility, reservation data, normalized open windows, minimum/preferred/maximum duration, movable/shortenable/skippable/mandatory flags, and the authoritative current plan/version metadata. The `can_shorten` field is retained for wire/storage compatibility, but the V1 suggestion engine never shortens an activity. The current plan contains the user-selected ordered schedule, not browser-supplied routing metrics or planner reason/quality fields. V1 accepts IANA zones present for country `US` in the pinned tzdata. CLI/fixture/seed ingestion converts local input into signed UTC Unix-epoch milliseconds; the backend validates normalized ranges/order before C++ and the planner uses only UTC values. IANA zone names remain on durable activities, current-plan segments, and proposal segments for post-planning display conversion. Seeded-hours readiness eagerly validates DST gap/fold safety across the complete requestable V1 date domain using the bounded transition-directed procedure; it has no rolling or lazy validation horizon. The exact `LocalDateRange`, `HoursInfo`, provider-result, seed schema, tzdata lock, DST gap/fold, overnight-window, and exceptional-closure rules are fixed in `plans/LiveRouteV1ContractSpec.md`.
+Trip/bootstrap domain messages contain canonical UUIDs, coordinates, travel mode, activity ordering, completed prefix/current activity, fixed or flexible classification, user priority/utility, reservation data, normalized open windows, minimum/preferred/maximum duration, movable/shortenable/skippable/mandatory flags, and the authoritative current plan/version metadata. The `can_shorten` field is retained for wire/storage compatibility, but the V1 suggestion engine never shortens an activity. The current plan contains the user-selected ordered schedule, not browser-supplied routing metrics or planner reason/quality fields. V1 `open_windows` are user-authored canonical activity input; the backend validates and persists them, and the normal serving path performs no place-hours lookup. V1 accepts IANA zones present for country `US` in the pinned tzdata. CLI or optional fixture/seed ingestion converts local input into signed UTC Unix-epoch milliseconds; the backend validates normalized ranges/order before C++ and the planner uses only UTC values. IANA zone names remain on durable activities, current-plan segments, and proposal segments for post-planning display conversion. The seeded-hours implementation remains an optional local import/normalization adapter and tested fixture. When used, its readiness eagerly validates DST gap/fold safety across the complete requestable V1 date domain using the bounded transition-directed procedure; it has no rolling or lazy validation horizon. The exact `LocalDateRange`, `HoursInfo`, provider-result, seed schema, tzdata lock, DST gap/fold, overnight-window, and exceptional-closure rules are fixed in `plans/LiveRouteV1ContractSpec.md`.
 
 Current-plan segments contain activity id, scheduled/omitted state, and user-selected start/end only when scheduled; the repeated order is authoritative. Engine-proposal segments additionally contain location, IANA zone, optional inbound route duration/distance/reachability, disposition, and structured reason codes. Metrics use integer durations with documented units. Protobuf messages are converted into validated internal C++ types before shard admission; generated message objects are not stored in `TripState` or passed to planner search.
 
@@ -373,7 +373,16 @@ The backend assigns observation sequences and performs only transport-level late
 - Malformed JSON, unexpected dimensions, every documented OSRM error code, HTTP/transport errors, timeout, cancellation, queue admission, and response-byte limits map exactly as specified; no generic provider-error fallback may change those public statuses.
 - Record OSRM transport, parse, matrix-conversion, and total provider latency separately from planner latency.
 
-The correctness-first path is uncached. The later bounded cache is keyed by profile, normalized coordinates, and OSRM dataset version. Stale cache use is allowed only under an explicit policy and is labeled `routing_quality = STALE_CACHE`; it is never silently presented as fresh routing data.
+The correctness-first path is uncached. Phase 17 adds the exact process-local
+`liveroute-route-cache-v1` pair cache from
+`plans/LiveRouteV1ContractSpec.md`: deterministic signed E5 coordinate cells,
+the static OSRM departure bucket, mode and locked dataset/profile identity,
+16 ownership shards, 131,072 entries, a complete 64 MiB memory bound, six-hour
+fresh TTL, 24-hour maximum stale-if-error age, and a bounded 64-slot
+second-chance eviction scan. It caches raw provider estimates outside the planner;
+the planner still receives only an immutable `TravelTimeMatrix`. Stale data may
+replace only a completely covered `PROVIDER_UNAVAILABLE` result and is labeled
+`routing_quality = STALE_CACHE`; it is never silently presented as fresh data.
 
 Dataset updates build new profile artifacts out of band, pass readiness/integration checks, then replace endpoints. A dataset-version change invalidates incompatible cache entries.
 
@@ -471,9 +480,39 @@ Configuration must cover and validate:
 - per-trip backend pending runtime-first command and unresolved canonical-mirror capacities
 - PostgreSQL pool, outbox batch/in-flight limits, lease duration/renewal/safety margin, and snapshot thresholds
 - planner deadline/candidate/search budgets
+- Phase 17 route-cache enablement, policy version, coordinate/time
+  quantization, shard/entry/byte bounds, fresh/stale TTLs, and eviction-scan bound
 - shutdown deadline
 
 Invalid, zero, unbounded, or mutually inconsistent resource configuration fails startup. Secrets enter through the deployment secret mechanism and never appear in repository config or logs.
+
+Phase 16 raw and aggregate benchmark reports use the exact versioned JSON
+artifacts and merge rules in `plans/LiveRouteV1ContractSpec.md`. Percentiles are
+derived from merged fixed-bucket counts, never averaged from per-run percentile
+values, and reports never aggregate mismatched workload/build/hardware/provider/
+planner/cache dimensions.
+
+Phase 18 allocation acceptance is scoped from planner-input assembly through
+stored-proposal construction on one planner worker. Benchmark-only global
+allocation hooks are gated by thread-local attribution; global process activity
+and the serving binary are not instrumented. The exact baseline suite, relative
+targets, latency/throughput guards, and optimization-ledger evidence are normative
+in `plans/LiveRouteV1ContractSpec.md`.
+
+Phase 19 preserves the public array-of-structures planner input and derives one
+private worker-owned structure-of-arrays view per valid attempt. Only bounded
+candidate-generation/scoring/search helpers consume it; proposal reconstruction
+and all service boundaries remain unchanged. The exact columns, flattened-window
+ownership, native timing suite, checksum-pinned Callgrind workflow, quantitative
+retention gates, and mandatory revert-on-neutral policy are normative in
+`plans/LiveRouteV1ContractSpec.md`.
+
+Phase 20 changes no public planner, transport, storage, provider, cache, budget,
+or overload contract. Its validate-once, lower-bound scratch, and partial-beam
+selection candidates are private benchmark-selectable strategies. Serving uses
+only a mask that passes the predeclared planner-tail correctness, work-count,
+allocation, throughput, and p99 gates; a measured rejection leaves the accepted
+mask-zero AoS path authoritative.
 
 Compose readiness is dependency-aware: PostgreSQL must answer `pg_isready` at the expected Goose migration version; each OSRM profile must pass a fixed Table request; C++ must report `SERVING` through the standard gRPC health service; backend `/healthz` reports process liveness while `/readyz` requires PostgreSQL, migrations, a `StreamReady` planner connection, and both OSRM profiles. Container-first development requires Docker/Compose on the host, not host installation of PostgreSQL, Go, C++, Protobuf, or OSRM packages.
 

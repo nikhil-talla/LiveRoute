@@ -26,6 +26,10 @@ using liveroute::planner::BeamSearchOutcome;
 using liveroute::planner::PlannerScratch;
 using liveroute::planner::PlanningActivity;
 using liveroute::planner::ReplanBudget;
+using liveroute::planner::kTailAllOptimizations;
+using liveroute::planner::kTailLowerBoundScratch;
+using liveroute::planner::kTailPartialBeamSelection;
+using liveroute::planner::kTailValidatedInput;
 using liveroute::planner::run_beam_search;
 
 ActivityId activity_id(std::uint8_t marker) {
@@ -349,6 +353,57 @@ int main() {
         result.candidate_count != 1 || result.deadline_hit ||
         result.cancellation_requested) {
       return 1;
+    }
+  }
+
+  {
+    const auto first = activity(20, 7, 0, ActivityClass::kFlexible,
+                                false, true, 0, 12000, 2,
+                                PlanEntryState::kScheduled, 0, 2000);
+    const auto second = activity(21, 3, 5, ActivityClass::kFlexible,
+                                 false, true, 0, 12000, 2,
+                                 PlanEntryState::kScheduled, 3000, 5000);
+    const auto third = activity(22, 11, 10, ActivityClass::kFlexible,
+                                false, true, 0, 12000, 2,
+                                PlanEntryState::kOmitted);
+    const auto protected_activity = activity(
+        23, 19, 0, ActivityClass::kFixed, true, false, 0, 12000, 1,
+        PlanEntryState::kScheduled, 8000, 9000);
+    const auto matrix = zero_matrix(5);
+    const BeamSearchInput input{
+        .current_time = UnixTimeMilliseconds{0},
+        .planning_horizon_start = UnixTimeMilliseconds{0},
+        .planning_horizon_end = UnixTimeMilliseconds{12000},
+        .preserved_prefix = {},
+        .remaining_activities = {first, second, third, protected_activity},
+        .travel_time_matrix = &matrix,
+    };
+    auto run_with_mask = [&](std::uint8_t mask) {
+      PlannerScratch scratch;
+      scratch.tail_optimization_mask = mask;
+      return run_beam_search(input, budget(2), scratch);
+    };
+    const auto baseline = run_with_mask(0);
+    for (const auto mask :
+         {kTailValidatedInput, kTailLowerBoundScratch,
+          kTailPartialBeamSelection, kTailAllOptimizations}) {
+      const auto candidate = run_with_mask(mask);
+      const bool score_matches =
+          candidate.best_score.has_value() == baseline.best_score.has_value() &&
+          (!candidate.best_score.has_value() ||
+           (!is_better_complete(*candidate.best_score, *baseline.best_score) &&
+            !is_better_complete(*baseline.best_score, *candidate.best_score)));
+      if (candidate.outcome != baseline.outcome ||
+          candidate.best_decisions != baseline.best_decisions ||
+          !score_matches ||
+          candidate.expansion_count != baseline.expansion_count ||
+          candidate.candidate_count != baseline.candidate_count ||
+          candidate.search_was_truncated != baseline.search_was_truncated ||
+          candidate.deadline_hit != baseline.deadline_hit ||
+          candidate.cancellation_requested !=
+              baseline.cancellation_requested) {
+        return 1;
+      }
     }
   }
 

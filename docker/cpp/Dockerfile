@@ -78,7 +78,7 @@ RUN set -eu; \
     make --jobs=2; \
     make install
 
-FROM --platform=linux/amd64 bmigeri/devcon-cpp@sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4
+FROM --platform=linux/amd64 bmigeri/devcon-cpp@sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4 AS liveroute-build
 
 COPY --from=websocket-curl-builder /opt/liveroute/curl /opt/liveroute/curl
 
@@ -100,8 +100,11 @@ RUN cmake -S . -B /workspace/build -G Ninja \
       -DLIVEROUTE_ENABLE_OSRM=ON \
       -DLIVEROUTE_ENABLE_WEBSOCKET_LOAD=ON \
       -DLIVEROUTE_ENABLE_PINNED_TZDATA_TESTS=ON \
-    && cmake --build /workspace/build \
-    && ctest --test-dir /workspace/build --output-on-failure \
+    && cmake --build /workspace/build
+
+FROM liveroute-build AS liveroute-verified
+
+RUN ctest --test-dir /workspace/build --output-on-failure \
     && /workspace/build/liveroute_proto_serialization_bench \
     && /workspace/build/liveroute_sharded_runtime_bench
 

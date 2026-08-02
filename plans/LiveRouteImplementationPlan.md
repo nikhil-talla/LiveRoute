@@ -372,24 +372,65 @@ Implement backend durability and WebSocket gateway:
 Implement observability:
 
 - Collect stage timings:
-  - request deserialization
+  - application-controlled request deserialization/validation: WebSocket text
+    bytes through strict JSON/schema validation, and gRPC callback entry through
+    validated Protobuf-to-domain construction; framework-internal wire decoding
+    is explicitly excluded
   - queue wait
   - event application
   - OSRM request
-  - hours provider request
+  - hours provider request only when an optional hours-import adapter is invoked
   - matrix conversion
   - planner
   - response serialization
   - total
-- Track queue depth by priority, shard load, candidate count, route-cache hit rate once caching exists, hours-cache hit rate once caching exists, deadline misses, cancelled requests, duplicate/stale events, events dropped by priority, events coalesced, replan trigger count, replan cancellation count, OSRM failures, and hours-provider failures.
-- Produce benchmark reports with p50/p95/p99 and throughput.
+- Track queue depth by priority, shard load, candidate count, route-cache hit rate once caching exists, deadline misses, cancelled requests, duplicate/stale events, events dropped by priority, events coalesced, replan trigger count, replan cancellation count, and OSRM failures. Hours-provider latency/failure/cache metrics are conditional on an enabled optional import adapter; the normal V1 serving path uses the user's persisted normalized `open_windows` and performs no hours lookup.
+- Produce the exact schema-validated `liveroute.benchmark.v1` raw JSON and
+  `liveroute.benchmark.aggregate.v1` aggregate JSON artifacts from
+  `plans/LiveRouteV1ContractSpec.md`. Preserve fixed raw histogram buckets,
+  partition by exact dimensions, merge counts with checked arithmetic, derive
+  percentiles from merged buckets, and derive throughput from summed completed
+  operations and elapsed time; never parse console prose or average percentiles.
 
 Optimize after correctness:
 
-- Replace string-heavy route keys with compact coordinate-cell keys when adding cache.
-- Add sharded route-matrix cache with TTL and fixed memory budget.
+- Implement `liveroute-route-cache-v1` exactly as contracted: raw
+  `RouteEstimate` pairs keyed by deterministic signed E5 cells, static OSRM
+  departure bucket, mode, and dataset/profile version; 16 shards; 131,072-entry
+  and 64-MiB total bounds; six-hour fresh/24-hour stale ages; bounded 64-slot
+  second-chance eviction; and fully covered `PROVIDER_UNAVAILABLE`-only stale
+  fallback. Add the `route_cache` block to `config/local-v1.yaml` together with
+  its strict loader/validation so the currently runnable config is never left
+  containing unknown keys.
 - Reduce planner allocations using `std::pmr`, reusable scratch buffers, and fixed-capacity candidate arrays where practical.
-- Use `perf`, `heaptrack`, sanitizer builds, and flame graphs to justify each optimization with before/after numbers.
+- Measure Phase 18 with the exact planner-scoped boundary and
+  `planner-allocation-v1` five-run suite in the contract. Benchmark-only global
+  allocation hooks use thread-local attribution; never use whole-process totals
+  as planner evidence or link those hooks into the serving binary. Require the
+  contracted 50% call/40% byte reduction, per-suffix non-regression, 95%
+  throughput floor, and identical canonical results before calling the phase a
+  measured success.
+- Implement Phase 19 only through the contract's private worker-owned
+  `PlannerActivityColumns`; do not replace `BeamSearchInput` or expose the layout
+  to domain, provider, transport, storage, or proposal APIs. Build the view once
+  per valid attempt, reuse its storage, and preserve exact scalar generation,
+  scoring, comparison, budget, and result behavior.
+- Capture the exact `planner-layout-timing-v1` native and
+  `planner-layout-profile-v1` Callgrind suites. Use the checksum-pinned Valgrind
+  3.22.0 profiler stage, fixed simulated cache geometry, checked event mapping,
+  and the pinned GCC vectorization report. Retain a layout/prefetch/vectorization
+  experiment only if every quantitative Phase 19 gate passes; otherwise revert
+  it and record the neutral/rejected evidence in the optimization ledger.
+- Native `perf`, Heaptrack, sanitizer builds, and flame graphs are optional
+  supplemental diagnostics. Host-specific profiler output never replaces the
+  schema-validated Phase 18/19 evidence or sanitizer correctness checks.
+- For Phase 20, implement only the three contract-defined semantic-preserving
+  experiment bits. Run the five-process `planner-tail-v1` baseline and each
+  isolated bit plus the mask-7 interaction candidate. Retain only individually
+  passing bits; if their OR is a different nonzero subset, measure that subset
+  independently before serving it. Do not change size-based budgets, provider
+  timeouts, event priority, cache warmup, or overload statuses as an
+  optimization shortcut.
 
 ## Test Plan
 
@@ -419,7 +460,7 @@ OSRM-backed integration tests:
 - Flexible lunch becomes impossible.
 - Destination unreachable.
 - OSRM timeout.
-- Hours provider timeout.
+- Optional hours-import provider timeout, when that adapter is enabled.
 - Two events arrive out of order.
 - Same event delivered twice.
 - No replanning necessary.
@@ -461,7 +502,7 @@ Benchmark suites:
 - GPS coalescing under bursty updates.
 - Protobuf serialization/deserialization latency.
 - OSRM matrix request latency.
-- Hours provider request/cache latency.
+- Optional hours-import provider request/cache latency, only when that adapter is enabled; ordinary manual-hours V1 reports omit it.
 - End-to-end gRPC latency under normal load and overload.
 - Shard scaling: global mutex baseline vs sharded ownership.
 

@@ -23,6 +23,7 @@ using liveroute::domain::UnixTimeMilliseconds;
 using liveroute::planner::BeamSearchInput;
 using liveroute::planner::ExpansionDecision;
 using liveroute::planner::PlanningActivity;
+using liveroute::planner::PlannerScoreScratch;
 using liveroute::planner::score_candidate;
 
 ActivityId activity_id(std::uint8_t marker) {
@@ -134,7 +135,37 @@ int main() {
       insertion_score->total_start_shift_ms != 0 ||
       insertion_score->scheduled_utility != 60 ||
       insertion_score->canonical_plan_key.scheduled_ordinals_in_order !=
-          std::vector<std::size_t>({7, 3, 1})) {
+             std::vector<std::size_t>({7, 3, 1})) {
+    return 1;
+  }
+
+  PlannerScoreScratch reusable_score_scratch;
+  const auto insertion_score_reused =
+      score_candidate(input, inserted_between, reusable_score_scratch);
+  const auto omission_score_reused =
+      score_candidate(input, std::vector<ExpansionDecision>{
+                               scheduled(7, 0, 1000), skipped(1), skipped(3)},
+                       reusable_score_scratch);
+  if (!insertion_score_reused || !omission_score_reused ||
+      insertion_score_reused->skips_by_priority !=
+          insertion_score->skips_by_priority ||
+      insertion_score_reused->scheduled_utility !=
+          insertion_score->scheduled_utility ||
+      insertion_score_reused->total_lateness_ms !=
+          insertion_score->total_lateness_ms ||
+      insertion_score_reused->total_preferred_shortfall_ms !=
+          insertion_score->total_preferred_shortfall_ms ||
+      insertion_score_reused->total_travel_ms != insertion_score->total_travel_ms ||
+      insertion_score_reused->changed_activity_count !=
+          insertion_score->changed_activity_count ||
+      insertion_score_reused->total_start_shift_ms !=
+          insertion_score->total_start_shift_ms ||
+      insertion_score_reused->final_scheduled_end_unix_ms !=
+          insertion_score->final_scheduled_end_unix_ms ||
+      insertion_score_reused->canonical_plan_key !=
+          insertion_score->canonical_plan_key ||
+      omission_score_reused->scheduled_utility != 10 ||
+      omission_score_reused->changed_activity_count != 1) {
     return 1;
   }
 

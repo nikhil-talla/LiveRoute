@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liveroute.local/schema/benchmark/liveroute-benchmark-aggregate-v1.schema.json",
+  "title": "LiveRoute benchmark aggregate artifact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "groups"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "liveroute.benchmark.aggregate.v1"
+    },
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/group"
+      }
+    }
+  },
+  "$defs": {
+    "uint64": {
+      "$ref": "liveroute-benchmark-v1.schema.json#/$defs/uint64"
+    },
+    "positiveUint64": {
+      "$ref": "liveroute-benchmark-v1.schema.json#/$defs/positiveUint64"
+    },
+    "percentile": {
+      "enum": [
+        1,
+        5,
+        10,
+        25,
+        50,
+        100,
+        250,
+        500,
+        1000,
+        2500,
+        5000,
+        10000,
+        25000,
+        50000,
+        100000,
+        250000,
+        500000,
+        1000000,
+        null
+      ]
+    },
+    "aggregateHistogram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unit",
+        "count",
+        "sum_microseconds",
+        "max_microseconds",
+        "upper_bounds_microseconds",
+        "bucket_counts",
+        "p50_microseconds",
+        "p95_microseconds",
+        "p99_microseconds"
+      ],
+      "properties": {
+        "unit": { "const": "microseconds" },
+        "count": { "$ref": "#/$defs/uint64" },
+        "sum_microseconds": { "$ref": "#/$defs/uint64" },
+        "max_microseconds": { "$ref": "#/$defs/uint64" },
+        "upper_bounds_microseconds": {
+          "$ref": "liveroute-benchmark-v1.schema.json#/$defs/upperBounds"
+        },
+        "bucket_counts": {
+          "$ref": "liveroute-benchmark-v1.schema.json#/$defs/bucketCounts"
+        },
+        "p50_microseconds": { "$ref": "#/$defs/percentile" },
+        "p95_microseconds": { "$ref": "#/$defs/percentile" },
+        "p99_microseconds": { "$ref": "#/$defs/percentile" }
+      }
+    },
+    "aggregateHistograms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deserialization": { "$ref": "#/$defs/aggregateHistogram" },
+        "queue_wait": { "$ref": "#/$defs/aggregateHistogram" },
+        "event_application": { "$ref": "#/$defs/aggregateHistogram" },
+        "osrm_request": { "$ref": "#/$defs/aggregateHistogram" },
+        "hours_provider_request": { "$ref": "#/$defs/aggregateHistogram" },
+        "matrix_conversion": { "$ref": "#/$defs/aggregateHistogram" },
+        "planner": { "$ref": "#/$defs/aggregateHistogram" },
+        "serialization": { "$ref": "#/$defs/aggregateHistogram" },
+        "total_request": { "$ref": "#/$defs/aggregateHistogram" },
+        "acknowledgement": { "$ref": "#/$defs/aggregateHistogram" },
+        "route_cache_lookup": { "$ref": "#/$defs/aggregateHistogram" },
+        "route_cache_hit_path": { "$ref": "#/$defs/aggregateHistogram" },
+        "osrm_backed_path": { "$ref": "#/$defs/aggregateHistogram" }
+      }
+    },
+    "rate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "properties": {
+        "numerator": { "$ref": "#/$defs/uint64" },
+        "denominator": { "$ref": "#/$defs/positiveUint64" }
+      }
+    },
+    "rates": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/rate"
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "benchmark_name",
+        "dimensions",
+        "run_count",
+        "run_ids",
+        "measurement",
+        "counters",
+        "histograms",
+        "gauges",
+        "throughput_millioperations_per_second",
+        "rates"
+      ],
+      "properties": {
+        "benchmark_name": {
+          "$ref": "liveroute-benchmark-v1.schema.json#/$defs/name"
+        },
+        "dimensions": {
+          "$ref": "liveroute-benchmark-v1.schema.json#/$defs/dimensions"
+        },
+        "run_count": {
+          "$ref": "#/$defs/positiveUint64"
+        },
+        "run_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "liveroute-benchmark-v1.schema.json#/$defs/uuid"
+          }
+        },
+        "measurement": {
+          "$ref": "liveroute-benchmark-v1.schema.json#/$defs/measurement"
+        },
+        "counters": {
+          "$ref": "liveroute-benchmark-v1.schema.json#/$defs/counters"
+        },
+        "histograms": {
+          "$ref": "#/$defs/aggregateHistograms"
+        },
+        "gauges": {
+          "$ref": "liveroute-benchmark-v1.schema.json#/$defs/gauges"
+        },
+        "throughput_millioperations_per_second": {
+          "$ref": "#/$defs/uint64"
+        },
+        "rates": {
+          "$ref": "#/$defs/rates"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "benchmark_name": {
+                "const": "planner-allocation-v1"
+              }
+            },
+            "required": [
+              "benchmark_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "counters": {
+                "required": [
+                  "deadline_misses",
+                  "planner_allocation_calls",
+                  "planner_allocated_bytes",
+                  "planner_allocation_scope_overflows"
+                ]
+              },
+              "histograms": {
+                "required": [
+                  "planner"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "benchmark_name": {
+                "const": "planner-layout-timing-v1"
+              }
+            },
+            "required": [
+              "benchmark_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "dimensions": {
+                "properties": {
+                  "mode": {
+                    "const": "planner"
+                  },
+                  "parameters": {
+                    "$ref": "liveroute-benchmark-v1.schema.json#/$defs/plannerLayoutParameters"
+                  }
+                }
+              },
+              "counters": {
+                "required": [
+                  "deadline_misses",
+                  "planner_allocation_calls",
+                  "planner_allocated_bytes",
+                  "planner_allocation_scope_overflows",
+                  "planner_candidates",
+                  "planner_expansions"
+                ],
+                "properties": {
+                  "planner_candidates": {
+                    "$ref": "#/$defs/positiveUint64"
+                  },
+                  "planner_expansions": {
+                    "$ref": "#/$defs/positiveUint64"
+                  }
+                }
+              },
+              "histograms": {
+                "required": [
+                  "planner"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "benchmark_name": {
+                "const": "planner-layout-profile-v1"
+              }
+            },
+            "required": [
+              "benchmark_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "dimensions": {
+                "properties": {
+                  "mode": {
+                    "const": "planner"
+                  },
+                  "parameters": {
+                    "$ref": "liveroute-benchmark-v1.schema.json#/$defs/plannerLayoutProfileParameters"
+                  }
+                }
+              },
+              "counters": {
+                "required": [
+                  "deadline_misses",
+                  "planner_candidates",
+                  "planner_expansions",
+                  "profile_branches",
+                  "profile_branch_misses",
+                  "profile_data_references",
+                  "profile_instructions",
+                  "profile_l1d_misses",
+                  "profile_ll_data_misses"
+                ],
+                "properties": {
+                  "planner_candidates": {
+                    "$ref": "#/$defs/positiveUint64"
+                  },
+                  "planner_expansions": {
+                    "$ref": "#/$defs/positiveUint64"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "benchmark_name": {
+                "const": "planner-tail-v1"
+              }
+            },
+            "required": [
+              "benchmark_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "dimensions": {
+                "properties": {
+                  "mode": {
+                    "const": "planner"
+                  },
+                  "parameters": {
+                    "$ref": "liveroute-benchmark-v1.schema.json#/$defs/plannerTailParameters"
+                  }
+                }
+              },
+              "counters": {
+                "required": [
+                  "deadline_misses",
+                  "planner_allocation_calls",
+                  "planner_allocated_bytes",
+                  "planner_allocation_scope_overflows",
+                  "planner_candidates",
+                  "planner_expansions"
+                ],
+                "properties": {
+                  "planner_candidates": {
+                    "$ref": "#/$defs/positiveUint64"
+                  },
+                  "planner_expansions": {
+                    "$ref": "#/$defs/positiveUint64"
+                  }
+                }
+              },
+              "histograms": {
+                "required": [
+                  "planner"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

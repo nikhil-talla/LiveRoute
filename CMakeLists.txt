@@ -61,6 +61,7 @@ add_library(liveroute_domain
   src/planner/replan_attempt.cpp
   src/planner/result_metadata.cpp
   src/routing/osrm_response.cpp
+  src/routing/route_matrix_cache.cpp
   src/routing/travel_time_provider.cpp
   src/runtime/concurrent_trip_runtime.cpp
   src/runtime/metrics.cpp
@@ -97,11 +98,36 @@ add_library(liveroute_load_model src/load/workload.cpp)
 target_include_directories(liveroute_load_model PUBLIC include)
 liveroute_configure_target(liveroute_load_model)
 
+add_library(liveroute_benchmark_allocation STATIC
+  bench/planner_allocation.cpp
+)
+target_include_directories(liveroute_benchmark_allocation PUBLIC include)
+liveroute_configure_target(liveroute_benchmark_allocation)
+
 add_executable(liveroute_loadgen src/load/main.cpp)
 target_link_libraries(liveroute_loadgen
   PRIVATE liveroute_domain liveroute_load_model
 )
 liveroute_configure_target(liveroute_loadgen)
+
+add_executable(liveroute_planner_allocation_test
+  tests/planner_allocation_test.cpp
+)
+target_link_libraries(liveroute_planner_allocation_test
+  PRIVATE liveroute_benchmark_allocation
+)
+liveroute_configure_target(liveroute_planner_allocation_test)
+add_test(NAME liveroute_planner_allocation_test
+  COMMAND liveroute_planner_allocation_test
+)
+
+add_executable(liveroute_planner_allocation_bench
+  bench/planner_allocation_bench.cpp
+)
+target_link_libraries(liveroute_planner_allocation_bench
+  PRIVATE liveroute_domain liveroute_benchmark_allocation
+)
+liveroute_configure_target(liveroute_planner_allocation_bench)
 
 enable_testing()
 add_test(NAME liveroute_loadgen_self_check
@@ -112,6 +138,15 @@ add_executable(liveroute_metrics_test tests/metrics_test.cpp)
 target_link_libraries(liveroute_metrics_test PRIVATE liveroute_domain)
 liveroute_configure_target(liveroute_metrics_test)
 add_test(NAME liveroute_metrics_test COMMAND liveroute_metrics_test)
+
+add_executable(liveroute_route_matrix_cache_test
+  tests/route_matrix_cache_test.cpp
+)
+target_link_libraries(liveroute_route_matrix_cache_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_route_matrix_cache_test)
+add_test(NAME liveroute_route_matrix_cache_test
+  COMMAND liveroute_route_matrix_cache_test
+)
 
 if(LIVEROUTE_ENABLE_GRPC)
   find_package(absl CONFIG REQUIRED)

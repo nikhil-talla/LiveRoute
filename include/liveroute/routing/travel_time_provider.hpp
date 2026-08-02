@@ -23,6 +23,11 @@ enum class TravelTimeProviderError : std::uint8_t {
   kInternal,
 };
 
+enum class TravelTimeLookupQuality : std::uint8_t {
+  kFresh,
+  kStaleCache,
+};
+
 [[nodiscard]] constexpr bool is_retryable(
     TravelTimeProviderError error) noexcept {
   switch (error) {
@@ -42,14 +47,18 @@ enum class TravelTimeProviderError : std::uint8_t {
 class TravelTimeLookupResult {
  public:
   explicit TravelTimeLookupResult(domain::TravelTimeMatrix matrix);
+  TravelTimeLookupResult(domain::TravelTimeMatrix matrix,
+                         TravelTimeLookupQuality quality);
   explicit TravelTimeLookupResult(TravelTimeProviderError error) noexcept;
 
   [[nodiscard]] bool has_matrix() const noexcept;
   [[nodiscard]] const domain::TravelTimeMatrix& matrix() const;
   [[nodiscard]] TravelTimeProviderError error() const;
+  [[nodiscard]] TravelTimeLookupQuality quality() const;
 
  private:
   std::variant<domain::TravelTimeMatrix, TravelTimeProviderError> value_;
+  TravelTimeLookupQuality quality_{TravelTimeLookupQuality::kFresh};
 };
 
 class TravelTimeProvider {

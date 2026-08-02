@@ -1,9 +1,11 @@
 #include "liveroute/planner/beam_search.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <utility>
@@ -18,6 +20,10 @@ namespace {
 using domain::ActivityTiming;
 using domain::TimeWindow;
 using domain::UnixTimeMilliseconds;
+
+std::vector<CandidateAlternative> generate_candidate_alternatives_impl(
+    const BeamSearchInput& input, const PlanningActivity& planning_activity,
+    UnixTimeMilliseconds arrival, bool validate_input);
 
 [[nodiscard]] std::optional<std::int64_t> seconds_to_milliseconds(
     std::uint32_t seconds) noexcept {
@@ -165,6 +171,9 @@ void add_exact_current_plan(const BeamSearchInput& input,
   return std::nullopt;
 }
 
+[[nodiscard]] std::optional<std::size_t> activity_index_for_ordinal(
+    const PlannerActivityColumns& columns, std::size_t ordinal) noexcept;
+
 [[nodiscard]] bool contains_scheduled_alternative(
     std::span<const CandidateAlternative> alternatives,
     const ExpansionDecision& decision) noexcept {
@@ -180,12 +189,16 @@ void add_exact_current_plan(const BeamSearchInput& input,
 
 [[nodiscard]] std::optional<std::pair<std::size_t, std::int64_t>>
 last_scheduled_state(const BeamSearchInput& input,
-                     std::span<const ExpansionDecision> decisions) noexcept {
+                     std::span<const ExpansionDecision> decisions,
+                     const PlannerActivityColumns* columns = nullptr) noexcept {
   for (auto decision = decisions.rbegin(); decision != decisions.rend();
        ++decision) {
     if (decision->decision != 0) continue;
-    const auto index =
-        activity_index_for_ordinal(input, decision->activity_ordinal);
+    const auto index = columns != nullptr
+                           ? activity_index_for_ordinal(*columns,
+                                                       decision->activity_ordinal)
+                           : activity_index_for_ordinal(input,
+                                                       decision->activity_ordinal);
     if (!index) return std::nullopt;
     return std::pair<std::size_t, std::int64_t>{*index,
                                                 decision->end_unix_ms};
@@ -198,15 +211,20 @@ last_scheduled_state(const BeamSearchInput& input,
 [[nodiscard]] std::optional<UnixTimeMilliseconds> actual_arrival(
     const BeamSearchInput& input,
     std::span<const ExpansionDecision> decisions,
-    std::size_t destination_activity_index) noexcept {
-  const auto last = last_scheduled_state(input, decisions);
+    std::size_t destination_activity_index,
+    const PlannerActivityColumns* columns = nullptr) noexcept {
+  const auto last = last_scheduled_state(input, decisions, columns);
   if (!last) return std::nullopt;
   const auto origin_matrix_index =
       last->first == std::numeric_limits<std::size_t>::max()
           ? std::size_t{0}
           : last->first + 1;
-  const auto& route = input.travel_time_matrix->at(
-      origin_matrix_index, destination_activity_index + 1);
+  const auto destination_matrix_index =
+      columns != nullptr
+          ? columns->matrix_location_indices[destination_activity_index]
+          : destination_activity_index + 1;
+  const auto& route = input.travel_time_matrix->at(origin_matrix_index,
+                                                   destination_matrix_index);
   const auto travel_ms = route_duration_milliseconds(route);
   const auto arrival =
       travel_ms ? checked_add(last->second, *travel_ms) : std::nullopt;
@@ -217,13 +235,18 @@ last_scheduled_state(const BeamSearchInput& input,
 
 [[nodiscard]] bool passes_protected_activity_lower_bound(
     const BeamSearchInput& input,
-    std::span<const ExpansionDecision> decisions) {
-  std::vector<bool> decided(input.remaining_activities.size(), false);
+    std::span<const ExpansionDecision> decisions,
+    std::vector<std::uint8_t>* reusable_decided = nullptr,
+    bool validate_input = true) {
+  std::vector<std::uint8_t> local_decided;
+  auto& decided = reusable_decided != nullptr ? *reusable_decided : local_decided;
+  decided.resize(input.remaining_activities.size());
+  std::fill(decided.begin(), decided.end(), std::uint8_t{0});
   for (const auto& decision : decisions) {
     const auto index =
         activity_index_for_ordinal(input, decision.activity_ordinal);
     if (!index) return false;
-    decided[*index] = true;
+    decided[*index] = 1;
   }
 
   const auto last = last_scheduled_state(input, decisions);
@@ -237,8 +260,8 @@ last_scheduled_state(const BeamSearchInput& input,
         activity.activity.timing.can_skip) {
       continue;
     }
-    const auto alternatives =
-        generate_candidate_alternatives(input, activity, optimistic_arrival);
+    const auto alternatives = generate_candidate_alternatives_impl(
+        input, activity, optimistic_arrival, validate_input);
     if (std::none_of(
             alternatives.begin(), alternatives.end(),
             [](const CandidateAlternative& alternative) {
@@ -310,6 +333,141 @@ void reconstruct_decisions(const PlannerScratch& scratch,
   };
 }
 
+constexpr std::uint16_t kBaselineScheduled = 1U << 0U;
+constexpr std::uint16_t kMandatory = 1U << 1U;
+constexpr std::uint16_t kMovable = 1U << 2U;
+constexpr std::uint16_t kSkippable = 1U << 3U;
+constexpr std::uint16_t kReservationPresent = 1U << 4U;
+constexpr std::uint16_t kMandatoryDeadlinePresent = 1U << 5U;
+constexpr std::uint16_t kFoundClosed = 1U << 6U;
+
+[[nodiscard]] bool prepare_activity_columns(
+    const BeamSearchInput& input, PlannerActivityColumns* columns) {
+  columns->reset();
+  const auto count = input.remaining_activities.size();
+  columns->activity_ids.reserve(count);
+  columns->original_trip_ordinals.reserve(count);
+  columns->matrix_location_indices.reserve(count);
+  columns->priority_ranks.reserve(count);
+  columns->utility_scores.reserve(count);
+  columns->minimum_duration_ms.reserve(count);
+  columns->scheduled_duration_ms.reserve(count);
+  columns->preferred_duration_ms.reserve(count);
+  columns->maximum_duration_ms.reserve(count);
+  columns->earliest_open_ms.reserve(count);
+  columns->latest_close_ms.reserve(count);
+  columns->baseline_start_ms.reserve(count);
+  columns->baseline_end_ms.reserve(count);
+  columns->reservation_start_ms.reserve(count);
+  columns->reservation_latest_start_ms.reserve(count);
+  columns->mandatory_deadline_ms.reserve(count);
+  columns->flags.reserve(count);
+  columns->window_offsets.reserve(count + 1);
+  columns->sorted_ordinals.reserve(count);
+  columns->sorted_activity_indices.reserve(count);
+  columns->window_offsets.push_back(0);
+
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto& planning_activity = input.remaining_activities[index];
+    const auto& activity = planning_activity.activity;
+    const auto& timing = activity.timing;
+    const auto& baseline = planning_activity.current_plan_segment;
+    const auto minimum_duration = checked_milliseconds(timing.min_duration_seconds);
+    const auto preferred_duration =
+        checked_milliseconds(timing.preferred_duration_seconds);
+    const auto maximum_duration = checked_milliseconds(timing.max_duration_seconds);
+    if (!minimum_duration || !preferred_duration || !maximum_duration) {
+      return false;
+    }
+
+    std::optional<std::int64_t> scheduled_duration;
+    if (baseline.state == domain::PlanEntryState::kScheduled) {
+      scheduled_duration = checked_subtract(
+          baseline.scheduled_end->value(), baseline.scheduled_start->value());
+    } else {
+      scheduled_duration = checked_milliseconds(
+          std::max<std::uint32_t>(1, timing.preferred_duration_seconds));
+    }
+    if (!scheduled_duration) return false;
+
+    std::optional<std::int64_t> reservation_latest_start;
+    if (timing.reservation_start.has_value()) {
+      const auto grace_ms = checked_milliseconds(timing.reservation_grace_seconds);
+      reservation_latest_start =
+          grace_ms ? checked_add(timing.reservation_start->value(), *grace_ms)
+                   : std::nullopt;
+      if (!reservation_latest_start) return false;
+    }
+
+    std::uint16_t flags = 0;
+    if (baseline.state == domain::PlanEntryState::kScheduled) {
+      flags |= kBaselineScheduled;
+    }
+    if (timing.mandatory) flags |= kMandatory;
+    if (timing.can_move) flags |= kMovable;
+    if (timing.can_skip) flags |= kSkippable;
+    if (timing.reservation_start.has_value()) flags |= kReservationPresent;
+    if (timing.mandatory_deadline.has_value()) {
+      flags |= kMandatoryDeadlinePresent;
+    }
+    if (activity.found_closed_at.has_value()) flags |= kFoundClosed;
+
+    columns->activity_ids.push_back(activity.activity_id);
+    columns->original_trip_ordinals.push_back(planning_activity.original_trip_ordinal);
+    columns->matrix_location_indices.push_back(index + 1);
+    columns->priority_ranks.push_back(activity.priority_rank);
+    columns->utility_scores.push_back(activity.utility_score);
+    columns->minimum_duration_ms.push_back(*minimum_duration);
+    columns->scheduled_duration_ms.push_back(*scheduled_duration);
+    columns->preferred_duration_ms.push_back(*preferred_duration);
+    columns->maximum_duration_ms.push_back(*maximum_duration);
+    columns->baseline_start_ms.push_back(
+        baseline.scheduled_start.has_value() ? baseline.scheduled_start->value() : 0);
+    columns->baseline_end_ms.push_back(
+        baseline.scheduled_end.has_value() ? baseline.scheduled_end->value() : 0);
+    columns->reservation_start_ms.push_back(
+        timing.reservation_start.has_value() ? timing.reservation_start->value() : 0);
+    columns->reservation_latest_start_ms.push_back(
+        reservation_latest_start.value_or(0));
+    columns->mandatory_deadline_ms.push_back(
+        timing.mandatory_deadline.has_value() ? timing.mandatory_deadline->value() : 0);
+    columns->flags.push_back(flags);
+
+    for (const auto& window : timing.open_windows) {
+      columns->window_opens_ms.push_back(window.opens_at.value());
+      columns->window_closes_ms.push_back(window.closes_at.value());
+    }
+    columns->window_offsets.push_back(columns->window_opens_ms.size());
+    columns->sorted_ordinals.push_back(planning_activity.original_trip_ordinal);
+    columns->sorted_activity_indices.push_back(static_cast<std::uint8_t>(index));
+  }
+
+  std::iota(columns->sorted_activity_indices.begin(),
+            columns->sorted_activity_indices.end(), std::uint8_t{0});
+  std::sort(columns->sorted_activity_indices.begin(),
+            columns->sorted_activity_indices.end(), [&columns](std::uint8_t left,
+                                                               std::uint8_t right) {
+    return columns->original_trip_ordinals[left] <
+           columns->original_trip_ordinals[right];
+  });
+  for (std::size_t position = 0; position < count; ++position) {
+    columns->sorted_ordinals[position] =
+        columns->original_trip_ordinals[columns->sorted_activity_indices[position]];
+  }
+  return true;
+}
+
+[[nodiscard]] std::optional<std::size_t> activity_index_for_ordinal(
+    const PlannerActivityColumns& columns, std::size_t ordinal) noexcept {
+  const auto position = std::lower_bound(columns.sorted_ordinals.begin(),
+                                         columns.sorted_ordinals.end(), ordinal);
+  if (position == columns.sorted_ordinals.end() || *position != ordinal) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(columns.sorted_activity_indices[
+      static_cast<std::size_t>(position - columns.sorted_ordinals.begin())]);
+}
+
 }  // namespace
 
 bool BeamSearchInput::is_valid() const noexcept {
@@ -321,12 +479,12 @@ bool BeamSearchInput::is_valid() const noexcept {
       travel_time_matrix->location_count() != remaining_activities.size() + 1) {
     return false;
   }
-  std::vector<domain::ActivityId> activity_ids;
-  activity_ids.reserve(preserved_prefix.size() + remaining_activities.size());
+  std::array<std::array<std::byte, 16>, 64> activity_ids{};
+  std::size_t activity_id_count = 0;
   std::optional<UnixTimeMilliseconds> prior_preserved_end;
   for (const auto& segment : preserved_prefix) {
     if (!segment.is_valid()) return false;
-    activity_ids.push_back(segment.activity_id);
+    activity_ids[activity_id_count++] = segment.activity_id.value();
     if (segment.state == domain::PlanEntryState::kScheduled) {
       if (prior_preserved_end.has_value() &&
           *segment.scheduled_start < *prior_preserved_end) {
@@ -336,20 +494,22 @@ bool BeamSearchInput::is_valid() const noexcept {
     }
   }
 
-  std::vector<std::size_t> ordinals;
-  ordinals.reserve(remaining_activities.size());
+  std::array<std::size_t, 64> ordinals{};
+  std::size_t ordinal_count = 0;
   for (const auto& activity : remaining_activities) {
     if (!activity.is_valid()) return false;
-    activity_ids.push_back(activity.activity.activity_id);
-    ordinals.push_back(activity.original_trip_ordinal);
+    activity_ids[activity_id_count++] = activity.activity.activity_id.value();
+    ordinals[ordinal_count++] = activity.original_trip_ordinal;
   }
-  std::sort(activity_ids.begin(), activity_ids.end());
-  if (std::adjacent_find(activity_ids.begin(), activity_ids.end()) !=
-      activity_ids.end()) {
+  std::sort(activity_ids.begin(), activity_ids.begin() + activity_id_count);
+  if (std::adjacent_find(activity_ids.begin(),
+                         activity_ids.begin() + activity_id_count) !=
+      activity_ids.begin() + activity_id_count) {
     return false;
   }
-  std::sort(ordinals.begin(), ordinals.end());
-  return std::adjacent_find(ordinals.begin(), ordinals.end()) == ordinals.end();
+  std::sort(ordinals.begin(), ordinals.begin() + ordinal_count);
+  return std::adjacent_find(ordinals.begin(), ordinals.begin() + ordinal_count) ==
+         ordinals.begin() + ordinal_count;
 }
 
 UnixTimeMilliseconds BeamSearchInput::suffix_start_time() const noexcept {
@@ -363,11 +523,15 @@ UnixTimeMilliseconds BeamSearchInput::suffix_start_time() const noexcept {
   return start;
 }
 
-std::vector<CandidateAlternative> generate_candidate_alternatives(
+namespace {
+
+std::vector<CandidateAlternative> generate_candidate_alternatives_impl(
     const BeamSearchInput& input, const PlanningActivity& planning_activity,
-    UnixTimeMilliseconds arrival) {
+    UnixTimeMilliseconds arrival, bool validate_input) {
   std::vector<CandidateAlternative> alternatives;
-  if (!input.is_valid() || !planning_activity.is_valid()) return alternatives;
+  if ((validate_input && !input.is_valid()) || !planning_activity.is_valid()) {
+    return alternatives;
+  }
 
   const auto& activity = planning_activity.activity;
   const auto& timing = activity.timing;
@@ -437,26 +601,54 @@ std::vector<CandidateAlternative> generate_candidate_alternatives(
   return alternatives;
 }
 
-std::optional<CandidateScore> score_candidate(
+}  // namespace
+
+std::vector<CandidateAlternative> generate_candidate_alternatives(
+    const BeamSearchInput& input, const PlanningActivity& planning_activity,
+    UnixTimeMilliseconds arrival) {
+  return generate_candidate_alternatives_impl(
+      input, planning_activity, arrival, true);
+}
+
+template <bool UseColumns, bool ValidateInput>
+std::optional<CandidateScore> score_candidate_impl(
     const BeamSearchInput& input,
-    std::span<const ExpansionDecision> decisions) {
-  if (!input.is_valid() || decisions.size() > input.remaining_activities.size()) {
+    std::span<const ExpansionDecision> decisions, PlannerScoreScratch& scratch,
+    const PlannerActivityColumns* columns) {
+  if constexpr (ValidateInput) {
+    if (!input.is_valid()) return std::nullopt;
+  }
+  if (decisions.size() > input.remaining_activities.size()) {
     return std::nullopt;
+  }
+  if constexpr (UseColumns) {
+    if (columns == nullptr ||
+        columns->original_trip_ordinals.size() !=
+            input.remaining_activities.size()) {
+      return std::nullopt;
+    }
   }
 
   const auto activity_count = input.remaining_activities.size();
-  std::vector<bool> decided(activity_count, false);
-  std::vector<bool> changed(activity_count, false);
-  std::vector<bool> common_scheduled(activity_count, false);
-  std::vector<std::size_t> candidate_common_order;
-  candidate_common_order.reserve(decisions.size());
-
-  std::vector<std::int32_t> priority_ranks;
+  scratch.prepare(activity_count, decisions.size());
+  auto& decided = scratch.decided;
+  auto& changed = scratch.changed;
+  auto& common_scheduled = scratch.common_scheduled;
+  auto& candidate_common_order = scratch.candidate_common_order;
+  auto& priority_ranks = scratch.priority_ranks;
   priority_ranks.reserve(activity_count);
   std::int64_t optimistic_utility = 0;
-  for (const auto& planning_activity : input.remaining_activities) {
-    priority_ranks.push_back(planning_activity.activity.priority_rank);
-    if (!checked_accumulate(planning_activity.activity.utility_score,
+  for (std::size_t index = 0; index < activity_count; ++index) {
+    const auto priority_rank = [&] {
+      if constexpr (UseColumns) return columns->priority_ranks[index];
+      return input.remaining_activities[index].activity.priority_rank;
+    }();
+    const auto utility_score = [&] {
+      if constexpr (UseColumns) return columns->utility_scores[index];
+      return input.remaining_activities[index].activity.utility_score;
+    }();
+    priority_ranks.push_back(priority_rank);
+    if (!checked_accumulate(utility_score,
                             &optimistic_utility)) {
       return std::nullopt;
     }
@@ -485,21 +677,72 @@ std::optional<CandidateScore> score_candidate(
   std::optional<std::size_t> prior_scheduled_activity_index;
   std::int64_t prior_scheduled_end = input.suffix_start_time().value();
 
+  const auto activity_index = [&](std::size_t ordinal)
+      -> std::optional<std::size_t> {
+    if constexpr (UseColumns) {
+      return activity_index_for_ordinal(*columns, ordinal);
+    }
+    return activity_index_for_ordinal(input, ordinal);
+  };
+  const auto is_baseline_scheduled = [&](std::size_t index) {
+    if constexpr (UseColumns) return (columns->flags[index] & kBaselineScheduled) != 0;
+    return input.remaining_activities[index].current_plan_segment.state ==
+           domain::PlanEntryState::kScheduled;
+  };
+  const auto is_mandatory = [&](std::size_t index) {
+    if constexpr (UseColumns) return (columns->flags[index] & kMandatory) != 0;
+    return input.remaining_activities[index].activity.timing.mandatory;
+  };
+  const auto is_skippable = [&](std::size_t index) {
+    if constexpr (UseColumns) return (columns->flags[index] & kSkippable) != 0;
+    return input.remaining_activities[index].activity.timing.can_skip;
+  };
+  const auto preferred_duration = [&](std::size_t index) {
+    if constexpr (UseColumns) return columns->preferred_duration_ms[index];
+    return checked_milliseconds(input.remaining_activities[index]
+                                    .activity.timing.preferred_duration_seconds)
+        .value_or(0);
+  };
+  const auto original_ordinal = [&](std::size_t index) {
+    if constexpr (UseColumns) return columns->original_trip_ordinals[index];
+    return input.remaining_activities[index].original_trip_ordinal;
+  };
+  const auto baseline_start = [&](std::size_t index) {
+    if constexpr (UseColumns) return columns->baseline_start_ms[index];
+    return input.remaining_activities[index].current_plan_segment.scheduled_start
+        ->value();
+  };
+  const auto baseline_end = [&](std::size_t index) {
+    if constexpr (UseColumns) return columns->baseline_end_ms[index];
+    return input.remaining_activities[index].current_plan_segment.scheduled_end
+        ->value();
+  };
+  const auto has_reservation = [&](std::size_t index) {
+    if constexpr (UseColumns) return (columns->flags[index] & kReservationPresent) != 0;
+    return input.remaining_activities[index].activity.timing.reservation_start
+        .has_value();
+  };
+  const auto reservation_start = [&](std::size_t index) {
+    if constexpr (UseColumns) return columns->reservation_start_ms[index];
+    return input.remaining_activities[index].activity.timing.reservation_start
+        ->value();
+  };
+
   for (const auto& decision : decisions) {
-    const auto activity_index =
-        activity_index_for_ordinal(input, decision.activity_ordinal);
-    if (!activity_index || decided[*activity_index] || decision.decision > 1) {
+    const auto resolved_activity_index = activity_index(decision.activity_ordinal);
+    if (!resolved_activity_index || decided[*resolved_activity_index] ||
+        decision.decision > 1) {
       return std::nullopt;
     }
-    decided[*activity_index] = true;
+    const auto index = *resolved_activity_index;
+    decided[index] = true;
 
-    const auto& planning_activity = input.remaining_activities[*activity_index];
+    const auto& planning_activity = input.remaining_activities[index];
     const auto& activity = planning_activity.activity;
-    const auto& baseline = planning_activity.current_plan_segment;
 
     if (decision.decision == 1) {
       if (decision.start_unix_ms != 0 || decision.end_unix_ms != 0 ||
-          activity.timing.mandatory || !activity.timing.can_skip) {
+          is_mandatory(index) || !is_skippable(index)) {
         return std::nullopt;
       }
       const auto rank_position = std::lower_bound(
@@ -514,14 +757,18 @@ std::optional<CandidateScore> score_candidate(
         return std::nullopt;
       }
       ++skip_count;
+      const auto utility_score = [&] {
+        if constexpr (UseColumns) return columns->utility_scores[index];
+        return activity.utility_score;
+      }();
       const auto reduced_utility =
-          checked_subtract(score.scheduled_utility, activity.utility_score);
+          checked_subtract(score.scheduled_utility, utility_score);
       if (!reduced_utility) return std::nullopt;
       score.scheduled_utility = *reduced_utility;
       score.canonical_plan_key.skipped_ordinals.push_back(
-          planning_activity.original_trip_ordinal);
-      if (baseline.state == domain::PlanEntryState::kScheduled) {
-        changed[*activity_index] = true;
+          original_ordinal(index));
+      if (is_baseline_scheduled(index)) {
+        changed[index] = true;
       }
       continue;
     }
@@ -533,7 +780,8 @@ std::optional<CandidateScore> score_candidate(
         prior_scheduled_activity_index.has_value()
             ? *prior_scheduled_activity_index + 1
             : 0;
-    const std::size_t destination_index = *activity_index + 1;
+    const std::size_t destination_index =
+        UseColumns ? columns->matrix_location_indices[index] : index + 1;
     const auto& route =
         input.travel_time_matrix->at(origin_index, destination_index);
     const auto travel_ms = route_duration_milliseconds(route);
@@ -541,9 +789,9 @@ std::optional<CandidateScore> score_candidate(
         travel_ms ? checked_add(prior_scheduled_end, *travel_ms) : std::nullopt;
     if (!travel_ms || !arrival ||
         !contains_scheduled_alternative(
-            generate_candidate_alternatives(
+            generate_candidate_alternatives_impl(
                 input, planning_activity,
-                UnixTimeMilliseconds{*arrival}),
+                UnixTimeMilliseconds{*arrival}, ValidateInput),
             decision)) {
       return std::nullopt;
     }
@@ -553,20 +801,19 @@ std::optional<CandidateScore> score_candidate(
 
     const auto duration =
         checked_subtract(decision.end_unix_ms, decision.start_unix_ms);
-    const auto preferred_duration =
-        checked_milliseconds(activity.timing.preferred_duration_seconds);
-    if (!duration || !preferred_duration) return std::nullopt;
-    if (*duration < *preferred_duration &&
-        !checked_accumulate(*preferred_duration - *duration,
+    const auto preferred_duration_ms = preferred_duration(index);
+    if (!duration || preferred_duration_ms <= 0) return std::nullopt;
+    if (*duration < preferred_duration_ms &&
+        !checked_accumulate(preferred_duration_ms - *duration,
                             &score.total_preferred_shortfall_ms)) {
       return std::nullopt;
     }
 
     std::optional<std::int64_t> lateness_anchor;
-    if (activity.timing.reservation_start.has_value()) {
-      lateness_anchor = activity.timing.reservation_start->value();
-    } else if (baseline.state == domain::PlanEntryState::kScheduled) {
-      lateness_anchor = baseline.scheduled_start->value();
+    if (has_reservation(index)) {
+      lateness_anchor = reservation_start(index);
+    } else if (is_baseline_scheduled(index)) {
+      lateness_anchor = baseline_start(index);
     }
     if (lateness_anchor.has_value() &&
         decision.start_unix_ms > *lateness_anchor) {
@@ -578,17 +825,17 @@ std::optional<CandidateScore> score_candidate(
       }
     }
 
-    if (baseline.state == domain::PlanEntryState::kOmitted) {
-      changed[*activity_index] = true;
+    if (!is_baseline_scheduled(index)) {
+      changed[index] = true;
     } else {
-      common_scheduled[*activity_index] = true;
-      candidate_common_order.push_back(*activity_index);
-      if (baseline.scheduled_start->value() != decision.start_unix_ms ||
-          baseline.scheduled_end->value() != decision.end_unix_ms) {
-        changed[*activity_index] = true;
+      common_scheduled[index] = true;
+      candidate_common_order.push_back(index);
+      if (baseline_start(index) != decision.start_unix_ms ||
+          baseline_end(index) != decision.end_unix_ms) {
+        changed[index] = true;
       }
       const auto shift = checked_absolute_difference(
-          decision.start_unix_ms, baseline.scheduled_start->value());
+          decision.start_unix_ms, baseline_start(index));
       if (!shift ||
           !checked_accumulate(*shift, &score.total_start_shift_ms)) {
         return std::nullopt;
@@ -596,13 +843,13 @@ std::optional<CandidateScore> score_candidate(
     }
 
     score.canonical_plan_key.scheduled_ordinals_in_order.push_back(
-        planning_activity.original_trip_ordinal);
+        original_ordinal(index));
     score.canonical_plan_key.scheduled_entries.push_back(
-        {.original_ordinal = planning_activity.original_trip_ordinal,
+        {.original_ordinal = original_ordinal(index),
          .start_unix_ms = decision.start_unix_ms,
          .end_unix_ms = decision.end_unix_ms});
     score.final_scheduled_end_unix_ms = decision.end_unix_ms;
-    prior_scheduled_activity_index = *activity_index;
+    prior_scheduled_activity_index = index;
     prior_scheduled_end = decision.end_unix_ms;
   }
 
@@ -611,7 +858,7 @@ std::optional<CandidateScore> score_candidate(
     return std::nullopt;
   }
 
-  std::vector<std::size_t> baseline_common_order;
+  auto& baseline_common_order = scratch.baseline_common_order;
   baseline_common_order.reserve(candidate_common_order.size());
   for (std::size_t index = 0; index < activity_count; ++index) {
     if (common_scheduled[index]) baseline_common_order.push_back(index);
@@ -619,8 +866,10 @@ std::optional<CandidateScore> score_candidate(
   if (baseline_common_order.size() != candidate_common_order.size()) {
     return std::nullopt;
   }
-  std::vector<std::size_t> baseline_common_positions(activity_count, 0);
-  std::vector<std::size_t> candidate_common_positions(activity_count, 0);
+  auto& baseline_common_positions = scratch.baseline_common_positions;
+  auto& candidate_common_positions = scratch.candidate_common_positions;
+  std::fill(baseline_common_positions.begin(), baseline_common_positions.end(), 0);
+  std::fill(candidate_common_positions.begin(), candidate_common_positions.end(), 0);
   for (std::size_t position = 0; position < baseline_common_order.size();
        ++position) {
     baseline_common_positions[baseline_common_order[position]] = position;
@@ -644,6 +893,43 @@ std::optional<CandidateScore> score_candidate(
                           : std::nullopt;
 }
 
+std::optional<CandidateScore> score_candidate(
+    const BeamSearchInput& input,
+    std::span<const ExpansionDecision> decisions) {
+  PlannerScoreScratch scratch;
+  return score_candidate_impl<false, true>(input, decisions, scratch, nullptr);
+}
+
+std::optional<CandidateScore> score_candidate(
+    const BeamSearchInput& input,
+    std::span<const ExpansionDecision> decisions,
+    PlannerScoreScratch& scratch) {
+  return score_candidate_impl<false, true>(input, decisions, scratch, nullptr);
+}
+
+std::optional<CandidateScore> score_candidate(
+    const BeamSearchInput& input,
+    std::span<const ExpansionDecision> decisions,
+    PlannerScoreScratch& scratch, const PlannerActivityColumns& columns) {
+  return score_candidate_impl<true, true>(input, decisions, scratch, &columns);
+}
+
+namespace {
+
+std::optional<CandidateScore> score_validated_candidate(
+    const BeamSearchInput& input,
+    std::span<const ExpansionDecision> decisions,
+    PlannerScoreScratch& scratch,
+    const PlannerActivityColumns* columns) {
+  return columns == nullptr
+             ? score_candidate_impl<false, false>(input, decisions, scratch,
+                                                  nullptr)
+             : score_candidate_impl<true, false>(input, decisions, scratch,
+                                                 columns);
+}
+
+}  // namespace
+
 BeamSearchResult run_beam_search(const BeamSearchInput& input,
                                  const ReplanBudget& budget) {
   PlannerScratch scratch;
@@ -655,6 +941,11 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
                                  PlannerScratch& scratch) {
   scratch.reset();
   if (!input.is_valid() || !budget.is_valid()) {
+    return {.outcome = BeamSearchOutcome::kInvalidInput,
+            .best_decisions = std::nullopt,
+            .best_score = std::nullopt};
+  }
+  if (scratch.use_soa && !prepare_activity_columns(input, &scratch.activity_columns)) {
     return {.outcome = BeamSearchOutcome::kInvalidInput,
             .best_decisions = std::nullopt,
             .best_score = std::nullopt};
@@ -672,7 +963,18 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
             .deadline_hit = true};
   }
 
-  const auto initial_score = score_candidate(input, {});
+  const bool use_validated_score =
+      (scratch.tail_optimization_mask & kTailValidatedInput) != 0;
+  const auto* columns =
+      scratch.use_soa ? &scratch.activity_columns : nullptr;
+  const auto initial_score = use_validated_score
+                                 ? score_validated_candidate(input, {},
+                                                             scratch.score,
+                                                             columns)
+                                 : scratch.use_soa
+                                       ? score_candidate(input, {}, scratch.score,
+                                                         scratch.activity_columns)
+                                       : score_candidate(input, {}, scratch.score);
   if (!initial_score) {
     return {.outcome = BeamSearchOutcome::kInvalidInput,
             .best_decisions = std::nullopt,
@@ -712,8 +1014,12 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
       std::fill(scratch.decided.begin(), scratch.decided.end(),
                 std::uint8_t{0});
       for (const auto& decision : scratch.working_decisions) {
-        const auto index =
-            activity_index_for_ordinal(input, decision.activity_ordinal);
+        const auto index = scratch.use_soa
+                               ? activity_index_for_ordinal(
+                                     scratch.activity_columns,
+                                     decision.activity_ordinal)
+                               : activity_index_for_ordinal(
+                                     input, decision.activity_ordinal);
         if (!index) {
           return interrupted_result(
               BeamSearchOutcome::kInvalidInput, best_complete, scratch,
@@ -741,11 +1047,13 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
         }
         ++expansion_count;
 
-        const auto arrival =
-            actual_arrival(input, scratch.working_decisions, activity_index);
-        const auto alternatives = generate_candidate_alternatives(
+        const auto arrival = actual_arrival(
+            input, scratch.working_decisions, activity_index,
+            scratch.use_soa ? &scratch.activity_columns : nullptr);
+        const auto alternatives = generate_candidate_alternatives_impl(
             input, input.remaining_activities[activity_index],
-            arrival.value_or(input.planning_horizon_end));
+            arrival.value_or(input.planning_horizon_end),
+            !use_validated_score);
         for (const auto& alternative : alternatives) {
           scratch.path_nodes.push_back(
               {.parent_path_index = parent.path_index,
@@ -753,11 +1061,25 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
           const auto child_path_index = scratch.path_nodes.size() - 1;
           scratch.working_decisions.push_back(
               scratch.path_nodes.back().decision);
-          const auto score =
-              score_candidate(input, scratch.working_decisions);
+          const auto score = use_validated_score
+                                 ? score_validated_candidate(
+                                       input, scratch.working_decisions,
+                                       scratch.score, columns)
+                                 : scratch.use_soa
+                                       ? score_candidate(
+                                             input, scratch.working_decisions,
+                                             scratch.score,
+                                             scratch.activity_columns)
+                                       : score_candidate(
+                                             input, scratch.working_decisions,
+                                             scratch.score);
           if (!score ||
               !passes_protected_activity_lower_bound(
-                  input, scratch.working_decisions)) {
+                  input, scratch.working_decisions,
+                  (scratch.tail_optimization_mask & kTailLowerBoundScratch) != 0
+                      ? &scratch.protected_decided
+                      : nullptr,
+                  !use_validated_score)) {
             scratch.working_decisions.pop_back();
             scratch.path_nodes.pop_back();
             continue;
@@ -799,8 +1121,7 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
           search_was_truncated);
     }
 
-    std::sort(
-        scratch.children.begin(), scratch.children.end(),
+    const auto compare_children =
         [&scratch](const BeamScratchCandidate& left,
                    const BeamScratchCandidate& right) {
           reconstruct_decisions(scratch, left, &scratch.comparison_left);
@@ -808,10 +1129,23 @@ BeamSearchResult run_beam_search(const BeamSearchInput& input,
           return is_better_partial(
               left.score, scratch.comparison_left, right.score,
               scratch.comparison_right);
-        });
+        };
     if (scratch.children.size() > budget.beam_width) {
       search_was_truncated = true;
+      if ((scratch.tail_optimization_mask & kTailPartialBeamSelection) != 0) {
+        std::partial_sort(
+            scratch.children.begin(),
+            scratch.children.begin() +
+                static_cast<std::ptrdiff_t>(budget.beam_width),
+            scratch.children.end(), compare_children);
+      } else {
+        std::sort(scratch.children.begin(), scratch.children.end(),
+                  compare_children);
+      }
       scratch.children.resize(budget.beam_width);
+    } else {
+      std::sort(scratch.children.begin(), scratch.children.end(),
+                compare_children);
     }
     scratch.beam.swap(scratch.children);
   }

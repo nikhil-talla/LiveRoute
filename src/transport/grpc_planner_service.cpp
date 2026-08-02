@@ -34,6 +34,34 @@ struct CorrelationKey {
 
 class StreamEndpoint;
 
+class DeserializationTimer {
+ public:
+  // gRPC has already decoded the wire message before OnReadDone. This timer
+  // deliberately covers only application validation and domain construction.
+  DeserializationTimer(runtime::ConcurrentTripRuntime& runtime,
+                       std::chrono::steady_clock::time_point started_at)
+      : runtime_(runtime), started_at_(started_at) {}
+
+  ~DeserializationTimer() { finish(); }
+
+  DeserializationTimer(const DeserializationTimer&) = delete;
+  DeserializationTimer& operator=(const DeserializationTimer&) = delete;
+
+  void finish() noexcept {
+    if (finished_) return;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started_at_);
+    runtime_.observe_deserialization(
+        static_cast<std::uint64_t>(std::max<std::int64_t>(0, elapsed.count())));
+    finished_ = true;
+  }
+
+ private:
+  runtime::ConcurrentTripRuntime& runtime_;
+  std::chrono::steady_clock::time_point started_at_;
+  bool finished_{};
+};
+
 class ResponseReservation {
  public:
   ResponseReservation(std::weak_ptr<StreamEndpoint> endpoint,
@@ -420,9 +448,10 @@ class PlanTripsReactor final : public Reactor {
       endpoint_->finish_when_drained(::grpc::Status::OK);
       return;
     }
+    const auto admission_started = std::chrono::steady_clock::now();
     Request request = std::move(request_);
     request_.Clear();
-    handle(std::move(request));
+    handle(std::move(request), admission_started);
     if (!closing_) StartRead(&request_);
   }
 
@@ -444,29 +473,34 @@ class PlanTripsReactor final : public Reactor {
   }
 
  private:
-  void handle(Request request) {
+  void handle(Request request,
+              std::chrono::steady_clock::time_point admission_started) {
+    DeserializationTimer timer(runtime_, admission_started);
     if (request.ByteSizeLong() > configuration_.max_message_bytes ||
         !is_canonical_uuid(request.request_id())) {
+      timer.finish();
       protocol_error(
           request, ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
           "invalid request envelope", false);
       return;
     }
     if (request.payload_case() == Request::kPing) {
-      handle_ping(request);
+      handle_ping(request, timer);
       return;
     }
     if (!endpoint_->is_open()) {
       if (request.payload_case() != Request::kOpenStream) {
+        timer.finish();
         protocol_error(
             request, ::liveroute::v1::STATUS_CODE_UNSUPPORTED_VERSION,
             "OpenStream must be the first non-ping message", false);
         return;
       }
-      handle_open(request);
+      handle_open(request, timer);
       return;
     }
     if (request.payload_case() == Request::kOpenStream) {
+      timer.finish();
       protocol_error(request,
                      ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
                      "stream is already open", false);
@@ -474,21 +508,22 @@ class PlanTripsReactor final : public Reactor {
     }
     switch (request.payload_case()) {
       case Request::kBootstrapTrip:
-        handle_bootstrap(std::move(request));
+        handle_bootstrap(std::move(request), timer);
         break;
       case Request::kApplyEvent:
-        handle_event(std::move(request));
+        handle_event(std::move(request), timer);
         break;
       case Request::kConfirmFinalizedMutations:
-        handle_confirm(std::move(request));
+        handle_confirm(std::move(request), timer);
         break;
       case Request::kRequestSnapshot:
-        handle_snapshot(std::move(request));
+        handle_snapshot(std::move(request), timer);
         break;
       case Request::kDeactivateTrip:
-        handle_deactivate(std::move(request));
+        handle_deactivate(std::move(request), timer);
         break;
       default:
+        timer.finish();
         protocol_error(request,
                        ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
                        "request payload is required", false);
@@ -496,15 +531,17 @@ class PlanTripsReactor final : public Reactor {
     }
   }
 
-  void handle_open(const Request& request) {
+  void handle_open(const Request& request, DeserializationTimer& timer) {
     if (!no_trip_envelope(request) ||
         !capabilities_valid(request.open_stream()) ||
         !endpoint_->mark_open()) {
+      timer.finish();
       protocol_error(
           request, ::liveroute::v1::STATUS_CODE_UNSUPPORTED_VERSION,
           "unsupported protocol or capabilities", false);
       return;
     }
+    timer.finish();
     auto response = base_response(request);
     auto* ready = response.mutable_stream_ready();
     ready->set_cpp_instance_id(configuration_.cpp_instance_id);
@@ -521,14 +558,16 @@ class PlanTripsReactor final : public Reactor {
     }
   }
 
-  void handle_ping(const Request& request) {
+  void handle_ping(const Request& request, DeserializationTimer& timer) {
     if (!no_trip_envelope(request) || request.ping().nonce().empty() ||
         request.ping().nonce().size() > 64) {
+      timer.finish();
       protocol_error(request,
                      ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
                      "invalid ping", false);
       return;
     }
+    timer.finish();
     auto response = base_response(request);
     auto* pong = response.mutable_pong();
     pong->set_nonce(request.ping().nonce());
@@ -541,8 +580,9 @@ class PlanTripsReactor final : public Reactor {
     }
   }
 
-  void handle_bootstrap(Request request) {
+  void handle_bootstrap(Request request, DeserializationTimer& timer) {
     if (!control_envelope_valid(request) || expired(request)) {
+      timer.finish();
       protocol_error(
           request,
           expired(request)
@@ -555,6 +595,7 @@ class PlanTripsReactor final : public Reactor {
     }
     auto converted = bootstrap_from_proto(request, stream_binding_);
     if (!converted) {
+      timer.finish();
       const auto status =
           request.bootstrap_trip().base_case() ==
                   ::liveroute::v1::BootstrapTrip::kSnapshot
@@ -564,6 +605,7 @@ class PlanTripsReactor final : public Reactor {
                  converted.error->safe_message);
       return;
     }
+    timer.finish();
     auto reservation = endpoint_->try_reserve(2);
     if (!reservation) {
       close_resource_exhausted();
@@ -640,12 +682,13 @@ class PlanTripsReactor final : public Reactor {
     }
   }
 
-  void handle_event(Request request) {
+  void handle_event(Request request, DeserializationTimer& timer) {
     const auto system_now = std::chrono::system_clock::now();
     if (request.expires_at_unix_ms() <=
         std::chrono::duration_cast<std::chrono::milliseconds>(
             system_now.time_since_epoch())
             .count()) {
+      timer.finish();
       send_error(request,
                  ::liveroute::v1::STATUS_CODE_DEADLINE_EXCEEDED,
                  true, "request deadline exceeded");
@@ -657,11 +700,13 @@ class PlanTripsReactor final : public Reactor {
         configuration_.max_candidates, configuration_.beam_width,
         configuration_.max_expansions);
     if (!converted) {
+      timer.finish();
       send_error(request,
                  ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
                  false, converted.error->safe_message);
       return;
     }
+    timer.finish();
     auto reservation = endpoint_->try_reserve();
     if (!reservation) {
       close_resource_exhausted();
@@ -758,10 +803,11 @@ class PlanTripsReactor final : public Reactor {
     }
   }
 
-  void handle_confirm(Request request) {
+  void handle_confirm(Request request, DeserializationTimer& timer) {
     if (!control_envelope_valid(request) || expired(request) ||
         request.confirm_finalized_mutations()
                 .finalized_mutation_sequence() == 0) {
+      timer.finish();
       send_error(request,
                  expired(request)
                      ? ::liveroute::v1::STATUS_CODE_DEADLINE_EXCEEDED
@@ -771,11 +817,13 @@ class PlanTripsReactor final : public Reactor {
     }
     const auto trip_id = parse_trip_id(request.trip_id());
     if (!trip_id) {
+      timer.finish();
       send_error(request,
                  ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
                  false, "invalid trip id");
       return;
     }
+    timer.finish();
     auto reservation = endpoint_->try_reserve();
     if (!reservation) {
       close_resource_exhausted();
@@ -806,10 +854,11 @@ class PlanTripsReactor final : public Reactor {
     }
   }
 
-  void handle_snapshot(Request request) {
+  void handle_snapshot(Request request, DeserializationTimer& timer) {
     if (!control_envelope_valid(request) || expired(request) ||
         request.request_snapshot().reason() ==
             ::liveroute::v1::SNAPSHOT_REASON_UNSPECIFIED) {
+      timer.finish();
       send_error(request,
                  expired(request)
                      ? ::liveroute::v1::STATUS_CODE_DEADLINE_EXCEEDED
@@ -819,11 +868,13 @@ class PlanTripsReactor final : public Reactor {
     }
     const auto trip_id = parse_trip_id(request.trip_id());
     if (!trip_id) {
+      timer.finish();
       send_error(request,
                  ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
                  false, "invalid trip id");
       return;
     }
+    timer.finish();
     auto reservation = endpoint_->try_reserve();
     if (!reservation) {
       close_resource_exhausted();
@@ -869,10 +920,11 @@ class PlanTripsReactor final : public Reactor {
     }
   }
 
-  void handle_deactivate(Request request) {
+  void handle_deactivate(Request request, DeserializationTimer& timer) {
     if (!control_envelope_valid(request) || expired(request) ||
         request.deactivate_trip().reason() ==
             ::liveroute::v1::DEACTIVATION_REASON_UNSPECIFIED) {
+      timer.finish();
       send_error(request,
                  expired(request)
                      ? ::liveroute::v1::STATUS_CODE_DEADLINE_EXCEEDED
@@ -882,11 +934,13 @@ class PlanTripsReactor final : public Reactor {
     }
     const auto trip_id = parse_trip_id(request.trip_id());
     if (!trip_id) {
+      timer.finish();
       send_error(request,
                  ::liveroute::v1::STATUS_CODE_INVALID_ARGUMENT,
                  false, "invalid trip id");
       return;
     }
+    timer.finish();
     const bool final_required =
         request.deactivate_trip().final_snapshot_required();
     auto reservation = endpoint_->try_reserve(final_required ? 2 : 1);
