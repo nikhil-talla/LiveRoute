@@ -528,6 +528,36 @@ func (store *CanonicalStateStore) Load(
 	return result, nil
 }
 
+// RuntimeSyncState reports durable delivery state independently of the live
+// lease. This keeps inactive-trip subscriptions honest when a canonical edit
+// was committed while C++ was unavailable.
+func (store *CanonicalStateStore) RuntimeSyncState(
+	ctx context.Context,
+	tripID string,
+) (string, error) {
+	if !validCanonicalUUID(tripID) {
+		return "", errors.New("trip id is invalid")
+	}
+	var state string
+	err := store.pool.QueryRow(ctx, `
+		SELECT CASE
+		         WHEN EXISTS (
+		           SELECT 1 FROM command_intents
+		           WHERE trip_id = $1 AND runtime_sync_state = 'paused_internal'
+		         ) THEN 'paused_internal'
+		         WHEN EXISTS (
+		           SELECT 1 FROM command_intents
+		           WHERE trip_id = $1 AND runtime_sync_state = 'pending'
+		         ) THEN 'pending'
+		         ELSE 'not_required'
+		       END
+	`, tripID).Scan(&state)
+	if err != nil {
+		return "", fmt.Errorf("read runtime sync state: %w", err)
+	}
+	return state, nil
+}
+
 func optionalStringEqual(value *string, encoded string) bool {
 	if value == nil {
 		return encoded == ""

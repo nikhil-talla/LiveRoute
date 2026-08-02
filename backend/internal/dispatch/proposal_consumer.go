@@ -17,15 +17,30 @@ type proposalStore interface {
 }
 
 type ProposalConsumer struct {
-	holderID string
-	store    proposalStore
+	holderID           string
+	store              proposalStore
+	onStored           func(context.Context, persistence.PersistedProposal, *liveroutev1.PlannerStreamResponse) error
+	proposalRetryDelay time.Duration
+}
+
+// SetOnStored configures the post-commit publication hook. The hook receives
+// only publishable proposals and runs after PostgreSQL persistence, keeping
+// the stream receive worker free of WebSocket work when Run is used normally.
+func (consumer *ProposalConsumer) SetOnStored(
+	hook func(context.Context, persistence.PersistedProposal, *liveroutev1.PlannerStreamResponse) error,
+) {
+	consumer.onStored = hook
 }
 
 func NewProposalConsumer(holderID string, store proposalStore) (*ProposalConsumer, error) {
 	if !canonicalUUID(holderID) || store == nil {
 		return nil, errors.New("invalid proposal consumer configuration")
 	}
-	return &ProposalConsumer{holderID: holderID, store: store}, nil
+	return &ProposalConsumer{
+		holderID:           holderID,
+		store:              store,
+		proposalRetryDelay: 100 * time.Millisecond,
+	}, nil
 }
 
 // Run drains the planner client's bounded notification queue on a dedicated
@@ -45,9 +60,52 @@ func (consumer *ProposalConsumer) Run(
 			if !open {
 				return nil
 			}
-			if _, _, err := consumer.Persist(ctx, response); err != nil {
+			stored, present, err := consumer.persistForPublication(ctx, response)
+			if err != nil {
 				return err
 			}
+			if present && stored.Publishable && consumer.onStored != nil {
+				if err := consumer.onStored(ctx, stored, response); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+// persistForPublication retains one planner result while PostgreSQL is
+// temporarily unavailable. Permanent validation/identity outcomes return to
+// the worker caller; a transient database failure cannot strand later
+// notifications by terminating the consumer and dropping this result.
+func (consumer *ProposalConsumer) persistForPublication(
+	ctx context.Context,
+	response *liveroutev1.PlannerStreamResponse,
+) (persistence.PersistedProposal, bool, error) {
+	request, present, err := consumer.persistenceRequest(response)
+	if err != nil || !present {
+		return persistence.PersistedProposal{}, present, err
+	}
+	for {
+		stored, err := consumer.store.Persist(ctx, request)
+		if errors.Is(err, persistence.ErrProposalStale) {
+			return persistence.PersistedProposal{}, false, nil
+		}
+		if err == nil {
+			return stored, true, nil
+		}
+		if errors.Is(err, persistence.ErrProposalIdentityConflict) ||
+			errors.Is(err, persistence.ErrProposalPayloadInvalid) ||
+			errors.Is(err, persistence.ErrTripNotFound) {
+			return persistence.PersistedProposal{}, true, err
+		}
+		timer := time.NewTimer(consumer.proposalRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return persistence.PersistedProposal{}, true, ctx.Err()
+		case <-timer.C:
 		}
 	}
 }

@@ -321,8 +321,28 @@ int main(int argc, char** argv) {
   std::array<std::uint64_t, 6> acknowledgement_statuses{};
   std::vector<std::uint64_t> acknowledgement_latencies;
   std::vector<std::uint64_t> planning_latencies;
+  std::vector<std::uint64_t> event_queue_wait_latencies;
+  std::vector<std::uint64_t> event_application_latencies;
+  std::vector<std::uint64_t> event_serialization_latencies;
+  std::vector<std::uint64_t> event_total_latencies;
+  std::vector<std::uint64_t> planning_queue_wait_latencies;
+  std::vector<std::uint64_t> provider_latencies;
+  std::vector<std::uint64_t> matrix_conversion_latencies;
+  std::vector<std::uint64_t> planner_latencies;
+  std::vector<std::uint64_t> planning_serialization_latencies;
+  std::vector<std::uint64_t> planning_total_latencies;
   acknowledgement_latencies.reserve(configuration.event_count);
   planning_latencies.reserve(configuration.event_count);
+  event_queue_wait_latencies.reserve(configuration.event_count);
+  event_application_latencies.reserve(configuration.event_count);
+  event_serialization_latencies.reserve(configuration.event_count);
+  event_total_latencies.reserve(configuration.event_count);
+  planning_queue_wait_latencies.reserve(configuration.event_count);
+  provider_latencies.reserve(configuration.event_count);
+  matrix_conversion_latencies.reserve(configuration.event_count);
+  planner_latencies.reserve(configuration.event_count);
+  planning_serialization_latencies.reserve(configuration.event_count);
+  planning_total_latencies.reserve(configuration.event_count);
 
   const auto capacity =
       std::max({std::size_t{128}, configuration.active_trips,
@@ -345,6 +365,16 @@ int main(int argc, char** argv) {
       [&](RuntimePlanningDelivery delivery) {
         std::scoped_lock lock(mutex);
         planning_latencies.push_back(
+            delivery.timings.total_microseconds);
+        planning_queue_wait_latencies.push_back(
+            delivery.timings.queue_wait_microseconds);
+        provider_latencies.push_back(delivery.timings.provider_microseconds);
+        matrix_conversion_latencies.push_back(
+            delivery.timings.matrix_conversion_microseconds);
+        planner_latencies.push_back(delivery.timings.planner_microseconds);
+        planning_serialization_latencies.push_back(
+            delivery.timings.response_assembly_microseconds);
+        planning_total_latencies.push_back(
             delivery.timings.total_microseconds);
         condition.notify_all();
         return true;
@@ -437,6 +467,14 @@ int main(int argc, char** argv) {
           std::scoped_lock lock(mutex);
           acknowledgement_latencies.push_back(
               static_cast<std::uint64_t>(elapsed.count()));
+          event_queue_wait_latencies.push_back(
+              acknowledgement.timings.queue_wait_microseconds);
+          event_application_latencies.push_back(
+              acknowledgement.timings.event_application_microseconds);
+          event_serialization_latencies.push_back(
+              acknowledgement.timings.response_assembly_microseconds);
+          event_total_latencies.push_back(
+              acknowledgement.timings.total_microseconds);
           ++acknowledgement_statuses[static_cast<std::size_t>(
               acknowledgement.admission.status)];
           ++acknowledgement_count;
@@ -532,9 +570,60 @@ int main(int argc, char** argv) {
       << " ack_p50_us=" << percentile(acknowledgement_latencies, 50)
       << " ack_p95_us=" << percentile(acknowledgement_latencies, 95)
       << " ack_p99_us=" << percentile(acknowledgement_latencies, 99)
+      << " event_queue_wait_p50_us="
+      << percentile(event_queue_wait_latencies, 50)
+      << " event_queue_wait_p95_us="
+      << percentile(event_queue_wait_latencies, 95)
+      << " event_queue_wait_p99_us="
+      << percentile(event_queue_wait_latencies, 99)
+      << " event_application_p50_us="
+      << percentile(event_application_latencies, 50)
+      << " event_application_p95_us="
+      << percentile(event_application_latencies, 95)
+      << " event_application_p99_us="
+      << percentile(event_application_latencies, 99)
+      << " event_serialization_p50_us="
+      << percentile(event_serialization_latencies, 50)
+      << " event_serialization_p95_us="
+      << percentile(event_serialization_latencies, 95)
+      << " event_serialization_p99_us="
+      << percentile(event_serialization_latencies, 99)
+      << " event_total_p50_us=" << percentile(event_total_latencies, 50)
+      << " event_total_p95_us=" << percentile(event_total_latencies, 95)
+      << " event_total_p99_us=" << percentile(event_total_latencies, 99)
       << " plan_p50_us=" << percentile(planning_latencies, 50)
       << " plan_p95_us=" << percentile(planning_latencies, 95)
       << " plan_p99_us=" << percentile(planning_latencies, 99)
+      << " planning_queue_wait_p50_us="
+      << percentile(planning_queue_wait_latencies, 50)
+      << " planning_queue_wait_p95_us="
+      << percentile(planning_queue_wait_latencies, 95)
+      << " planning_queue_wait_p99_us="
+      << percentile(planning_queue_wait_latencies, 99)
+      << " provider_p50_us=" << percentile(provider_latencies, 50)
+      << " provider_p95_us=" << percentile(provider_latencies, 95)
+      << " provider_p99_us=" << percentile(provider_latencies, 99)
+      << " matrix_conversion_p50_us="
+      << percentile(matrix_conversion_latencies, 50)
+      << " matrix_conversion_p95_us="
+      << percentile(matrix_conversion_latencies, 95)
+      << " matrix_conversion_p99_us="
+      << percentile(matrix_conversion_latencies, 99)
+      << " planner_p50_us=" << percentile(planner_latencies, 50)
+      << " planner_p95_us=" << percentile(planner_latencies, 95)
+      << " planner_p99_us=" << percentile(planner_latencies, 99)
+      << " planning_serialization_p50_us="
+      << percentile(planning_serialization_latencies, 50)
+      << " planning_serialization_p95_us="
+      << percentile(planning_serialization_latencies, 95)
+      << " planning_serialization_p99_us="
+      << percentile(planning_serialization_latencies, 99)
+      << " planning_total_p50_us="
+      << percentile(planning_total_latencies, 50)
+      << " planning_total_p95_us="
+      << percentile(planning_total_latencies, 95)
+      << " planning_total_p99_us="
+      << percentile(planning_total_latencies, 99)
       << " attempts_started=" << attempts
       << " attempts_completed=" << completed
       << " deadline_misses="

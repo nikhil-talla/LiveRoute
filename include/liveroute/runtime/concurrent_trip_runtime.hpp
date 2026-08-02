@@ -13,6 +13,7 @@
 #include "liveroute/planner/beam_search.hpp"
 #include "liveroute/routing/travel_time_provider.hpp"
 #include "liveroute/runtime/event_coordinator.hpp"
+#include "liveroute/runtime/metrics.hpp"
 #include "liveroute/runtime/priority_lanes.hpp"
 
 namespace liveroute::runtime {
@@ -230,6 +231,7 @@ class ConcurrentTripRuntime {
   [[nodiscard]] RuntimeQueueDepths queue_depths() const;
   [[nodiscard]] RuntimeObservationMetrics observation_metrics() const noexcept;
   [[nodiscard]] RuntimeExecutionMetrics execution_metrics() const noexcept;
+  [[nodiscard]] MetricsSnapshot metrics() const noexcept;
 
  private:
   class Impl;

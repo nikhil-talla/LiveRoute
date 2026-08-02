@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	liveroutev1 "github.com/liveroute/liveroute/backend/gen/liveroute/v1"
 	"github.com/liveroute/liveroute/backend/internal/persistence"
@@ -20,6 +21,8 @@ type fakeProposalStore struct {
 	request persistence.PersistProposalRequest
 	result  persistence.PersistedProposal
 	err     error
+	errs    []error
+	calls   int
 }
 
 func (store *fakeProposalStore) Persist(
@@ -27,6 +30,12 @@ func (store *fakeProposalStore) Persist(
 	request persistence.PersistProposalRequest,
 ) (persistence.PersistedProposal, error) {
 	store.request = request
+	store.calls++
+	if len(store.errs) > 0 {
+		err := store.errs[0]
+		store.errs = store.errs[1:]
+		return store.result, err
+	}
 	return store.result, store.err
 }
 
@@ -129,5 +138,34 @@ func TestProposalConsumerRejectsIdentityConflict(t *testing.T) {
 	consumer, _ := NewProposalConsumer(testHolderID, store)
 	if _, present, err := consumer.Persist(context.Background(), validProposalResponse()); !present || !errors.Is(err, persistence.ErrProposalIdentityConflict) {
 		t.Fatalf("identity conflict was hidden: present=%v err=%v", present, err)
+	}
+}
+
+func TestProposalConsumerRetainsResultAcrossTransientPersistenceFailure(t *testing.T) {
+	store := &fakeProposalStore{
+		result: persistence.PersistedProposal{
+			ProposalID: testProposalID, Publishable: true,
+		},
+		errs: []error{errors.New("database temporarily unavailable")},
+	}
+	consumer, err := NewProposalConsumer(testHolderID, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer.proposalRetryDelay = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	consumer.SetOnStored(func(context.Context, persistence.PersistedProposal, *liveroutev1.PlannerStreamResponse) error {
+		cancel()
+		return nil
+	})
+	notifications := make(chan *liveroutev1.PlannerStreamResponse, 1)
+	notifications <- validProposalResponse()
+	close(notifications)
+	if err := consumer.Run(ctx, notifications); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("unexpected consumer result: %v", err)
+	}
+	if store.calls != 2 {
+		t.Fatalf("proposal was not retried exactly once: calls=%d", store.calls)
 	}
 }

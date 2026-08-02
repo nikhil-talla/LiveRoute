@@ -6,6 +6,7 @@ COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend ./
 COPY schema /workspace/schema
+COPY config /workspace/config
 RUN go test ./...
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags="-s -w" \
@@ -15,6 +16,10 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags="-s -w" \
     -o /out/liveroute-admin \
     ./cmd/liveroute-admin
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w" \
+    -o /out/liveroute-backend \
+    ./cmd/liveroute-backend
 
 FROM build AS test
 
@@ -26,8 +31,10 @@ RUN groupadd --system --gid 10001 liveroute \
 WORKDIR /app
 COPY --from=build /out/liveroute-migrate /usr/local/bin/liveroute-migrate
 COPY --from=build /out/liveroute-admin /usr/local/bin/liveroute-admin
+COPY --from=build /out/liveroute-backend /usr/local/bin/liveroute-backend
 COPY migrations ./migrations
 COPY schema ./schema
+COPY config ./config
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/liveroute-migrate"]
 CMD ["up"]

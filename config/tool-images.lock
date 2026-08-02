@@ -15,7 +15,9 @@ images:
     protobuf_cpp_version: 31.1.0
     grpc_cpp_version: 1.78.1
     digest: sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4
-    libcurl_dev_package: libcurl4-openssl-dev=8.5.0-2ubuntu10.11
+    websocket_libcurl_version: 8.5.0
+    websocket_libcurl_source_sha256: 42ab8db9e20d8290a3b633e7fbb3cec15db34df65fd1015ef8ac1e4723750eeb
+    websocket_libcurl_build: config/curl-websocket.lock
   go_proto_toolchain:
     platform: linux/amd64
     build_file: docker/go-proto/Dockerfile

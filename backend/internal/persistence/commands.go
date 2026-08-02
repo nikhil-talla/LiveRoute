@@ -101,8 +101,79 @@ type RecordedCommand struct {
 	Duplicate                    bool
 }
 
+// CommandOutcome is the durable, client-facing result needed by reconnect
+// and resynchronization. It intentionally contains no transport request id.
+type CommandOutcome struct {
+	MessageID        string
+	MutationSequence uint64
+	State            string
+	Kind             CommandKind
+	RuntimeSyncState string
+	OutcomeStatus    *string
+	OutcomePayload   json.RawMessage
+}
+
 type CommandStore struct {
 	pool *pgxpool.Pool
+}
+
+// LoadOutcomes returns every requested command intent that still belongs to
+// the trip. Missing ids are left to the gateway to represent as NOT_FOUND;
+// command_intents are retained for the lifetime of the trip.
+func (store *CommandStore) LoadOutcomes(
+	ctx context.Context,
+	tripID string,
+	messageIDs []string,
+) ([]CommandOutcome, error) {
+	if !validCanonicalUUID(tripID) {
+		return nil, errors.New("trip id is invalid")
+	}
+	for _, messageID := range messageIDs {
+		if !validCanonicalUUID(messageID) {
+			return nil, errors.New("message id is invalid")
+		}
+	}
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT message_id::text, mutation_sequence, command_kind,
+		       state, outcome_status, outcome_payload, runtime_sync_state
+		FROM command_intents
+		WHERE trip_id = $1 AND message_id = ANY($2::uuid[])
+		ORDER BY mutation_sequence
+	`, tripID, messageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load command outcomes: %w", err)
+	}
+	defer rows.Close()
+	var result []CommandOutcome
+	for rows.Next() {
+		var outcome CommandOutcome
+		var sequence int64
+		var status pgtype.Text
+		var payload []byte
+		if err := rows.Scan(
+			&outcome.MessageID, &sequence, &outcome.Kind, &outcome.State,
+			&status, &payload, &outcome.RuntimeSyncState,
+		); err != nil {
+			return nil, fmt.Errorf("scan command outcome: %w", err)
+		}
+		if sequence <= 0 {
+			return nil, errors.New("stored command outcome sequence is invalid")
+		}
+		outcome.MutationSequence = uint64(sequence)
+		if status.Valid {
+			value := status.String
+			outcome.OutcomeStatus = &value
+		}
+		outcome.OutcomePayload = append([]byte(nil), payload...)
+		result = append(result, outcome)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate command outcomes: %w", err)
+	}
+	return result, nil
 }
 
 func NewCommandStore(pool *pgxpool.Pool) (*CommandStore, error) {

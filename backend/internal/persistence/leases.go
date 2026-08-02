@@ -30,6 +30,34 @@ type LeaseStore struct {
 	pool *pgxpool.Pool
 }
 
+// LeasedTrips lists durable runtime lease rows so a restarted backend can
+// retry rehydrating trips that were active before process loss. Lease
+// acquisition remains the fencing decision; this read never grants runtime
+// authority.
+func (store *LeaseStore) LeasedTrips(ctx context.Context) ([]string, error) {
+	rows, err := store.pool.Query(ctx, `
+		SELECT trip_id::text
+		FROM trip_runtime_leases
+		ORDER BY trip_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list leased trips: %w", err)
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var tripID string
+		if err := rows.Scan(&tripID); err != nil {
+			return nil, fmt.Errorf("scan leased trip: %w", err)
+		}
+		result = append(result, tripID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate leased trips: %w", err)
+	}
+	return result, nil
+}
+
 func NewLeaseStore(pool *pgxpool.Pool) (*LeaseStore, error) {
 	if pool == nil {
 		return nil, errors.New("database pool is required")

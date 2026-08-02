@@ -85,10 +85,11 @@ func (c Config) validate() error {
 }
 
 type Handler struct {
-	config       Config
-	sessionsMu   sync.Mutex
-	sessions     map[*session]struct{}
-	shuttingDown bool
+	config          Config
+	sessionsMu      sync.Mutex
+	sessions        map[*session]struct{}
+	onSessionClosed func(MessageSink)
+	shuttingDown    bool
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -99,6 +100,23 @@ func NewHandler(config Config) (*Handler, error) {
 		config.Now = time.Now
 	}
 	return &Handler{config: config, sessions: make(map[*session]struct{})}, nil
+}
+
+// SetOnMessage configures the authenticated-message callback before ServeHTTP
+// accepts connections. It exists so the runnable backend can assemble its
+// bounded trip admission layer after constructing the handler.
+func (h *Handler) SetOnMessage(callback func(context.Context, AuthenticatedMessage)) {
+	if h != nil {
+		h.config.OnMessage = callback
+	}
+}
+
+// SetOnSessionClosed configures cleanup for transport-owned session indexes.
+// It must be called before ServeHTTP starts accepting connections.
+func (h *Handler) SetOnSessionClosed(callback func(MessageSink)) {
+	if h != nil {
+		h.onSessionClosed = callback
+	}
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -147,7 +165,11 @@ func (h *Handler) addSession(session *session) bool {
 func (h *Handler) removeSession(session *session) {
 	h.sessionsMu.Lock()
 	delete(h.sessions, session)
+	callback := h.onSessionClosed
 	h.sessionsMu.Unlock()
+	if callback != nil {
+		callback(session)
+	}
 }
 
 // Shutdown stops new WebSocket upgrades and closes existing sessions with the
@@ -465,3 +487,7 @@ func newUUID() string {
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }
+
+// NewUUID exposes the gateway's canonical UUID generator to bounded backend
+// adapters that create non-durable event identities.
+func NewUUID() string { return newUUID() }

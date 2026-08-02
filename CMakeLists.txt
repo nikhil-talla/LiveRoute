@@ -12,6 +12,8 @@ option(LIVEROUTE_ENABLE_OSRM
   "Build the libcurl-multi OSRM travel-time provider" OFF)
 option(LIVEROUTE_ENABLE_OSRM_INTEGRATION_TESTS
   "Register tests that require the local car/foot OSRM services" OFF)
+option(LIVEROUTE_ENABLE_WEBSOCKET_LOAD
+  "Build the libcurl WebSocket workload driver" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -61,6 +63,7 @@ add_library(liveroute_domain
   src/routing/osrm_response.cpp
   src/routing/travel_time_provider.cpp
   src/runtime/concurrent_trip_runtime.cpp
+  src/runtime/metrics.cpp
   src/runtime/planning_commit.cpp
   src/runtime/trip_runtime_versions.cpp
   src/runtime/event_coordinator.cpp
@@ -104,6 +107,11 @@ enable_testing()
 add_test(NAME liveroute_loadgen_self_check
   COMMAND liveroute_loadgen --self-check
 )
+
+add_executable(liveroute_metrics_test tests/metrics_test.cpp)
+target_link_libraries(liveroute_metrics_test PRIVATE liveroute_domain)
+liveroute_configure_target(liveroute_metrics_test)
+add_test(NAME liveroute_metrics_test COMMAND liveroute_metrics_test)
 
 if(LIVEROUTE_ENABLE_GRPC)
   find_package(absl CONFIG REQUIRED)
@@ -197,6 +205,35 @@ if(LIVEROUTE_ENABLE_GRPC)
     PRIVATE liveroute_proto
   )
   liveroute_configure_target(liveroute_proto_serialization_bench)
+endif()
+
+if(LIVEROUTE_ENABLE_WEBSOCKET_LOAD)
+  find_package(CURL REQUIRED)
+  add_library(liveroute_websocket_load_runner
+    src/load/websocket_runner.cpp
+  )
+  target_include_directories(liveroute_websocket_load_runner PUBLIC include)
+  target_link_libraries(liveroute_websocket_load_runner
+    PUBLIC liveroute_load_model CURL::libcurl
+  )
+  liveroute_configure_target(liveroute_websocket_load_runner)
+
+  add_executable(liveroute_websocket_loadgen src/load/websocket_main.cpp)
+  target_link_libraries(liveroute_websocket_loadgen
+    PRIVATE liveroute_websocket_load_runner
+  )
+  liveroute_configure_target(liveroute_websocket_loadgen)
+
+  add_executable(liveroute_websocket_transport_test
+    tests/websocket_transport_test.cpp
+  )
+  target_link_libraries(liveroute_websocket_transport_test
+    PRIVATE liveroute_websocket_load_runner
+  )
+  liveroute_configure_target(liveroute_websocket_transport_test)
+  add_test(NAME liveroute_websocket_transport_test
+    COMMAND liveroute_websocket_transport_test
+  )
 endif()
 
 add_executable(liveroute_planner_service src/server/main.cpp)

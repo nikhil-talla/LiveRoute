@@ -356,7 +356,7 @@ class ConcurrentTripRuntime::Impl {
                         configuration.planner_queue_capacity}) {}
 
   [[nodiscard]] RuntimeQueueDepths queue_depths() const {
-    return {
+    const RuntimeQueueDepths result{
         .critical = shards_.queue_size(domain::EventPriority::kCritical),
         .high = shards_.queue_size(domain::EventPriority::kHigh),
         .normal = shards_.queue_size(domain::EventPriority::kNormal),
@@ -366,6 +366,11 @@ class ConcurrentTripRuntime::Impl {
         .planner_jobs = executors_.planner().queue_size(),
         .essential_responses_in_use = responses_.used(),
     };
+    metrics_.set(MetricGauge::kCriticalQueueDepth, result.critical);
+    metrics_.set(MetricGauge::kHighQueueDepth, result.high);
+    metrics_.set(MetricGauge::kNormalQueueDepth, result.normal);
+    metrics_.set(MetricGauge::kAdvisoryQueueDepth, result.advisory);
+    return result;
   }
 
   [[nodiscard]] RuntimeObservationMetrics observation_metrics() const noexcept {
@@ -398,11 +403,70 @@ class ConcurrentTripRuntime::Impl {
     };
   }
 
+  [[nodiscard]] MetricsSnapshot metrics() const noexcept {
+    return metrics_.snapshot();
+  }
+
+  void record_event_metrics(
+      const RuntimeEventAcknowledgement& acknowledgement) noexcept {
+    switch (acknowledgement.admission.status) {
+      case EventCoordinatorStatus::kAccepted:
+        metrics_.increment(MetricCounter::kAcceptedEvents);
+        break;
+      case EventCoordinatorStatus::kDuplicate:
+        metrics_.increment(MetricCounter::kDuplicateEvents);
+        break;
+      case EventCoordinatorStatus::kStale:
+        metrics_.increment(MetricCounter::kStaleEvents);
+        break;
+      case EventCoordinatorStatus::kInvalidArgument:
+      case EventCoordinatorStatus::kCommandExpired:
+      case EventCoordinatorStatus::kInactive:
+      case EventCoordinatorStatus::kInternal:
+        break;
+    }
+    metrics_.observe_microseconds(
+        MetricHistogram::kQueueWait,
+        acknowledgement.timings.queue_wait_microseconds);
+    metrics_.observe_microseconds(
+        MetricHistogram::kEventApplication,
+        acknowledgement.timings.event_application_microseconds);
+    metrics_.observe_microseconds(
+        MetricHistogram::kSerialization,
+        acknowledgement.timings.response_assembly_microseconds);
+    metrics_.observe_microseconds(
+        MetricHistogram::kTotalRequest,
+        acknowledgement.timings.total_microseconds);
+  }
+
+  void record_planning_metrics(
+      const RuntimePlanningDelivery& delivery) noexcept {
+    metrics_.observe_microseconds(MetricHistogram::kQueueWait,
+                                  delivery.timings.queue_wait_microseconds);
+    metrics_.observe_microseconds(MetricHistogram::kOsrmRequest,
+                                  delivery.timings.provider_microseconds);
+    metrics_.observe_microseconds(
+        MetricHistogram::kMatrixConversion,
+        delivery.timings.matrix_conversion_microseconds);
+    metrics_.observe_microseconds(MetricHistogram::kPlanner,
+                                  delivery.timings.planner_microseconds);
+    metrics_.observe_microseconds(
+        MetricHistogram::kSerialization,
+        delivery.timings.response_assembly_microseconds);
+    metrics_.observe_microseconds(MetricHistogram::kTotalRequest,
+                                  delivery.timings.total_microseconds);
+    if (delivery.status == RuntimePlanningStatus::kInfeasible) {
+      metrics_.increment(MetricCounter::kInfeasibleReplans);
+    }
+  }
+
   void record_terminal_work_status(RuntimePlanningStatus status) noexcept {
     if (status == RuntimePlanningStatus::kDeadlineExceeded) {
       deadline_misses_.fetch_add(1, std::memory_order_relaxed);
+      metrics_.increment(MetricCounter::kDeadlineMisses);
     } else if (status == RuntimePlanningStatus::kCancelled) {
       cancelled_attempts_.fetch_add(1, std::memory_order_relaxed);
+      metrics_.increment(MetricCounter::kReplanCancellations);
     }
   }
 
@@ -410,6 +474,7 @@ class ConcurrentTripRuntime::Impl {
     if (status != RuntimePlanningStatus::kCancelled &&
         status != RuntimePlanningStatus::kInvalidArgument) {
       provider_failures_.fetch_add(1, std::memory_order_relaxed);
+      metrics_.increment(MetricCounter::kOsrmFailures);
     }
   }
 
@@ -444,7 +509,10 @@ class ConcurrentTripRuntime::Impl {
       return RuntimeSubmissionStatus::kStopping;
     }
     auto response = responses_.try_acquire();
-    if (!response) return RuntimeSubmissionStatus::kResponseCapacityFull;
+    if (!response) {
+      metrics_.increment(MetricCounter::kRejectedOverloadRequests);
+      return RuntimeSubmissionStatus::kResponseCapacityFull;
+    }
     const auto trip_id = request.state.trip_id;
     const auto shard_index = shards_.shard_for(trip_id);
     if (!shards_.try_submit(
@@ -548,6 +616,7 @@ class ConcurrentTripRuntime::Impl {
                         found->second.state.current_plan.plan_id,
                         found->second.state.active_proposal});
             })) {
+      metrics_.increment(MetricCounter::kRejectedOverloadRequests);
       return RuntimeSubmissionStatus::kShardQueueFull;
     }
     return RuntimeSubmissionStatus::kAccepted;
@@ -667,6 +736,7 @@ class ConcurrentTripRuntime::Impl {
               acknowledgement.timings.total_microseconds =
                   elapsed_microseconds(submitted_at, response_end);
               timings = acknowledgement.timings;
+              record_event_metrics(acknowledgement);
               callback(std::move(acknowledgement));
 
               if (!seed.has_value() || !request.planning.has_value()) {
@@ -695,10 +765,10 @@ class ConcurrentTripRuntime::Impl {
                       trip.pending->seed.trigger);
                 }
                 if (trip.planning_stop != nullptr) {
-                  if (trip.planning_stop->request_stop()) {
-                    supersession_requests_.fetch_add(
-                        1, std::memory_order_relaxed);
-                  }
+                if (trip.planning_stop->request_stop()) {
+                  supersession_requests_.fetch_add(
+                      1, std::memory_order_relaxed);
+                }
                 }
                 if (ordinary_observation) {
                   record_coalesced_location_replan(location_update);
@@ -719,6 +789,7 @@ class ConcurrentTripRuntime::Impl {
               }
               dispatch_planning(request.trip_id, trip, std::move(pending));
             })) {
+      metrics_.increment(MetricCounter::kRejectedOverloadRequests);
       return RuntimeSubmissionStatus::kShardQueueFull;
     }
     return RuntimeSubmissionStatus::kAccepted;
@@ -832,6 +903,7 @@ class ConcurrentTripRuntime::Impl {
                         VersionStaleReason::kNone, false, versions,
                         std::move(snapshot), std::move(owner_user_id)});
             })) {
+      metrics_.increment(MetricCounter::kRejectedOverloadRequests);
       return RuntimeSubmissionStatus::kShardQueueFull;
     }
     return RuntimeSubmissionStatus::kAccepted;
@@ -899,6 +971,7 @@ class ConcurrentTripRuntime::Impl {
                 found->second.pending.reset();
               }
             })) {
+      metrics_.increment(MetricCounter::kRejectedOverloadRequests);
       return RuntimeSubmissionStatus::kShardQueueFull;
     }
     return RuntimeSubmissionStatus::kAccepted;
@@ -952,6 +1025,7 @@ class ConcurrentTripRuntime::Impl {
           1, std::memory_order_relaxed);
     }
     replans_avoided_.fetch_add(1, std::memory_order_relaxed);
+    metrics_.increment(MetricCounter::kCoalescedUpdates);
   }
 
   void dispatch_planning(const domain::TripId& trip_id, ActiveTrip& trip,
@@ -968,6 +1042,7 @@ class ConcurrentTripRuntime::Impl {
     trip.planning_trigger = pending.seed.trigger;
     trip.planning_stop = std::make_shared<std::stop_source>();
     planning_attempts_started_.fetch_add(1, std::memory_order_relaxed);
+    metrics_.increment(MetricCounter::kReplanTriggers);
     auto stop = trip.planning_stop;
     auto pending_work =
         std::make_shared<PendingPlanning>(std::move(pending));
@@ -1096,9 +1171,11 @@ class ConcurrentTripRuntime::Impl {
         *facts, budget);
     if (attempt.search.deadline_hit) {
       deadline_misses_.fetch_add(1, std::memory_order_relaxed);
+      metrics_.increment(MetricCounter::kDeadlineMisses);
     }
     if (attempt.search.cancellation_requested) {
       cancelled_attempts_.fetch_add(1, std::memory_order_relaxed);
+      metrics_.increment(MetricCounter::kReplanCancellations);
     }
     planning_attempts_completed_.fetch_add(
         1, std::memory_order_relaxed);
@@ -1237,6 +1314,7 @@ class ConcurrentTripRuntime::Impl {
         elapsed_microseconds(response_start, response_end);
     delivery.timings.total_microseconds =
         elapsed_microseconds(pending.started_at, response_end);
+    record_planning_metrics(delivery);
     if (trip.stream_binding.has_value() && proposal_sink_) {
       (void)proposal_sink_(std::move(delivery));
     }
@@ -1259,6 +1337,7 @@ class ConcurrentTripRuntime::Impl {
   std::atomic<std::uint64_t> cancelled_attempts_{};
   std::atomic<std::uint64_t> supersession_requests_{};
   std::atomic<std::uint64_t> provider_failures_{};
+  mutable MetricsRegistry metrics_;
   // Destruction is reverse declaration order: executor jobs finish while the
   // shard dispatcher is alive, shards join while trip_maps_ is alive, then
   // shard-owned state is released.
@@ -1353,6 +1432,10 @@ ConcurrentTripRuntime::observation_metrics() const noexcept {
 RuntimeExecutionMetrics
 ConcurrentTripRuntime::execution_metrics() const noexcept {
   return impl_->execution_metrics();
+}
+
+MetricsSnapshot ConcurrentTripRuntime::metrics() const noexcept {
+  return impl_->metrics();
 }
 
 }  // namespace liveroute::runtime

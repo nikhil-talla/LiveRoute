@@ -56,10 +56,38 @@ type PersistedProposal struct {
 	Duplicate               bool
 	Publishable             bool
 	SupersededProposalCount uint64
+	Payload                 []byte
 }
 
 type ProposalStore struct {
 	pool *pgxpool.Pool
+}
+
+// LatestPendingPayload returns the exact deterministic StoredPlanProposal
+// retained for a trip. Proposal contents are read separately from canonical
+// current-plan state so an advisory result can never become plan authority.
+func (store *ProposalStore) LatestPendingPayload(
+	ctx context.Context,
+	tripID string,
+) ([]byte, error) {
+	if !validCanonicalUUID(tripID) {
+		return nil, errors.New("trip id is invalid")
+	}
+	var payload []byte
+	err := store.pool.QueryRow(ctx, `
+		SELECT payload
+		FROM plan_proposals
+		WHERE trip_id = $1 AND state = 'pending'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, tripID).Scan(&payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrPendingProposalNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load pending proposal: %w", err)
+	}
+	return append([]byte(nil), payload...), nil
 }
 
 func NewProposalStore(pool *pgxpool.Pool) (*ProposalStore, error) {
@@ -249,6 +277,7 @@ func persistedProposal(
 		Duplicate:               duplicate,
 		Publishable:             publishable,
 		SupersededProposalCount: superseded,
+		Payload:                 append([]byte(nil), request.Payload...),
 	}
 }
 

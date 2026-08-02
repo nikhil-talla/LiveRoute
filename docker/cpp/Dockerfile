@@ -30,15 +30,57 @@ RUN set -eu; \
       "/opt/liveroute/share/tzdata/$release/zoneinfo/"; \
     echo "$release" > "/opt/liveroute/share/tzdata/$release/release"
 
+FROM --platform=linux/amd64 bmigeri/devcon-cpp@sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4 AS websocket-curl-builder
+
+COPY --from=tzdata-builder /etc/ssl/certs/ca-certificates.crt \
+  /etc/ssl/certs/ca-certificates.crt
+USER root
+RUN mkdir --parents /opt/liveroute/curl \
+    && chown --recursive developer:developer /opt/liveroute
+USER developer
+COPY config/curl-websocket.lock /tmp/liveroute-curl-websocket.lock
+RUN set -eu; \
+    artifact_url="$(awk '/^  url: / { print $2; exit }' /tmp/liveroute-curl-websocket.lock)"; \
+    expected_sha256="$(awk '/^  sha256: / { print $2; exit }' /tmp/liveroute-curl-websocket.lock)"; \
+    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+      "$artifact_url" --output /tmp/curl.tar.xz; \
+    test "$(sha256sum /tmp/curl.tar.xz | awk '{ print $1 }')" = "$expected_sha256"; \
+    mkdir --parents /tmp/curl-source; \
+    tar --extract --xz --strip-components=1 --file /tmp/curl.tar.xz \
+      --directory /tmp/curl-source; \
+    cd /tmp/curl-source; \
+    ./configure \
+      --prefix=/opt/liveroute/curl \
+      --enable-websockets \
+      --enable-shared \
+      --disable-static \
+      --disable-dependency-tracking \
+      --disable-manual \
+      --disable-ldap \
+      --disable-ldaps \
+      --disable-rtsp \
+      --disable-dict \
+      --disable-telnet \
+      --disable-tftp \
+      --disable-pop3 \
+      --disable-imap \
+      --disable-smb \
+      --disable-smtp \
+      --disable-gopher \
+      --disable-mqtt \
+      --without-ssl \
+      --without-zlib \
+      --without-brotli \
+      --without-zstd \
+      --without-libidn2 \
+      --without-libpsl \
+      --without-nghttp2; \
+    make --jobs=2; \
+    make install
+
 FROM --platform=linux/amd64 bmigeri/devcon-cpp@sha256:369f7744d6f9632b1c8142981f01c7b4c98db51b0096686dbd25f9ebb9eaa6f4
 
-USER root
-RUN mkdir --parents /var/lib/apt/lists/partial \
-    && apt-get update \
-    && apt-get install --no-install-recommends --yes \
-      libcurl4-openssl-dev=8.5.0-2ubuntu10.11 \
-    && rm -rf /var/lib/apt/lists/*
-USER developer
+COPY --from=websocket-curl-builder /opt/liveroute/curl /opt/liveroute/curl
 
 WORKDIR /workspace
 COPY CMakeLists.txt ./
@@ -53,13 +95,15 @@ COPY --from=tzdata-builder /opt/liveroute/share/tzdata \
 
 RUN cmake -S . -B /workspace/build -G Ninja \
       -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-      -DCMAKE_PREFIX_PATH=/opt/grpc \
+      "-DCMAKE_PREFIX_PATH=/opt/liveroute/curl;/opt/grpc" \
       -DLIVEROUTE_ENABLE_GRPC=ON \
       -DLIVEROUTE_ENABLE_OSRM=ON \
+      -DLIVEROUTE_ENABLE_WEBSOCKET_LOAD=ON \
       -DLIVEROUTE_ENABLE_PINNED_TZDATA_TESTS=ON \
     && cmake --build /workspace/build \
     && ctest --test-dir /workspace/build --output-on-failure \
     && /workspace/build/liveroute_proto_serialization_bench \
     && /workspace/build/liveroute_sharded_runtime_bench
 
+ENV LD_LIBRARY_PATH=/opt/liveroute/curl/lib:/opt/grpc/lib:/opt/gtest/lib
 ENTRYPOINT ["/workspace/build/liveroute_planner_service"]

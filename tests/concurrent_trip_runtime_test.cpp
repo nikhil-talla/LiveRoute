@@ -1246,6 +1246,14 @@ int main() {
   if (advisory_runtime.observation_metrics().replans_avoided != 2) {
     return 1;
   }
+  const auto runtime_metrics = advisory_runtime.metrics();
+  if (runtime_metrics.counter(MetricCounter::kAcceptedEvents) < 4 ||
+      runtime_metrics.counter(MetricCounter::kReplanTriggers) < 2 ||
+      runtime_metrics.counter(MetricCounter::kReplanCancellations) < 1 ||
+      runtime_metrics.histogram(MetricHistogram::kQueueWait).count < 4 ||
+      runtime_metrics.histogram(MetricHistogram::kPlanner).count < 1) {
+    return 1;
+  }
 
   return 0;
 }

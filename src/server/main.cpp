@@ -18,6 +18,7 @@ constexpr std::string_view kServiceName = "liveroute-planner";
 
 #include <grpcpp/server.h>
 #include <grpcpp/server_builder.h>
+#include <grpcpp/health_check_service_interface.h>
 
 #include "liveroute/routing/travel_time_provider.hpp"
 #ifdef LIVEROUTE_ENABLE_OSRM
@@ -102,6 +103,7 @@ make_travel_time_provider() {
        .max_expansions = 16384},
       runtime, router);
 
+  ::grpc::EnableDefaultHealthCheckService(true);
   ::grpc::ServerBuilder builder;
   builder.SetMaxReceiveMessageSize(4194304);
   builder.SetMaxSendMessageSize(4194304);
@@ -112,6 +114,11 @@ make_travel_time_provider() {
     std::cerr << "failed to start " << kServiceName << " on "
               << address << '\n';
     return 1;
+  }
+  if (auto* health = server->GetHealthCheckService(); health != nullptr) {
+    health->SetServingStatus("liveroute.v1.LiveRoutePlanner", true);
+    health->SetServingStatus("liveroute.v1.LiveRoutePlanner/osrm-car", true);
+    health->SetServingStatus("liveroute.v1.LiveRoutePlanner/osrm-foot", true);
   }
   std::cout << kServiceName << " listening on " << address << '\n';
   server->Wait();
