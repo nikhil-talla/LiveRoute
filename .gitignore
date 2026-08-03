@@ -6,3 +6,9 @@ out/
 
 # Downloaded and generated OSRM datasets
 /data/osrm/
+
+
+/secrets/
+/.env
+/.env.*
+!/.env.example
