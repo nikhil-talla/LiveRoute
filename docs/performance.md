@@ -75,5 +75,5 @@ route-cache latency reduction is claimed here.
 
 The detailed run IDs, raw and aggregate artifact paths, exact dimensions,
 digests, gates, and rejected-result reasoning live in
-`plans/summaries/optimizations.md`. Reproduction and aggregation procedures are
+`plans/summaries/optimization-evidence-ledger.md`. Reproduction and aggregation procedures are
 documented in `docs/benchmarking.md`.

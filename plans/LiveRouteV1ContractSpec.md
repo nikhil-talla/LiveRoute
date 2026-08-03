@@ -1243,7 +1243,7 @@ compares corresponding suffix-size groups rather than combining them.
 Immediately before the first Phase 18 change, the unoptimized correctness-passing
 Phase 17 build is measured and its actual calls/replan, bytes/replan, latency
 percentiles, throughput, artifact run ids, and SHA-256 digests are recorded in
-`plans/summaries/optimizations.md`; no absolute baseline number is invented in a
+`plans/summaries/optimization-evidence-ledger.md`; no absolute baseline number is invented in a
 plan. The Phase 18 candidate target is quantitative:
 
 - across the five suffix-size groups with equal operation weighting, allocation
@@ -1372,7 +1372,7 @@ Missing events, more than one `events`/`summary` set, counter overflow, a
 nonzero Valgrind exit, or a raw-file digest mismatch invalidates the run. The
 pinned GCC build also emits one vectorization report for planner translation
 units with `-fopt-info-vec-optimized-missed`; its compiler version, command, file
-digest, and findings are recorded in `plans/summaries/optimizations.md`. Native
+digest, and findings are recorded in `plans/summaries/optimization-evidence-ledger.md`. Native
 `perf`, Heaptrack, and flame graphs may supplement diagnosis but are neither
 required nor accepted in place of these artifacts.
 

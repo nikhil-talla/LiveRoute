@@ -69,7 +69,7 @@ bash scripts/check-planner-allocation.sh \
 `baseline` and `candidate` label compatible source/image variants; changing the
 label does not recreate an earlier build. Reproducing the recorded allocation
 comparison requires the exact images and artifacts identified in
-`plans/summaries/optimizations.md`.
+`plans/summaries/optimization-evidence-ledger.md`.
 
 Aggregate raw artifacts only after schema validation:
 

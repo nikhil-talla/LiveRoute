@@ -106,7 +106,7 @@ The column-based data layout and three tail-latency ideas were also measured,
 but rejected by the predeclared gates. The service therefore keeps its ordinary
 activity layout and does not enable those experimental shortcuts. See
 [docs/performance.md](docs/performance.md) for the summary and
-[plans/summaries/optimizations.md](plans/summaries/optimizations.md) for the
+[docs/optimizations.md](docs/optimizations.md) for the
 detailed evidence ledger.
 
 ## Documentation
