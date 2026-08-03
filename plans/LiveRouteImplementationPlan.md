@@ -517,7 +517,7 @@ Acceptance criteria:
 
 ## Assumptions
 
-- The initial systems-design context is `plans/LiveRouteInitialPlan.md`.
+- The normative architecture is `plans/LiveRouteV1ArchitecturePlan.md`.
 - V1 is a single-host, single-backend, single-C++-process development/demo deployment with a WebSocket gateway and PostgreSQL durability; horizontal scaling and production deployment are future work.
 - The V1 backend stack is Go 1.26, `coder/websocket`, gRPC-Go, `pgx/v5`, Goose, and draft-2020-12 JSON Schema validation.
 - V1 uses CLI/load/integration WebSocket clients. The React/TypeScript frontend and user-facing login are V1.5.

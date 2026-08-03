@@ -117,7 +117,6 @@ detailed evidence ledger.
 - [Local OSRM setup](docs/osrm.md)
 - [Design tradeoffs](docs/design-tradeoffs.md)
 - [Normative V1 contract](plans/LiveRouteV1ContractSpec.md)
-- [Implementation roadmap](plans/LiveRouteFeatureRoadmap.md)
 
 The normative contract and architecture plan remain authoritative when a
 reader-facing summary is less detailed.

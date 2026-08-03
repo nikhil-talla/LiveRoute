@@ -7,8 +7,14 @@ out/
 # Downloaded and generated OSRM datasets
 /data/osrm/
 
-
+# Local credentials
 /secrets/
 /.env
 /.env.*
 !/.env.example
+
+# Private local planning and agent context
+/AGENTS.md
+/.agents/
+/plans/LiveRouteInitialPlan.md
+/plans/LiveRouteFeatureRoadmap.md
