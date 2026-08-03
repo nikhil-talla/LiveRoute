@@ -36,27 +36,15 @@ stored proposal -> WebSocket suggestion -> explicit user decision
 ```
 
 The planner search loop sees only internal domain values and an immutable
-`TravelTimeMatrix`. It does not parse JSON/Protobuf, query PostgreSQL, call
-OSRM, read files, or perform RPCs. Provider work and planner CPU work use
-separate bounded executors; trip mutation remains shard-owned.
+`TravelTimeMatrix`. It does not parse browser messages, query PostgreSQL, call
+OSRM, read files, or perform network requests. Route-service work and planner
+CPU work use separate bounded worker pools, and each trip has one owner for its
+mutable live state. This keeps slow route lookups, concurrent updates, and
+stale results from changing the user's plan unexpectedly.
 
 User-entered normalized UTC `open_windows` are the authoritative V1 hours
 model. The checked-in seeded-hours provider is an optional importer and
 deterministic fixture, not a serving-path place lookup.
-
-## Systems work demonstrated
-
-- C++20 shard ownership, bounded priority queues, worker pools, cancellation,
-  GPS coalescing, generation fencing, and stale-result rejection.
-- A transport-independent finite beam search with hard feasibility constraints,
-  deterministic ordering, explicit work budgets, and best-so-far behavior.
-- PostgreSQL transactions for canonical user plans, separate engine proposals,
-  outbox delivery, acknowledgements, idempotency, leases, and snapshots.
-- Versioned WebSocket and Protobuf contracts with generated-binding and
-  compatibility checks.
-- Pinned container toolchains and local car/foot OSRM datasets.
-- Schema-validated latency/allocation artifacts and measurement-gated
-  optimization decisions, including documented rejected experiments.
 
 ## Local prerequisites
 
@@ -107,17 +95,19 @@ containers and therefore take longer than unit tests.
 
 ## Measured performance
 
-The accepted Phase 18 planner workspace reduced allocation calls and allocated
-bytes at every measured suffix size while preserving canonical results and the
-declared throughput/p99 gates. For suffix 64, calls per replan fell from
+The planner's reusable working memory reduced allocation calls and allocated
+bytes at every measured remaining-plan size while preserving canonical results
+and the declared throughput and tail-latency gates. For 64 remaining
+activities, calls per replan fell from
 185,641 to 60,819 and bytes from 91,067,714 to 4,542,762. These are
 planner-scoped measurements—not WebSocket, database, gRPC, or OSRM latency.
 
-The Phase 19 SoA experiment and all three Phase 20 tail experiments were
-measured but rejected by the predeclared gates, so serving retains AoS and tail
-optimization mask `0`. See [docs/performance.md](docs/performance.md) for the
-summary and [plans/summaries/optimizations.md](plans/summaries/optimizations.md)
-for the evidence ledger.
+The column-based data layout and three tail-latency ideas were also measured,
+but rejected by the predeclared gates. The service therefore keeps its ordinary
+activity layout and does not enable those experimental shortcuts. See
+[docs/performance.md](docs/performance.md) for the summary and
+[plans/summaries/optimizations.md](plans/summaries/optimizations.md) for the
+detailed evidence ledger.
 
 ## Documentation
 

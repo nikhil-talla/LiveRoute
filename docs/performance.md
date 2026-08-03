@@ -1,12 +1,12 @@
-# LiveRoute V1 Performance Report
+# LiveRoute Performance Report
 
 ## Scope and interpretation
 
 LiveRoute reports planner-only, runtime, provider, and end-to-end stages
-separately. The tables below are planner-scoped Phase 18/19/20 measurements.
-They do not include WebSocket framing, PostgreSQL transactions, gRPC network
-transport, or OSRM latency, and must not be presented as end-to-end response
-times.
+separately. The tables below measure three planner improvements and the route cache.
+They do not include browser message framing, database transactions, internal
+network transport, or route-service latency, and must not be presented as
+end-to-end response times.
 
 Latency values are inclusive fixed histogram buckets, not interpolated samples.
 Throughput is reported in millioperations per second (`mops/s`) by the versioned
@@ -16,7 +16,7 @@ optimization ledger; they are not universal hardware claims.
 
 ## Accepted: reusable planner workspace
 
-Phase 18 replaced repeated scoring allocations with explicit worker-owned
+The accepted workspace change replaced repeated scoring allocations with explicit worker-owned
 `PlannerScoreScratch` and fixed validation buffers. Canonical output digests,
 work limits, and correctness remained unchanged.
 
@@ -35,18 +35,19 @@ aggregate SHA-256 is
 
 ## Rejected: structure-of-arrays layout
 
-Phase 19 measured a private worker-owned SoA view against the accepted AoS
-serving layout. Combined suffix 16/32/64 throughput reached 99.79% of AoS, below
+The data-layout experiment measured a private column-based view against the
+accepted ordinary object layout. Combined suffix 16/32/64 throughput reached 99.79% of the ordinary layout, below
 the required 105%, and suffix-8 p99 regressed from the 1,000 us bucket to the
 2,500 us bucket. The experiment was therefore reverted from serving use before
-Callgrind, as required by the native gate. AoS remains authoritative.
+the profiler step required by the timing gate. The ordinary layout remains the
+serving representation.
 
 Timing aggregate SHA-256:
 `3376e1462ccbf5d2eabe2dac0c89db15120a905738ec8d6cbbb6ad91a167e4f3`.
 
 ## Rejected: three tail-latency experiments
 
-Phase 20 independently measured validate-once calls, protected-lower-bound
+Three tail-latency experiments independently measured validate-once calls, protected-lower-bound
 scratch, and partial beam selection, plus their combined mask. Every variant
 preserved canonical results and work counts, but each failed at least one
 predeclared p99, throughput, or material-benefit gate. Serving therefore uses
@@ -64,8 +65,8 @@ Tail aggregate SHA-256:
 
 ## Route cache
 
-Phase 17 added a fixed-memory, 16-shard route-estimate cache with deterministic
-E5 coordinate keys, six-hour fresh TTL, 24-hour maximum stale age, and bounded
+The route cache uses fixed memory, 16 partitions, deterministic coordinate keys,
+six-hour fresh expiry, 24-hour maximum stale age, and bounded
 64-slot second-chance eviction. Its purpose is to bound provider work and permit
 a narrowly contracted `PROVIDER_UNAVAILABLE` stale fallback. No unmeasured
 route-cache latency reduction is claimed here.

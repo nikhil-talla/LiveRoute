@@ -1,11 +1,11 @@
-# Benchmark Methodology
+# Benchmarking Methodology
 
 ## Principles
 
-Benchmarks are container-first and measurement boundaries are explicit.
-Planner-only measurements never include provider, database, WebSocket, or gRPC
-latency. Runtime/load reports retain separate stage histograms rather than
-blending queue, provider, planner, and serialization time.
+Benchmarks run in containers and state exactly what they measure. Planner-only
+measurements exclude route-service, database, browser-connection, and internal
+network time. Runtime reports keep queueing, route lookup, planning, and
+serialization as separate stages.
 
 Raw artifacts validate against
 `schema/benchmark/liveroute-benchmark-v1.schema.json`; merged reports validate
@@ -23,7 +23,7 @@ docker build --platform linux/amd64 \
 docker image inspect liveroute-planner-service:measurement --format '{{.Id}}'
 ```
 
-Record the resulting image ID with every run. Do not compare artifacts whose
+Record the resulting image ID with every run. Do not compare results whose
 compiler, build type, architecture, fixture, search budgets, provider dataset,
 cache policy, or planner policy dimensions differ.
 
@@ -67,9 +67,9 @@ bash scripts/check-planner-allocation.sh \
 ```
 
 `baseline` and `candidate` label compatible source/image variants; changing the
-label does not reconstruct historical code. Reproducing the recorded Phase 18
-before/after comparison therefore requires the exact baseline and candidate
-images/artifacts identified in `plans/summaries/optimizations.md`.
+label does not recreate an earlier build. Reproducing the recorded allocation
+comparison requires the exact images and artifacts identified in
+`plans/summaries/optimizations.md`.
 
 Aggregate raw artifacts only after schema validation:
 
@@ -92,15 +92,16 @@ bash scripts/check-planner-tail.sh \
   --combined-mask 7
 ```
 
-The layout suite runs AoS and SoA separately. The Phase 19 contract requires the
-native timing gate before profiler work; a failing native candidate is not
-profiled or retained. The tail suite creates 125 raw artifacts and an aggregate,
-then `scripts/evaluate-planner-tail.py` applies the exact integer gates.
+The layout suite compares the ordinary object layout with a column-based
+alternative. Native timing must pass before the alternative is profiled; a
+failing candidate is not retained. The tail suite creates 125 raw artifacts and
+an aggregate, then `scripts/evaluate-planner-tail.py` applies the exact integer
+acceptance rules.
 
 ## Reporting rules
 
-- State whether a number is planner-only, runtime-stage, provider, gRPC, or
-  WebSocket end-to-end.
+- State whether a number covers planning only, one runtime stage, route lookup,
+  internal network work, or the full browser-to-result path.
 - Report fixed-bucket percentiles as bucket bounds; do not imply finer
   precision.
 - Include completed operations, throughput, deadline/overflow counters,

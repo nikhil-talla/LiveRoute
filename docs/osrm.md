@@ -1,12 +1,13 @@
-# Local OSRM Setup
+# Local Routing Service Setup
 
-LiveRoute V1 uses a checksum-locked Rhode Island Geofabrik extract and pinned
-OSRM v26.5.0 image. Car and foot profiles are prepared independently with MLD
-and served only inside the Compose network.
+LiveRoute uses a checksum-locked Rhode Island map extract and a fixed OSRM
+v26.5.0 image. Separate car and walking configurations are prepared and served
+only inside the local Docker Compose network. OSRM is the service that supplies
+road travel times; it is not exposed directly to the host.
 
 ## Install the locked source artifact
 
-The required metadata is authoritative in `config/osrm-dataset.lock`:
+The required source metadata is recorded in `config/osrm-dataset.lock`:
 
 - file: `rhode-island-260701.osm.pbf`
 - source date: 2026-07-01
@@ -46,19 +47,19 @@ docker compose --profile osrm up --build --wait osrm-car osrm-foot
 docker compose --profile osrm ps
 ```
 
-The one-shot prepare containers verify the source size/digest, verify the pinned
-profile manifest, and create separate outputs under:
+The one-shot preparation containers verify the source file and routing
+configuration, then create separate outputs under:
 
 ```text
 data/osrm/generated/car/
 data/osrm/generated/foot/
 ```
 
-Preprocessing is skipped on later starts only when the build stamp and required
-MLD artifacts match. OSRM uses one preprocessing thread and one serving thread
-per profile for the reproducible local V1 workflow.
+Later starts skip preparation only when the build stamp and required generated
+files match. Each routing configuration uses one preparation thread and one
+serving thread so local measurements are repeatable.
 
-The car and foot endpoints are private (`http://osrm-car:5000` and
+The car and walking endpoints are private (`http://osrm-car:5000` and
 `http://osrm-foot:5000`). They are intentionally not published to the host.
 Readiness performs a small fixed Table request and checks response dimensions.
 
@@ -70,8 +71,8 @@ docker compose --profile osrm stop osrm-car osrm-foot
 
 ## Failure diagnosis
 
-- A prepare container exiting immediately usually means the filename, size, or
-  SHA-256 does not match the lock.
+- A preparation container exiting immediately usually means the filename, size,
+  or SHA-256 does not match the lock.
 - `docker compose --profile osrm logs osrm-car-prepare osrm-foot-prepare`
   shows preprocessing failures.
 - `docker compose --profile osrm logs osrm-car osrm-foot` shows serving or
