@@ -128,8 +128,11 @@ V1 hours are user-entered normalized UTC `open_windows`; the backend persists
 them and C++ consumes them as authoritative constraints. The versioned seed
 shape and pinned tzdata in `plans/LiveRouteV1ContractSpec.md` support an
 optional importer and deterministic fixture, not a serving-path place lookup.
-A frontend destination-search or geocoding API is not currently defined in the
-contract. Adding place lookup would be a separate V1/V1.5 provider decision.
+The completed V1 contract intentionally defines no frontend destination-search
+or geocoding API. The separate V1.5 frontend plan selects temporary Mapbox
+Search Box POI discovery followed by user-confirmed Mapbox Geocoding v6
+Permanent results; that decision does not retroactively change the V1 wire
+contract.
 
 ## Lease Ownership
 
