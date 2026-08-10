@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	liveroutev1 "github.com/liveroute/liveroute/backend/gen/liveroute/v1"
+	"github.com/liveroute/liveroute/backend/internal/auth"
 	"github.com/liveroute/liveroute/backend/internal/config"
 	"github.com/liveroute/liveroute/backend/internal/dispatch"
 	"github.com/liveroute/liveroute/backend/internal/gateway"
@@ -93,6 +96,25 @@ func run(args []string) error {
 	authenticator, err := persistence.NewDevelopmentAuthenticator(pool)
 	if err != nil {
 		return err
+	}
+	hmacKeys, err := loadHTTPHMACKeys()
+	if err != nil {
+		return err
+	}
+	httpAuthStore, err := persistence.NewHTTPAuthStore(pool, hmacKeys)
+	if err != nil {
+		return err
+	}
+	savedTrips, err := persistence.NewSavedTripStore(pool)
+	if err != nil {
+		return err
+	}
+	var googleVerifier *auth.GoogleVerifier
+	if clientID := strings.TrimSpace(os.Getenv("LIVEROUTE_GOOGLE_WEB_CLIENT_ID")); clientID != "" {
+		googleVerifier, err = auth.NewGoogleVerifier(rootContext, clientID, &http.Client{Timeout: 3 * time.Second})
+		if err != nil {
+			return err
+		}
 	}
 
 	planner, plannerConnection, err := plannertransport.Dial(plannerTarget, plannertransport.Config{
@@ -243,6 +265,16 @@ func run(args []string) error {
 	}
 	server, err := gateway.NewHTTPServer(bindAddress, websocketHandler, healthHandler)
 	if err != nil {
+		return err
+	}
+	httpAuthHandler, err := gateway.NewHTTPAuthHandler(gateway.HTTPAuthConfig{
+		Store: httpAuthStore, Trips: savedTrips, GoogleVerifier: googleVerifier, AllowedOrigins: cfg.WebSocket.AllowedOrigins,
+		SecureCookies: false, FrontendOrigin: "http://localhost:5173",
+	})
+	if err != nil {
+		return err
+	}
+	if err := server.SetHTTPAuthHandler(httpAuthHandler); err != nil {
 		return err
 	}
 	listener, err := net.Listen("tcp", bindAddress)
@@ -677,6 +709,27 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func loadHTTPHMACKeys() (persistence.HMACKeyRing, error) {
+	keyID := strings.TrimSpace(os.Getenv("LIVEROUTE_CSRF_HMAC_KEY_ID"))
+	keyText := strings.TrimSpace(os.Getenv("LIVEROUTE_CSRF_HMAC_KEY"))
+	if keyText == "" {
+		path := envOr("LIVEROUTE_CSRF_HMAC_KEY_FILE", "/run/secrets/liveroute_csrf_hmac_key")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return persistence.HMACKeyRing{}, errors.New("LIVEROUTE_CSRF_HMAC_KEY or LIVEROUTE_CSRF_HMAC_KEY_FILE is required")
+		}
+		keyText = strings.TrimSpace(string(raw))
+	}
+	if keyID == "" {
+		return persistence.HMACKeyRing{}, errors.New("LIVEROUTE_CSRF_HMAC_KEY_ID is required")
+	}
+	value, err := base64.RawURLEncoding.DecodeString(keyText)
+	if err != nil || len(value) < sha256.Size {
+		value = []byte(keyText)
+	}
+	return persistence.NewHMACKeyRing(persistence.HMACKey{ID: keyID, Value: value}, nil)
 }
 
 func canonicalUUID(value string) bool {

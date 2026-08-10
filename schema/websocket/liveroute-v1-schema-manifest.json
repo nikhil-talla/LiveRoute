@@ -10,7 +10,11 @@
     {
       "path": "schema/websocket/liveroute-v1-server-envelope.schema.json",
       "sha256": "dd5b26e26bf75c28f47802ceda91dd0e7fb360662756609a553394a35a6f55f4"
+    },
+    {
+      "path": "schema/websocket/liveroute-v1.5-navigation-extension.schema.json",
+      "sha256": "87b450707a96fc2732f9a0402aae25eee844d81e9f603a3b4d6172fb9c808441"
     }
   ],
-  "bundle_sha256": "c256ee24ef224a3241f5fef076424682f25e4aaaa25668f47a1ddb6fbccecf0d"
+  "bundle_sha256": "d1162b40e0be84a4ba4f886d4b288d2b796c56bd385f04b7c9e05a27dfeafb47"
 }

@@ -1,0 +1,98 @@
+{
+  "contract_version": "liveroute.http.v1.1",
+  "openapi_path": "schema/http/liveroute-v1.5.openapi.yaml",
+  "openapi_sha256": "06ca7955529e1f71a6befc6ba59b0277427c6dbe98810a52472bfe9396df796a",
+  "canonicalization": "sha256-file-bytes-v1",
+  "cases": [
+    {
+      "path": "schema/http/corpus/positive/create-trip-request.json",
+      "schema": "CreateTripRequest",
+      "valid": true,
+      "sha256": "05040f6fc707def4934864bff305d25cc32d50d4a9aa1ef4143327a815de14ba"
+    },
+    {
+      "path": "schema/http/corpus/positive/google-login-request.json",
+      "schema": "GoogleLoginRequest",
+      "valid": true,
+      "sha256": "49a778dc390b69073785cbe58161ba33bd72c43b1420711e705cf8cbe219321d"
+    },
+    {
+      "path": "schema/http/corpus/positive/place-resolution.json",
+      "schema": "PlaceResolution",
+      "valid": true,
+      "sha256": "9c3ae191597b50c762b7b7337e421f6fc8c21f663b164e7390660428f032f880"
+    },
+    {
+      "path": "schema/http/corpus/positive/problem.json",
+      "schema": "Problem",
+      "valid": true,
+      "sha256": "254ce3d7d20c10a3fef100b4a5d124431f5231e6ade9271ff25b7dbeb3b1ef68"
+    },
+    {
+      "path": "schema/http/corpus/positive/session.json",
+      "schema": "Session",
+      "valid": true,
+      "sha256": "65d6998888a7b841a783317c17c663bfbcedde50d83b76acb5eab37bc4d0ab43"
+    },
+    {
+      "path": "schema/http/corpus/positive/trip.json",
+      "schema": "Trip",
+      "valid": true,
+      "sha256": "ea1afac595a70347b61e52d510c95e4a1e56c9810a45563209b5cca2908332c3"
+    },
+    {
+      "path": "schema/http/corpus/negative/activity-shortening-enabled.json",
+      "schema": "ActivityInput",
+      "valid": false,
+      "sha256": "6bd2d227672377979589c6f44e7f87ecae0368dee56279bc172125566355d110"
+    },
+    {
+      "path": "schema/http/corpus/negative/create-trip-empty.json",
+      "schema": "CreateTripRequest",
+      "valid": false,
+      "sha256": "39e5fcdcf227ad57746991fee0164a872537043fa022fdc4c28b8c9013de45fd"
+    },
+    {
+      "path": "schema/http/corpus/negative/create-trip-noncontiguous-ordinals.json",
+      "schema": "CreateTripRequest",
+      "valid": false,
+      "sha256": "ed32cca69fcc4b1a6d3816565ebbd1bd991395159f1e5976853421cb008e842a"
+    },
+    {
+      "path": "schema/http/corpus/negative/google-login-missing-timezone.json",
+      "schema": "GoogleLoginRequest",
+      "valid": false,
+      "sha256": "c73397e76f8793ec1a364d9e587763ce7c9a7d11a7b257017aedb2e0e39e5a8a"
+    },
+    {
+      "path": "schema/http/corpus/negative/place-resolution-temporary-name.json",
+      "schema": "PlaceResolveRequest",
+      "valid": false,
+      "sha256": "61ec8132e06790b26e318eb87fdea410af55e104178c406a60fe3fbbe24eb497"
+    },
+    {
+      "path": "schema/http/corpus/negative/scheduled-missing-end.json",
+      "schema": "SavedSegment",
+      "valid": false,
+      "sha256": "a673c2e44f0c88f7981e309deeb4dae7855a18063d87a4e7b6d30c3284725113"
+    },
+    {
+      "path": "schema/http/corpus/negative/session-missing-default-timezone.json",
+      "schema": "Session",
+      "valid": false,
+      "sha256": "01b15a87c1e76d548daf966502e846e0cbeb7531883bed7d860acfb4dd871e65"
+    },
+    {
+      "path": "schema/http/corpus/negative/trip-numeric-revision.json",
+      "schema": "Trip",
+      "valid": false,
+      "sha256": "0b78c4871b1e1532c27f971485c0e37a1145a045cbbb61d67af9b6ad38032fce"
+    },
+    {
+      "path": "schema/http/corpus/negative/update-trip-conflicting-display-schedule.json",
+      "schema": "UpdateTripRequest",
+      "valid": false,
+      "sha256": "3d44edeec4b685fad4838ce254587c6065ac5667e3f0fc26606f1ccfea2860fa"
+    }
+  ]
+}

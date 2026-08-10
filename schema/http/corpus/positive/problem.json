@@ -1,0 +1,9 @@
+{
+  "type": "https://liveroute.dev/problems/precondition-failed",
+  "title": "Trip revision is stale",
+  "status": 412,
+  "code": "PRECONDITION_FAILED",
+  "request_id": "55555555-5555-4555-8555-555555555555",
+  "retryable": false
+}
+

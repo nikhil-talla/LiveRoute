@@ -521,6 +521,11 @@ Acceptance criteria:
 - V1 is a single-host, single-backend, single-C++-process development/demo deployment with a WebSocket gateway and PostgreSQL durability; horizontal scaling and production deployment are future work.
 - The V1 backend stack is Go 1.26, `coder/websocket`, gRPC-Go, `pgx/v5`, Goose, and draft-2020-12 JSON Schema validation.
 - V1 uses CLI/load/integration WebSocket clients. The React/TypeScript frontend and user-facing login are V1.5.
+- The V1.5 HTTP saved-trip path is additive rather than a reuse of the V1
+  WebSocket `create_trip`: save/edit writes immutable relative saved-plan
+  revisions only, and activation materializes the first absolute V1 execution
+  plan/runtime state. Do not dual-write inactive HTTP plans into the legacy
+  absolute current-plan tables.
 - Bidirectional gRPC + Protobuf is the v1 backend-to-planner interface.
 - OSRM is the first realistic travel-time provider.
 - Manual or seed-file hours are the first operating-hours provider; external place APIs are future adapters.

@@ -1,0 +1,19 @@
+dataset:
+  provider: evansiroky/timezone-boundary-builder
+  release: 2026c
+  artifact: timezones-with-oceans.geojson.zip
+  url: https://github.com/evansiroky/timezone-boundary-builder/releases/download/2026c/timezones-with-oceans.geojson.zip
+  sha256: 70bc2f5e9b48f49461368fafe30daa840c3db9c7bc730faf33614cad339f9b1d
+  size_bytes: 55449715
+  data_license: ODbL-1.0
+  data_license_url: https://github.com/evansiroky/timezone-boundary-builder/blob/master/DATA_LICENSE
+  build_archive_path: /tmp/timezones-with-oceans.geojson.zip
+  extracted_geojson_name: combined-with-oceans.json
+  extracted_geojson_sha256: 17f0821bad87d7a44dcebff12ad70b82bf973c54942e29fe20f5f9f8be4b3db6
+  extracted_geojson_size_bytes: 182393702
+  container_geojson_path: /opt/liveroute/share/timezone-boundaries/2026c/combined-with-oceans.json
+  container_build_file: docker/timezone-boundaries/Dockerfile
+  country_scope: US
+  accepted_tzdata_release: 2026c
+  boundary_policy: lowest-lexicographic-US-IANA-zone
+  no_polygon_policy: reject-place-resolution

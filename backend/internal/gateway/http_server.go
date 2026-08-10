@@ -10,6 +10,7 @@ import (
 type HTTPServer struct {
 	server  *http.Server
 	handler *Handler
+	mux     *http.ServeMux
 }
 
 func NewHTTPServer(
@@ -27,7 +28,19 @@ func NewHTTPServer(
 	return &HTTPServer{
 		server:  &http.Server{Addr: address, Handler: mux},
 		handler: websocketHandler,
+		mux:     mux,
 	}, nil
+}
+
+// SetHTTPAuthHandler attaches the versioned browser authentication surface.
+// It is separate from the V1 WebSocket gateway so the transport handler does
+// not own cookies, sessions, or PostgreSQL authentication state.
+func (server *HTTPServer) SetHTTPAuthHandler(handler http.Handler) error {
+	if server == nil || server.mux == nil || handler == nil {
+		return errors.New("HTTP authentication handler is required")
+	}
+	server.mux.Handle("/api/v1/", handler)
+	return nil
 }
 
 // Serve runs the HTTP event loop on the supplied listener and closes WebSocket

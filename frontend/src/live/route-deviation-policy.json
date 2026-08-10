@@ -1,0 +1,29 @@
+{
+  "policy_version": "liveroute-navigation-v1-baseline-1",
+  "maximum_accuracy_meters": 25,
+  "walking_enter_effective_distance_meters": 20,
+  "walking_exit_effective_distance_meters": 10,
+  "driving_enter_effective_distance_meters": 35,
+  "driving_exit_effective_distance_meters": 15,
+  "confirmation_sample_count": 3,
+  "recovery_sample_count": 2,
+  "sample_minimum_spacing_ms": 1000,
+  "sample_sequence_window_ms": 10000,
+  "distance_earth_radius_meters": 6371008.8,
+  "directions_request_timeout_ms": 5000,
+  "directions_max_in_flight": 1,
+  "directions_automatic_retry_count": 1,
+  "directions_retry_delay_ms": 2000,
+  "directions_retryable_conditions": [
+    "network-error",
+    "timeout",
+    "http-429",
+    "http-5xx"
+  ],
+  "directions_success_cooldown_ms": 15000,
+  "directions_failure_cooldown_ms": 30000,
+  "destination_change_bypasses_cooldown": true,
+  "material_eta_delay_ms": 300000,
+  "boundary_crossing_is_material": true,
+  "navigation_route_id_reuse": "forbidden"
+}

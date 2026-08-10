@@ -1,0 +1,16 @@
+{
+  "trip_id": "22222222-2222-4222-8222-222222222222",
+  "trip_name": "Saturday in Providence",
+  "default_time_zone_name": "America/New_York",
+  "trip_revision": 1,
+  "execution_state": "inactive",
+  "saved_plan": {
+    "saved_plan_id": "33333333-3333-4333-8333-333333333333",
+    "saved_plan_revision": "1",
+    "activities": [],
+    "created_at_unix_ms": 1786291200000
+  },
+  "created_at_unix_ms": 1786291200000,
+  "updated_at_unix_ms": 1786291200000
+}
+

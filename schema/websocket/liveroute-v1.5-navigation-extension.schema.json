@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liveroute.dev/schema/liveroute.navigation_v1",
+  "title": "LiveRoute V1.5 navigation extension",
+  "type": "object",
+  "required": [
+    "policy_version",
+    "next_activity_id",
+    "navigation_route_id",
+    "previous_eta_unix_ms",
+    "updated_eta_unix_ms",
+    "remaining_duration_seconds",
+    "remaining_distance_meters",
+    "off_route"
+  ],
+  "properties": {
+    "policy_version": { "const": "liveroute-navigation-v1-baseline-1" },
+    "next_activity_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "navigation_route_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "previous_eta_unix_ms": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "updated_eta_unix_ms": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "remaining_duration_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "remaining_distance_meters": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "off_route": { "const": true }
+  },
+  "additionalProperties": false
+}

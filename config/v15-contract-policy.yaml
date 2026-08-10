@@ -1,0 +1,121 @@
+# Normative V1.5 HTTP/auth/provider limits. Backend and frontend implementations
+# must load or generate constants from this file; environment values may supply
+# secrets and the one production origin but may not weaken these bounds.
+contract_version: liveroute.http.v1.1
+
+http:
+  max_json_body_bytes: 262144
+  idempotency_retention_seconds: 2592000
+  place_resolution_token_ttl_seconds: 600
+  trip_name_max_utf8_bytes: 120
+
+trip_creation:
+  timezone_source: authenticated-user-default
+  new_activity_defaults:
+    schedule:
+      state: unscheduled
+    inbound_travel_mode: driving
+    activity_class: flexible
+    priority_rank: 0
+    utility_score: 0
+    timing:
+      open_windows:
+        - opens_offset_ms: 0
+          closes_offset_ms: 86400000
+      reservation_grace_seconds: 0
+      min_duration_seconds: 3600
+      preferred_duration_seconds: 3600
+      max_duration_seconds: 3600
+      mandatory: false
+      can_shorten: false
+      can_move: true
+      can_skip: true
+
+browser_gps:
+  enable_high_accuracy: true
+  maximum_age_ms: 2000
+  position_timeout_ms: 10000
+  maximum_accepted_accuracy_meters: 50
+  maximum_sample_age_ms: 10000
+  maximum_future_skew_ms: 1000
+  minimum_send_interval_ms: 1000
+  movement_threshold_meters: 10
+  stationary_heartbeat_interval_ms: 5000
+  telemetry_ack_timeout_ms: 10000
+  stale_ui_after_ms: 15000
+  maximum_in_flight_location_messages: 1
+  maximum_pending_location_samples: 1
+  hidden_document_policy: pause-and-require-fresh-sample
+  disconnected_policy: discard-and-require-fresh-sample
+  persistent_storage: forbidden
+
+route_deviation:
+  policy_version: liveroute-navigation-v1-baseline-1
+  maximum_accuracy_meters: 25
+  walking_enter_effective_distance_meters: 20
+  walking_exit_effective_distance_meters: 10
+  driving_enter_effective_distance_meters: 35
+  driving_exit_effective_distance_meters: 15
+  confirmation_sample_count: 3
+  recovery_sample_count: 2
+  sample_minimum_spacing_ms: 1000
+  sample_sequence_window_ms: 10000
+  distance_earth_radius_meters: 6371008.8
+  directions_request_timeout_ms: 5000
+  directions_max_in_flight: 1
+  directions_automatic_retry_count: 1
+  directions_retry_delay_ms: 2000
+  directions_retryable_conditions:
+    - network-error
+    - timeout
+    - http-429
+    - http-5xx
+  directions_success_cooldown_ms: 15000
+  directions_failure_cooldown_ms: 30000
+  destination_change_bypasses_cooldown: true
+  material_eta_delay_ms: 300000
+  boundary_crossing_is_material: true
+  navigation_route_id_reuse: forbidden
+
+authentication:
+  oidc_nonce_ttl_seconds: 300
+  session_idle_ttl_seconds: 604800
+  session_absolute_ttl_seconds: 2592000
+  session_rotation_age_seconds: 86400
+  session_predecessor_grace_seconds: 60
+  session_idle_touch_interval_seconds: 300
+  websocket_ticket_ttl_seconds: 60
+  csrf_hmac_algorithm: hmac-sha256-v1
+  session_digest_algorithm: sha256-v1
+  token_random_bytes: 32
+  production_session_cookie_name: __Host-liveroute_session
+  development_session_cookie_name: liveroute_dev_session
+  production_oidc_binding_cookie_name: __Secure-liveroute_oidc_binding
+  development_oidc_binding_cookie_name: liveroute_dev_oidc_binding
+  hmac_key_max_active_age_seconds: 7776000
+  retired_hmac_key_minimum_retention_seconds: 2592000
+
+origins:
+  development_frontend_origin: http://localhost:5173
+  development_backend_origin: http://localhost:8080
+  production_topology: same-origin-https
+  production_origin_environment: LIVEROUTE_PUBLIC_ORIGIN
+  allow_wildcard_origin: false
+  allow_originless_browser_requests: false
+
+mapbox_permanent_geocoding:
+  endpoint: https://api.mapbox.com/search/geocode/v6/reverse
+  permanent: true
+  country: US
+  connect_timeout_ms: 500
+  request_timeout_ms: 3000
+  max_response_bytes: 262144
+  max_global_in_flight: 16
+  max_per_user_in_flight: 1
+  max_attempts_per_user_per_minute: 5
+  automatic_retry_count: 0
+
+timezone_boundaries:
+  lock_file: config/timezone-boundaries.lock
+  boundary_policy: lowest-lexicographic-US-IANA-zone
+  no_polygon_policy: reject-place-resolution

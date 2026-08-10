@@ -1,0 +1,927 @@
+openapi: 3.1.1
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: LiveRoute V1.5 Browser HTTP API
+  version: liveroute.http.v1.1
+  description: >-
+    Normative inactive-trip, authentication, place-resolution, and execution
+    lifecycle API for the V1.5 browser. Active-trip commands and telemetry use
+    the existing liveroute.v1 WebSocket contract.
+servers:
+  - url: /api/v1
+    description: Same-origin production or configured local backend
+security:
+  - cookieAuth: []
+tags:
+  - name: Authentication
+  - name: Trips
+  - name: Activities
+  - name: Places
+  - name: Execution
+paths:
+  /auth/google/nonce:
+    post:
+      operationId: createGoogleLoginNonce
+      tags: [Authentication]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '201':
+          description: Single-use Google OIDC nonce and browser binding created.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoogleNonceResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '429': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /auth/google:
+    post:
+      operationId: authenticateWithGoogle
+      tags: [Authentication]
+      security:
+        - oidcBindingCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoogleLoginRequest' }
+      responses:
+        '200':
+          description: Google identity verified and LiveRoute session created.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /session:
+    get:
+      operationId: getSession
+      tags: [Authentication]
+      responses:
+        '200':
+          description: Current LiveRoute session and CSRF token.
+          headers:
+            Set-Cookie:
+              description: Present only when the session token rotates.
+              schema: { type: string }
+            X-LiveRoute-CSRF-Token:
+              description: Present only when the session token rotates.
+              schema: { $ref: '#/components/schemas/OpaqueToken' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [Authentication]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '204':
+          description: Session family revoked and cookie cleared.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+  /auth/ws-ticket:
+    post:
+      operationId: createWebSocketTicket
+      tags: [Authentication]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '201':
+          description: Single-use 60-second WebSocket authentication ticket.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebSocketTicket' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '429': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /trips:
+    get:
+      operationId: listTrips
+      tags: [Trips]
+      responses:
+        '200':
+          description: Name-only inactive summaries plus the user's transition/active trip.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TripList' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+    post:
+      operationId: createTrip
+      tags: [Trips]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTripRequest' }
+      responses:
+        '201':
+          description: Canonical inactive trip and first saved-plan revision created.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '422': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /trips/{trip_id}:
+    parameters:
+      - $ref: '#/components/parameters/TripID'
+    get:
+      operationId: getTrip
+      tags: [Trips]
+      responses:
+        '200':
+          description: Full editable saved trip and current execution status.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+    patch:
+      operationId: updateTripMetadata
+      tags: [Trips]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateTripRequest' }
+      responses:
+        '200':
+          description: Updated canonical inactive trip.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '412': { $ref: '#/components/responses/ProblemResponse' }
+        '422': { $ref: '#/components/responses/ProblemResponse' }
+        '428': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+    delete:
+      operationId: deleteTrip
+      tags: [Trips]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204': { description: Inactive trip and its retained history deleted. }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '412': { $ref: '#/components/responses/ProblemResponse' }
+        '428': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /trips/{trip_id}/activities:
+    parameters:
+      - $ref: '#/components/parameters/TripID'
+    post:
+      operationId: addTripActivity
+      tags: [Activities]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ActivityInput' }
+      responses:
+        '201':
+          description: Activity added and new immutable saved-plan revision selected.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '412': { $ref: '#/components/responses/ProblemResponse' }
+        '422': { $ref: '#/components/responses/ProblemResponse' }
+        '428': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /trips/{trip_id}/activities/{activity_id}:
+    parameters:
+      - $ref: '#/components/parameters/TripID'
+      - $ref: '#/components/parameters/ActivityID'
+    patch:
+      operationId: replaceTripActivity
+      tags: [Activities]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ActivityInput' }
+      responses:
+        '200':
+          description: Activity replaced and new immutable saved-plan revision selected.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '412': { $ref: '#/components/responses/ProblemResponse' }
+        '422': { $ref: '#/components/responses/ProblemResponse' }
+        '428': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+    delete:
+      operationId: deleteTripActivity
+      tags: [Activities]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Activity removed and new nonempty saved-plan revision selected.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '412': { $ref: '#/components/responses/ProblemResponse' }
+        '422': { $ref: '#/components/responses/ProblemResponse' }
+        '428': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /places/resolve:
+    post:
+      operationId: resolvePermanentPlace
+      tags: [Places]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceResolveRequest' }
+      responses:
+        '200':
+          description: One user-confirmable permanent candidate; no Place yet exists.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceResolution' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '422': { $ref: '#/components/responses/ProblemResponse' }
+        '429': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /places:
+    post:
+      operationId: createPlace
+      tags: [Places]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePlaceRequest' }
+      responses:
+        '201':
+          description: Immutable Place created or exact creation replayed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Place' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '410': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /trips/{trip_id}/activate:
+    parameters:
+      - $ref: '#/components/parameters/TripID'
+    post:
+      operationId: activateTrip
+      tags: [Execution]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ActivateTripRequest' }
+      responses:
+        '200':
+          description: Activation completed synchronously or exact terminal replayed.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutionTransition' }
+        '202':
+          description: Durable activation is still in progress and may be polled with GET trip.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+            Retry-After:
+              schema: { type: integer, const: 1 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutionTransition' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '412': { $ref: '#/components/responses/ProblemResponse' }
+        '422': { $ref: '#/components/responses/ProblemResponse' }
+        '428': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+  /trips/{trip_id}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/TripID'
+    post:
+      operationId: deactivateTrip
+      tags: [Execution]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Deactivation completed synchronously or exact terminal replayed.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutionTransition' }
+        '202':
+          description: Durable deactivation is still in progress and may be polled with GET trip.
+          headers:
+            ETag: { $ref: '#/components/headers/TripETag' }
+            Retry-After:
+              schema: { type: integer, const: 1 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutionTransition' }
+        '400': { $ref: '#/components/responses/ProblemResponse' }
+        '401': { $ref: '#/components/responses/ProblemResponse' }
+        '403': { $ref: '#/components/responses/ProblemResponse' }
+        '404': { $ref: '#/components/responses/ProblemResponse' }
+        '409': { $ref: '#/components/responses/ProblemResponse' }
+        '412': { $ref: '#/components/responses/ProblemResponse' }
+        '428': { $ref: '#/components/responses/ProblemResponse' }
+        '503': { $ref: '#/components/responses/ProblemResponse' }
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: __Host-liveroute_session
+      description: Production cookie name; local development uses liveroute_dev_session.
+    oidcBindingCookie:
+      type: apiKey
+      in: cookie
+      name: __Secure-liveroute_oidc_binding
+      description: Production name; loopback development uses liveroute_dev_oidc_binding.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+  parameters:
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      schema: { type: string, format: uri, maxLength: 2048 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { $ref: '#/components/schemas/UUID' }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: '^"trip-revision-(0|[1-9][0-9]{0,19})"$'
+    TripID:
+      name: trip_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/UUID' }
+    ActivityID:
+      name: activity_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/UUID' }
+  headers:
+    TripETag:
+      description: Strong ETag containing the returned canonical trip revision.
+      schema:
+        type: string
+        pattern: '^"trip-revision-(0|[1-9][0-9]{0,19})"$'
+  responses:
+    ProblemResponse:
+      description: Safe structured error.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    UUID:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    UInt64:
+      type: string
+      pattern: '^(0|[1-9][0-9]{0,19})$'
+    SafeInteger:
+      type: integer
+      minimum: -9007199254740991
+      maximum: 9007199254740991
+    NonnegativeSafeInteger:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    UnixMilliseconds:
+      $ref: '#/components/schemas/SafeInteger'
+    OpaqueToken:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{43}$'
+    IANATimeZone:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z_+-]+(?:/[A-Za-z0-9_+.-]+)+$'
+    TripName:
+      type: string
+      minLength: 1
+      maxLength: 120
+      pattern: '^\S(?:[\s\S]*\S)?$'
+      description: >-
+        Trimmed nonempty name. The backend additionally enforces the normative
+        120-byte UTF-8 limit; maxLength documents the stricter ASCII/common case.
+    Coordinate:
+      type: object
+      required: [latitude, longitude]
+      properties:
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+      additionalProperties: false
+    GoogleNonceResponse:
+      type: object
+      required: [nonce, expires_at_unix_ms]
+      properties:
+        nonce: { $ref: '#/components/schemas/OpaqueToken' }
+        expires_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    GoogleLoginRequest:
+      type: object
+      required: [credential, default_time_zone_name]
+      properties:
+        credential: { type: string, minLength: 1, maxLength: 16384 }
+        default_time_zone_name: { $ref: '#/components/schemas/IANATimeZone' }
+      additionalProperties: false
+    User:
+      type: object
+      required: [user_id, display_name, default_time_zone_name]
+      properties:
+        user_id: { $ref: '#/components/schemas/UUID' }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email, maxLength: 320 }
+        default_time_zone_name:
+          allOf:
+            - $ref: '#/components/schemas/IANATimeZone'
+          description: >-
+            Stored user default used to initialize a new trip editor. The
+            create-trip request still carries its selected timezone explicitly.
+      additionalProperties: false
+    Session:
+      type: object
+      required: [user, csrf_token, idle_expires_at_unix_ms, absolute_expires_at_unix_ms]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        csrf_token: { $ref: '#/components/schemas/OpaqueToken' }
+        idle_expires_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+        absolute_expires_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    WebSocketTicket:
+      type: object
+      required: [ticket, expires_at_unix_ms]
+      properties:
+        ticket: { $ref: '#/components/schemas/OpaqueToken' }
+        expires_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    PlaceResolveRequest:
+      $ref: '#/components/schemas/Coordinate'
+    PlaceCandidate:
+      type: object
+      required: [latitude, longitude, display_name, time_zone_name]
+      properties:
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+        formatted_address: { type: string, minLength: 1, maxLength: 500 }
+        display_name: { type: string, minLength: 1, maxLength: 500 }
+        time_zone_name: { $ref: '#/components/schemas/IANATimeZone' }
+      additionalProperties: false
+    PlaceResolution:
+      type: object
+      required: [resolution_token, expires_at_unix_ms, candidate]
+      properties:
+        resolution_token: { $ref: '#/components/schemas/OpaqueToken' }
+        expires_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+        candidate: { $ref: '#/components/schemas/PlaceCandidate' }
+      additionalProperties: false
+    CreatePlaceRequest:
+      type: object
+      required: [resolution_token]
+      properties:
+        resolution_token: { $ref: '#/components/schemas/OpaqueToken' }
+      additionalProperties: false
+    Place:
+      type: object
+      required: [place_id, latitude, longitude, display_name, time_zone_name, created_at_unix_ms]
+      properties:
+        place_id: { $ref: '#/components/schemas/UUID' }
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+        formatted_address: { type: string, minLength: 1, maxLength: 500 }
+        display_name: { type: string, minLength: 1, maxLength: 500 }
+        time_zone_name: { $ref: '#/components/schemas/IANATimeZone' }
+        created_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    DisplaySchedule:
+      type: object
+      required: [local_date, local_time, time_zone_name]
+      properties:
+        local_date:
+          type: string
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        local_time:
+          type: string
+          pattern: '^(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$'
+        time_zone_name: { $ref: '#/components/schemas/IANATimeZone' }
+      additionalProperties: false
+    ScheduledSegment:
+      type: object
+      required: [state, start_offset_ms, end_offset_ms]
+      properties:
+        state: { type: string, const: scheduled }
+        start_offset_ms: { type: integer, minimum: 0, maximum: 86399999 }
+        end_offset_ms: { type: integer, minimum: 1, maximum: 86400000 }
+      additionalProperties: false
+    UnscheduledSegment:
+      type: object
+      required: [state]
+      properties:
+        state: { type: string, const: unscheduled }
+      additionalProperties: false
+    SavedSegment:
+      oneOf:
+        - $ref: '#/components/schemas/ScheduledSegment'
+        - $ref: '#/components/schemas/UnscheduledSegment'
+    RelativeTimeWindow:
+      type: object
+      required: [opens_offset_ms, closes_offset_ms]
+      properties:
+        opens_offset_ms: { type: integer, minimum: 0, maximum: 86399999 }
+        closes_offset_ms: { type: integer, minimum: 1, maximum: 86400000 }
+      additionalProperties: false
+    ActivityTimingInput:
+      type: object
+      required:
+        - open_windows
+        - reservation_grace_seconds
+        - min_duration_seconds
+        - preferred_duration_seconds
+        - max_duration_seconds
+        - mandatory
+        - can_shorten
+        - can_move
+        - can_skip
+      properties:
+        open_windows:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/RelativeTimeWindow' }
+        reservation_start_offset_ms: { type: integer, minimum: 0, maximum: 86400000 }
+        reservation_grace_seconds: { type: integer, minimum: 0, maximum: 4294967295 }
+        mandatory_deadline_offset_ms: { type: integer, minimum: 0, maximum: 86400000 }
+        min_duration_seconds: { type: integer, minimum: 0, maximum: 86400 }
+        preferred_duration_seconds: { type: integer, minimum: 0, maximum: 86400 }
+        max_duration_seconds: { type: integer, minimum: 0, maximum: 86400 }
+        mandatory: { type: boolean }
+        can_shorten: { type: boolean, const: false }
+        can_move: { type: boolean }
+        can_skip: { type: boolean }
+      additionalProperties: false
+    ActivityInput:
+      type: object
+      required:
+        - place_id
+        - ordinal
+        - schedule
+        - inbound_travel_mode
+        - activity_class
+        - priority_rank
+        - utility_score
+        - timing
+      properties:
+        place_id: { $ref: '#/components/schemas/UUID' }
+        ordinal:
+          type: integer
+          minimum: 0
+          maximum: 63
+          description: >-
+            Requested position. Create arrays must use contiguous ordinals from
+            zero; add/move/delete operations shift the affected range atomically.
+        schedule: { $ref: '#/components/schemas/SavedSegment' }
+        inbound_travel_mode: { type: string, enum: [walking, driving] }
+        activity_class: { type: string, enum: [fixed, flexible] }
+        priority_rank: { type: integer, minimum: -2147483648, maximum: 2147483647 }
+        utility_score: { type: integer, minimum: -2147483648, maximum: 2147483647 }
+        timing: { $ref: '#/components/schemas/ActivityTimingInput' }
+      additionalProperties: false
+    SavedActivity:
+      type: object
+      required:
+        - activity_id
+        - place
+        - ordinal
+        - schedule
+        - inbound_travel_mode
+        - activity_class
+        - priority_rank
+        - utility_score
+        - timing
+      properties:
+        activity_id: { $ref: '#/components/schemas/UUID' }
+        place: { $ref: '#/components/schemas/Place' }
+        ordinal:
+          type: integer
+          minimum: 0
+          maximum: 63
+          description: Contiguous zero-based position in this immutable revision.
+        schedule: { $ref: '#/components/schemas/SavedSegment' }
+        inbound_travel_mode: { type: string, enum: [walking, driving] }
+        activity_class: { type: string, enum: [fixed, flexible] }
+        priority_rank: { type: integer, minimum: -2147483648, maximum: 2147483647 }
+        utility_score: { type: integer, minimum: -2147483648, maximum: 2147483647 }
+        timing: { $ref: '#/components/schemas/ActivityTimingInput' }
+      additionalProperties: false
+    SavedPlan:
+      type: object
+      required: [saved_plan_id, saved_plan_revision, activities, created_at_unix_ms]
+      properties:
+        saved_plan_id: { $ref: '#/components/schemas/UUID' }
+        saved_plan_revision: { $ref: '#/components/schemas/UInt64' }
+        activities:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { $ref: '#/components/schemas/SavedActivity' }
+        created_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    TripExecutionState:
+      type: string
+      enum: [inactive, activating, active, deactivating]
+    ExecutionOperation:
+      type: object
+      required: [operation_id, kind, state, last_step, created_at_unix_ms, updated_at_unix_ms]
+      properties:
+        operation_id: { $ref: '#/components/schemas/UUID' }
+        kind: { type: string, enum: [activate, deactivate] }
+        state: { type: string, enum: [pending, succeeded, failed] }
+        last_step:
+          type: string
+          enum:
+            - recorded
+            - lease_acquired
+            - planner_bootstrapped
+            - runtime_fenced
+            - lease_released
+            - completed
+            - failed
+        target_execution_plan_id: { $ref: '#/components/schemas/UUID' }
+        safe_error_code: { type: string, maxLength: 64 }
+        created_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+        updated_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+        completed_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    ActiveExecution:
+      type: object
+      required: [execution_plan_id, activated_at_unix_ms]
+      properties:
+        execution_plan_id: { $ref: '#/components/schemas/UUID' }
+        activated_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    Trip:
+      type: object
+      required:
+        - trip_id
+        - trip_name
+        - default_time_zone_name
+        - trip_revision
+        - execution_state
+        - saved_plan
+        - created_at_unix_ms
+        - updated_at_unix_ms
+      properties:
+        trip_id: { $ref: '#/components/schemas/UUID' }
+        trip_name: { $ref: '#/components/schemas/TripName' }
+        default_time_zone_name: { $ref: '#/components/schemas/IANATimeZone' }
+        trip_revision: { $ref: '#/components/schemas/UInt64' }
+        execution_state: { $ref: '#/components/schemas/TripExecutionState' }
+        display_schedule: { $ref: '#/components/schemas/DisplaySchedule' }
+        saved_plan: { $ref: '#/components/schemas/SavedPlan' }
+        transition_operation: { $ref: '#/components/schemas/ExecutionOperation' }
+        active_execution: { $ref: '#/components/schemas/ActiveExecution' }
+        created_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+        updated_at_unix_ms: { $ref: '#/components/schemas/UnixMilliseconds' }
+      additionalProperties: false
+    TripSummary:
+      type: object
+      required: [trip_id, trip_name, trip_revision, execution_state]
+      properties:
+        trip_id: { $ref: '#/components/schemas/UUID' }
+        trip_name: { $ref: '#/components/schemas/TripName' }
+        trip_revision: { $ref: '#/components/schemas/UInt64' }
+        execution_state: { $ref: '#/components/schemas/TripExecutionState' }
+      additionalProperties: false
+    TripList:
+      type: object
+      required: [inactive_trips]
+      properties:
+        inactive_trips:
+          type: array
+          items: { $ref: '#/components/schemas/TripSummary' }
+        current_execution_trip: { $ref: '#/components/schemas/TripSummary' }
+      additionalProperties: false
+    CreateTripRequest:
+      type: object
+      required: [trip_name, default_time_zone_name, activities]
+      properties:
+        trip_name: { $ref: '#/components/schemas/TripName' }
+        default_time_zone_name: { $ref: '#/components/schemas/IANATimeZone' }
+        display_schedule: { $ref: '#/components/schemas/DisplaySchedule' }
+        activities:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { $ref: '#/components/schemas/ActivityInput' }
+      additionalProperties: false
+    UpdateTripRequest:
+      type: object
+      minProperties: 1
+      properties:
+        trip_name: { $ref: '#/components/schemas/TripName' }
+        default_time_zone_name: { $ref: '#/components/schemas/IANATimeZone' }
+        display_schedule: { $ref: '#/components/schemas/DisplaySchedule' }
+        remove_display_schedule: { type: boolean, const: true }
+      allOf:
+        - not:
+            required: [display_schedule, remove_display_schedule]
+      additionalProperties: false
+    ActivateTripRequest:
+      type: object
+      required: [starting_location]
+      properties:
+        starting_location: { $ref: '#/components/schemas/Coordinate' }
+      additionalProperties: false
+    ExecutionTransition:
+      type: object
+      required: [trip, operation]
+      properties:
+        trip: { $ref: '#/components/schemas/Trip' }
+        operation: { $ref: '#/components/schemas/ExecutionOperation' }
+      additionalProperties: false
+    FieldViolation:
+      type: object
+      required: [field, reason]
+      properties:
+        field: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+      additionalProperties: false
+    Problem:
+      type: object
+      required: [type, title, status, code, request_id, retryable]
+      properties:
+        type: { type: string, format: uri, maxLength: 2048 }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        code:
+          type: string
+          enum:
+            - INVALID_ARGUMENT
+            - UNAUTHENTICATED
+            - PERMISSION_DENIED
+            - NOT_FOUND
+            - CONFLICT
+            - IDEMPOTENCY_KEY_REUSED
+            - PRECONDITION_REQUIRED
+            - PRECONDITION_FAILED
+            - INACTIVE_TRIP
+            - TRIP_TRANSITION_IN_PROGRESS
+            - RESOURCE_EXHAUSTED
+            - PROVIDER_UNAVAILABLE
+            - PLACE_NOT_RESOLVED
+            - DURABILITY_UNAVAILABLE
+            - INTERNAL
+        request_id: { $ref: '#/components/schemas/UUID' }
+        retryable: { type: boolean }
+        detail: { type: string, maxLength: 1000 }
+        field_violations:
+          type: array
+          maxItems: 64
+          items: { $ref: '#/components/schemas/FieldViolation' }
+      additionalProperties: false

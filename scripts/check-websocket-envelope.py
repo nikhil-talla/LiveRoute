@@ -12,8 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATHS = (
     ROOT / "schema/websocket/liveroute-v1-client-envelope.schema.json",
     ROOT / "schema/websocket/liveroute-v1-server-envelope.schema.json",
+    ROOT / "schema/websocket/liveroute-v1.5-navigation-extension.schema.json",
 )
+ENVELOPE_SCHEMA_PATHS = SCHEMA_PATHS[:2]
 CORPUS_ROOT = ROOT / "schema/websocket/corpus"
+NAVIGATION_CORPUS_ROOT = ROOT / "schema/websocket/navigation-corpus"
 MANIFEST_PATH = ROOT / "schema/websocket/liveroute-v1-schema-manifest.json"
 MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 
@@ -131,7 +134,7 @@ def main() -> None:
         )
 
     validators = []
-    for schema_path in SCHEMA_PATHS:
+    for schema_path in ENVELOPE_SCHEMA_PATHS:
         schema = load_json(schema_path, schema_artifact=True)
         Draft202012Validator.check_schema(schema)
         validators.append(Draft202012Validator(schema))
@@ -143,6 +146,38 @@ def main() -> None:
         payload = load_json(fixture)
         if any(validator.is_valid(payload) for validator in validators):
             raise AssertionError(f"expected {fixture} to fail validation")
+
+    navigation_schema = load_json(SCHEMA_PATHS[2], schema_artifact=True)
+    Draft202012Validator.check_schema(navigation_schema)
+    navigation_validator = Draft202012Validator(navigation_schema)
+    client_validator = validators[0]
+
+    def navigation_errors(payload):
+        if not client_validator.is_valid(payload):
+            return ["message is incompatible with the completed V1 client schema"]
+        if payload.get("kind") != "telemetry_update":
+            return ["navigation extension is not on telemetry_update"]
+        telemetry = payload.get("payload", {})
+        if telemetry.get("observation_kind") != "route_deviation":
+            return ["navigation extension is not on route_deviation"]
+        extension = payload.get("extensions", {}).get("liveroute.navigation_v1")
+        errors = [error.message for error in navigation_validator.iter_errors(extension)]
+        if errors:
+            return errors
+        observed_at = telemetry.get("observed_at_unix_ms")
+        if extension["updated_eta_unix_ms"] < observed_at:
+            return ["updated ETA precedes observation time"]
+        return []
+
+    for fixture in sorted((NAVIGATION_CORPUS_ROOT / "positive").glob("*.json")):
+        payload = load_json(fixture)
+        errors = navigation_errors(payload)
+        if errors:
+            raise AssertionError(f"expected {fixture} to validate: {errors[0]}")
+    for fixture in sorted((NAVIGATION_CORPUS_ROOT / "negative").glob("*.json")):
+        payload = load_json(fixture)
+        if not navigation_errors(payload):
+            raise AssertionError(f"expected {fixture} to fail navigation validation")
 
 
 if __name__ == "__main__":

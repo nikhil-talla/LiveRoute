@@ -420,6 +420,13 @@ The outbox dispatcher claims bounded due batches using PostgreSQL-time claim lea
 Canonical-first user-edit transactions are deliberately different:
 
 1. `create_trip` inserts the authenticated user's trip, normalized activities, command outcome, immutable user-authored plan revision 1, and `current_plan_id` in one transaction. It starts with trip revision 1 and finalized mutation sequence 1. An inactive trip needs no outbox row; its first bootstrap loads the complete authoritative state and watermark.
+
+   This paragraph specifies the completed V1 WebSocket `create_trip`. It does not
+   govern the additive V1.5 HTTP saved-trip operation. `POST /api/v1/trips` uses
+   the separate relative saved-plan authority and deliberately has no
+   `current_plan_id`, absolute activity rows, command intent, or mutation sequence
+   until activation materializes an execution plan, as specified normatively in
+   `plans/LiveRouteV15HTTPContract.md`.
 2. `replace_current_plan` locks the trip, validates the idempotency digest and expected trip revision, stores a new immutable `user_authored` plan revision, advances the trip revision/mutation/finalized watermarks, updates `current_plan_id`, marks pending proposals superseded, and records the command as applied in one transaction.
 3. `trip_edited` uses the same canonical-first shape: atomically apply the normalized add/replace/remove/reorder operation and a complete user-authored resulting current plan over the post-edit activity set. This prevents an activity edit from leaving the immutable current plan structurally inconsistent.
 4. Each post-creation transaction stores the new immutable plan id on its retained canonical command intent and inserts an ordered `CurrentPlanReplaced` or `TripEdited` outbox event carrying the prior expected trip revision, even when the trip is inactive. The typed intent identity—not the opaque outbox JSON or the possibly newer live trip pointer—is compared with C++ acknowledgement field 10. This lets a later snapshot-based activation replay the canonical-first change or resolve it through a full canonical bootstrap. The backend emits `canonical_committed` after commit; it does not wait for C++ approval.

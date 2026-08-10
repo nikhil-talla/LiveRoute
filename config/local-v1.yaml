@@ -41,7 +41,7 @@ websocket:
   authentication_timeout_ms: 10000
   allow_originless_local_clients: true
   allowed_origins:
-    - http://localhost
+    - http://localhost:5173
 
 database:
   pool_max_connections: 8

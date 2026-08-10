@@ -1,0 +1,12 @@
+{
+  "resolution_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "expires_at_unix_ms": 1786291800000,
+  "candidate": {
+    "latitude": 41.824,
+    "longitude": -71.4128,
+    "formatted_address": "1 Example Street, Providence, Rhode Island 02903, United States",
+    "display_name": "1 Example Street, Providence, Rhode Island 02903, United States",
+    "time_zone_name": "America/New_York"
+  }
+}
+

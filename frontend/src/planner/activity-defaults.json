@@ -1,0 +1,25 @@
+{
+  "schedule": {
+    "state": "unscheduled"
+  },
+  "inbound_travel_mode": "driving",
+  "activity_class": "flexible",
+  "priority_rank": 0,
+  "utility_score": 0,
+  "timing": {
+    "open_windows": [
+      {
+        "opens_offset_ms": 0,
+        "closes_offset_ms": 86400000
+      }
+    ],
+    "reservation_grace_seconds": 0,
+    "min_duration_seconds": 3600,
+    "preferred_duration_seconds": 3600,
+    "max_duration_seconds": 3600,
+    "mandatory": false,
+    "can_shorten": false,
+    "can_move": true,
+    "can_skip": true
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "protocol_version": "liveroute.v1",
+  "message_id": "550e8400-e29b-41d4-a716-446655440020",
+  "kind": "telemetry_update",
+  "trip_id": "550e8400-e29b-41d4-a716-446655440002",
+  "payload": {
+    "observation_kind": "route_deviation",
+    "observed_at_unix_ms": 1000000,
+    "observation": {
+      "location": { "latitude": 41.824, "longitude": -71.4128 },
+      "distance_from_route_meters": 70
+    }
+  },
+  "extensions": {
+    "liveroute.navigation_v1": {
+      "policy_version": "liveroute-navigation-v1-baseline-1",
+      "next_activity_id": "550e8400-e29b-41d4-a716-446655440003",
+      "navigation_route_id": "550e8400-e29b-41d4-a716-446655440021",
+      "previous_eta_unix_ms": 1300000,
+      "updated_eta_unix_ms": 1600000,
+      "remaining_duration_seconds": 600,
+      "remaining_distance_meters": 5000,
+      "off_route": true
+    }
+  }
+}

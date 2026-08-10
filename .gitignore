@@ -12,6 +12,12 @@ out/
 /.env
 /.env.*
 !/.env.example
+/frontend/.env
+/frontend/.env.*
+!/frontend/.env.example
+/frontend/dist/
+/frontend/node_modules/
+/frontend/coverage/
 
 # Private local planning and agent context
 /AGENTS.md

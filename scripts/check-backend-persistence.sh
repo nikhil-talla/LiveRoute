@@ -80,8 +80,8 @@ migration_version=$(docker exec "$postgres_name" \
   psql --tuples-only --no-align \
     --username=liveroute --dbname=liveroute \
     --command "SELECT version_id FROM goose_db_version WHERE is_applied ORDER BY id DESC LIMIT 1;")
-if [[ $migration_version != 3 ]]; then
-  echo "expected Goose migration version 3, found $migration_version" >&2
+if [[ $migration_version != 4 ]]; then
+  echo "expected Goose migration version 4, found $migration_version" >&2
   exit 1
 fi
 

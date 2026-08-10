@@ -54,3 +54,16 @@ images:
     source_tag: debian:bookworm-slim
     platform: linux/amd64
     digest: sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+  frontend_toolchain:
+    source_tag: node:24.18.0-bookworm-slim
+    platform: linux/amd64
+    resolved_node_version: 24.18.0
+    resolved_npm_version: 11.16.0
+    digest: sha256:d45d78e7929b46875bbd4e29bea672d5bc48186c6c3588306521c815e78352d6
+    build_file: docker/frontend/Dockerfile
+  timezone_boundaries:
+    parent: cpp_skeleton_builder
+    platform: linux/amd64
+    dataset_release: 2026c
+    dataset_lock: config/timezone-boundaries.lock
+    build_file: docker/timezone-boundaries/Dockerfile

@@ -304,9 +304,10 @@ saved trip as its address rather than its temporary Search Box business name.
 Mapbox Geocoding v6 does not provide the activity's required IANA timezone.
 The backend therefore derives `time_zone_name` locally from the accepted durable
 coordinate using a versioned, checksum-pinned US IANA timezone-boundary dataset.
-The dataset, license, release, digest, boundary tie-break, and container install
-path must be pinned before the place-persistence slice begins. No coordinate or
-place data is sent to another geocoding provider.
+`config/timezone-boundaries.lock` fixes its dataset, license, 2026c release,
+archive and extracted-file digests, boundary tie-break, and container install
+path; `docker/timezone-boundaries/Dockerfile` verifies and installs it. No
+coordinate or place data is sent to another geocoding provider.
 
 Cost and request controls are normative:
 
@@ -367,6 +368,12 @@ names/coordinates, constraints, and optional planning schedule. A trip becomes
 saveable once it has a trip name and at least one valid activity; an empty trip
 is client-local and must not be persisted.
 
+The authenticated session includes the user's stored canonical US IANA
+`default_time_zone_name`. A new trip initializes its timezone from that value;
+the editor may expose a user-visible trip-specific override, and the create
+request always sends the selected value explicitly. Browser locale, GPS, the
+first Place, and Mapbox data never silently choose or overwrite it.
+
 The optional planning date/start time is presentation metadata available inside
 the planner. It can anchor preview clock labels, but it is not displayed in the
 inactive name-only list, does not automatically activate a trip, and is not the
@@ -408,6 +415,15 @@ The user should be able to:
 - Optionally set a planning-only display date/start time.
 - See the route preview on the map.
 - Start the trip with **Go**.
+
+When a confirmed durable Place is first added, the editor uses the exact
+`trip_creation.new_activity_defaults` object from
+`config/v15-contract-policy.yaml`: an unscheduled, flexible, driving activity;
+equal neutral priority and utility (`0`); a visible fixed one-hour duration; an
+all-day relative availability window; no reservation or deadline; and movable,
+skippable, non-mandatory flags with shortening disabled. The user can edit these
+values before saving. The backend never fills omitted activity fields, and
+reordering changes ordinals without changing priority or utility.
 
 ---
 
@@ -468,6 +484,12 @@ trip.
 The REST DTO and PostgreSQL migration must distinguish the saved relative plan
 from the active absolute execution plan. Only the latter uses the existing V1
 `CurrentPlanSegment` union, where every activity is `scheduled` or `omitted`.
+Consequently, `POST /api/v1/trips` stores only `trips` metadata and the immutable
+saved-plan/activity/window tables. Its new inactive trip has no `current_plan_id`
+and creates no row in the legacy absolute execution tables. Activation performs
+the first conversion to `itinerary_plans`, `trip_activities`, and absolute open
+windows under the locked saved revision; saving never invents an activation
+instant merely to satisfy the older V1 representation.
 
 ---
 
@@ -883,6 +905,35 @@ The route-deviation adapter below produces a separate bounded observation after
 a confirmed route change; the backend decides whether its ETA consequence is
 material enough to trigger C++.
 
+The ordinary foreground browser policy is fixed by `browser_gps` in
+`config/v15-contract-policy.yaml` and mirrored byte-for-value in
+`frontend/src/live/gps-policy.json`:
+
+- start high-accuracy `watchPosition` only after active-trip subscription, with
+  a 2-second permitted browser cache age and 10-second position timeout;
+- accept backend-bound samples only with finite/ranged coordinates, a finite
+  positive accuracy of at most 50 meters, age at most 10 seconds, and no more
+  than 1 second of future clock skew; use the Geolocation timestamp as
+  `observed_at_unix_ms`;
+- send the first eligible sample immediately, then only after at least 10 meters
+  of movement or as a 5-second stationary heartbeat, with an unconditional
+  maximum of one location frame per second;
+- keep at most one frame awaiting `telemetry_status` and one replaceable newest
+  eligible sample; a 10-second missing status closes the stream for ordinary
+  reconnect/resynchronization and the location frame is never retried;
+- stop and clear collection while hidden, disconnected, offline, deactivated,
+  or unsubscribed; require a fresh callback after recovery and never persist or
+  replay GPS; and
+- show a stale/degraded location indicator after 15 seconds without an eligible
+  sample. Permission denial requires user action; temporary unavailable/timeout
+  errors send nothing and may recover through the existing foreground watch.
+
+Every usable callback may still move the local Mapbox marker and accuracy
+display. Accuracy is intentionally not added to the strict V1 location payload.
+V1.5 does not synthesize or transmit separate velocity/heading observations.
+The exact timestamp, haversine distance, slot replacement, acknowledgement, and
+visibility rules are normative in `plans/LiveRouteV15HTTPContract.md`.
+
 Potential replan triggers:
 
 - Significant route deviation.
@@ -921,6 +972,20 @@ debounce/hysteresis before declaring off-route. It requests Directions only on
 a confirmed deviation or accepted canonical destination-sequence change, never
 on every GPS sample.
 
+The exact baseline is `liveroute-navigation-v1-baseline-1` in
+`config/v15-contract-policy.yaml`, mirrored in
+`frontend/src/live/route-deviation-policy.json`, with full algorithms in
+`plans/LiveRouteV15HTTPContract.md`. It uses accuracy-adjusted distance to the
+current-leg polyline and three samples at least one second apart: walking enters
+at 20 meters/exits at 10; driving enters at 35/exits at 15; deviation samples
+require accuracy at most 25 meters. Two exit samples clear the state.
+
+Confirmed entry requests Directions only to the same next activity. There is one
+in-flight request, a five-second timeout, and one two-second retry for network,
+timeout, 429, or 5xx failure. Success has a 15-second cooldown; terminal failure
+has a 30-second cooldown and keeps the previous route visibly degraded. A
+canonical next-activity change cancels old work and bypasses cooldown.
+
 The top-level wire message remains `telemetry_update`, and its existing
 `route_deviation` observation remains exactly:
 
@@ -935,6 +1000,7 @@ top-level namespaced `extensions` object, using the exact key
 `liveroute.navigation_v1`:
 
 ```text
+policy_version
 next_activity_id
 navigation_route_id
 previous_eta_unix_ms
@@ -944,11 +1010,13 @@ remaining_distance_meters
 off_route
 ```
 
-The extension object requires all listed fields; Unix milliseconds and bounded
-counts use JavaScript-safe JSON integers, ids are canonical UUIDs, distances and
-durations are nonnegative integers, and `updated_eta_unix_ms` must not precede
-the observation time. Clients that do not understand the extension ignore it as
-required by the existing compatibility policy. A V1.5-aware backend validates
+The extension object requires all listed fields;
+`policy_version = liveroute-navigation-v1-baseline-1`; Unix milliseconds and
+bounded counts use JavaScript-safe JSON integers; ids are canonical UUIDs;
+distances and durations are nonnegative integers; `off_route = true`; and
+`updated_eta_unix_ms` must not precede the observation time. Clients that do not
+understand the extension ignore it as required by the existing compatibility
+policy. A V1.5-aware backend validates
 that the next activity is the current canonical next activity, rejects stale
 navigation-route identities, and coalesces replaceable updates. It compares the
 ETA change with a configured material-delay threshold and relevant
@@ -961,14 +1029,18 @@ and is forwarded under the existing admission rules. The new filtering applies
 only when the V1.5 navigation extension is present and valid; this avoids
 reinterpreting older clients.
 
-The exact off-route distance/accuracy hysteresis, browser observation cadence,
-ETA materiality threshold, Directions retry/cooldown, and degraded fallback
-remain a measured policy gate. They must be selected from recorded simulated
-GPS/Directions traces and added to the extension compatibility corpus before
-this isolated route-deviation slice starts. Ordinary active-trip UI, GPS,
-Directions rendering, WebSocket telemetry, and proposal handling do not depend
-on that slice and may be implemented earlier. No implementation agent may invent
-those values in code.
+The backend treats the successful reroute as materially replan-worthy when ETA
+worsens by at least five minutes or crosses the next activity's scheduled-start,
+reservation-plus-grace, open-window-latest-start, or mandatory-deadline-latest-
+start boundary. Otherwise it updates navigation state without invoking C++.
+Each successful route gets a new UUID and can emit at most one material event.
+
+This baseline deliberately makes no performance/optimality claim. Recorded
+simulated and real-device traces may justify a later named policy version, but
+they are calibration work rather than an implementation gate. The exact
+extension schema and positive/negative compatibility corpus are now under
+`schema/websocket/`; the fixture also proves the completed V1 envelope accepts
+and ignores the namespaced object.
 
 A future iOS/Android application may obtain off-route/reroute observations from
 Mapbox Navigation SDK instead of the web adapter, then send the same normalized
@@ -1356,10 +1428,14 @@ configuration, logs, or WebSocket payloads.
 The `/api/v1` prefix is the first HTTP API contract version; it does not rename
 the V1.5 product milestone or the existing `liveroute.v1` WebSocket protocol.
 These methods and paths are fixed. Their exact schemas, status/error bodies,
-idempotency headers, and compatibility fixtures must be published in OpenAPI
-before the corresponding handler slice begins.
+idempotency headers, and compatibility fixtures are normative in
+`schema/http/liveroute-v1.5.openapi.yaml` and its checked corpus. Cross-cutting
+authentication, session, compatibility, provider, and retention rules are
+normative in `plans/LiveRouteV15HTTPContract.md` and
+`config/v15-contract-policy.yaml`.
 
 ```text
+POST   /api/v1/auth/google/nonce
 POST   /api/v1/auth/google
 GET    /api/v1/session
 POST   /api/v1/auth/logout
@@ -1581,40 +1657,33 @@ Implementation must preserve these invariants:
 
 # Initial Frontend Implementation Order
 
-## Remaining preimplementation gates
+## Contract foundation status
 
-The product/architecture direction above is fixed. These exact artifacts or
-bounded policy values must still be selected before their owning slices begin:
+The cross-cutting V1.5 contract foundation is fixed before handler and frontend
+feature implementation begins:
 
-1. A versioned HTTP contract (OpenAPI plus request/response compatibility
-   corpus) for auth, sessions, inactive-trip CRUD, relative plans, activation,
-   deactivation, place resolution/acceptance, resolution-token lifetime and
-   consumption, errors, revisions, and idempotency.
-2. Forward PostgreSQL migrations adding `trip_name`, normalized immutable Places
-   containing accepted Mapbox Permanent Geocoding coordinates/optional
-   addresses/local timezone, saved scheduled-versus-unscheduled segments,
-   separate saved-relative and active-absolute plan identities, execution
-   transition operations, and the partial uniqueness constraint for one
-   activating/active/deactivating trip per user. Existing applied migrations
-   must not be rewritten.
-3. Exact session idle/absolute lifetimes, rotation/revocation policy, CSRF token
-   lifetime, WebSocket-ticket lifetime, and signing/encryption key rotation.
-4. Exact browser off-route distance/accuracy hysteresis, ETA materiality rule,
-   debounce/cadence, and Mapbox failure fallback. These values require recorded
-   simulated traces rather than arbitrary constants.
-5. Pinned frontend toolchain and dependency policy, including Node/package
-   manager versions, React/TypeScript build tooling, generated API/schema types,
-   formatting, tests, and container build image.
-6. Exact same-site production topology and local development origins so session
-   cookies, CSRF, Mapbox URL restrictions, backend CORS, and WebSocket origin
-   checks agree.
-7. A pinned offline US coordinate-to-IANA-timezone dataset and resolver contract,
-   including license, release, SHA-256, container path, boundary tie-break, and
-   known-boundary fixtures.
+1. `schema/http/liveroute-v1.5.openapi.yaml`, its corpus, manifest, and
+   `scripts/check-http-contract.py` define and verify the versioned HTTP surface.
+2. `migrations/00004_v15_frontend_foundation.sql` adds the forward-only saved
+   trip, immutable place, authentication/session, idempotency, and execution
+   transition storage model. Its focused migration contract test is
+   `tests/migrations/00004_v15_foundation_contract.sql`.
+3. `plans/LiveRouteV15HTTPContract.md` and
+   `config/v15-contract-policy.yaml` fix session, CSRF, WebSocket-ticket,
+   idempotency, provider, origin, retention, and compatibility behavior.
+4. `config/frontend-toolchain.lock` and `docker/frontend/Dockerfile` pin the
+   frontend build/test toolchain and dependency policy.
+5. `config/timezone-boundaries.lock` pins the offline US
+   coordinate-to-IANA-timezone dataset, license, digest, container path, and
+   deterministic boundary policy.
 
-No unresolved place-provider ownership decision remains. Item 4 is the remaining
-measured product policy; items 1-3 and 5-7 are required engineering
-contracts/configuration that must be pinned before their owning slices.
+These artifacts specify behavior but do not themselves implement the Go HTTP
+handlers, the timezone resolver, or the React application. Ordinary browser GPS
+accuracy, cadence, coalescing, acknowledgement, foreground, and offline behavior
+is fixed in the contract policy. The same policy now fixes the named
+same-destination route-deviation baseline, including hysteresis, ETA materiality,
+Directions cooldown/retry, and degraded fallback. Trace collection may calibrate
+a future policy version but no longer blocks implementation.
 
 ## Required integration and failure coverage
 
@@ -1655,6 +1724,14 @@ Before calling frontend integration complete, tests must prove:
 - HTTP idempotency/revision conflicts cannot duplicate or overwrite edits;
 - direct Mapbox route chunking preserves exact stop order/mode across the
   64-activity limit and provider failures do not mutate canonical state;
+- deterministic fake-clock/geolocation/WebSocket tests prove the first eligible
+  location sends immediately, the one-per-second ceiling, 10-meter movement and
+  five-second heartbeat gates, latest-only pending replacement, matching-status
+  release, and the 10-second acknowledgement timeout;
+- GPS tests reject stale/future/nonfinite/out-of-range/>50-meter samples, never
+  synthesize velocity/heading, stop on permission denial, show degraded state
+  after 15 seconds, pause while hidden/offline/disconnected, retain no durable
+  coordinates, and require a fresh callback rather than replay after recovery;
 - ordinary GPS never triggers planning, confirmed off-route movement reroutes to
   the same next activity, immaterial ETA changes do not trigger C++, and material
   changes emit one bounded explicit deviation event;
@@ -1669,15 +1746,13 @@ Before calling frontend integration complete, tests must prove:
 
 ## Ordered slices
 
-1. Pin the Mapbox Search Box and Geocoding v6 endpoint versions, exact temporary
-   versus permanent fields, server-token boundary, one-request cost policy,
-   offline timezone dataset, failure mapping, and recorded provider fixtures.
+1. Validate the pinned contract foundation: HTTP schema/corpus, migration,
+   toolchain, provider policy, origin policy, and timezone dataset locks.
 
-2. Extend the normative REST/storage contract for inactive/active state, the
-   saved relative plan, optional display anchor, active absolute execution plan,
-   reset semantics, one-active-trip enforcement, idempotency, and revisions.
+2. Generate frontend HTTP types from the normative OpenAPI artifact and make
+   generation drift a build failure.
 
-3. Add PostgreSQL forward migrations and persistence tests for that model.
+3. Apply the V1.5 forward migration and implement its Go persistence adapters.
 
 4. Implement Google OIDC verification, LiveRoute sessions, CSRF defense,
    logout/revocation, and single-use WebSocket tickets.
@@ -1718,12 +1793,14 @@ Before calling frontend integration complete, tests must prove:
 16. Implement **Go** activation, one-use WebSocket authentication, and initial
     `subscription_state` gating.
 
-17. Implement browser geolocation for active trips.
+17. Implement browser geolocation for active trips using the fixed foreground
+    GPS policy and fake-clock/geolocation coverage.
 
 18. Implement active-trip Mapbox UI and same-destination Directions rerouting.
 
-19. Send ordinary and confirmed-deviation telemetry through the existing
-    WebSocket envelope.
+19. Send ordinary telemetry with one in-flight frame plus one latest pending
+    sample through the existing WebSocket envelope. Add confirmed-deviation
+    telemetry using the fixed named baseline and its extension corpus.
 
 20. Display backend planner notifications.
 

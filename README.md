@@ -83,7 +83,11 @@ Important verification entry points:
 
 ```bash
 bash scripts/check-hours-assets.sh
+python3 scripts/check-http-contract.py
+bash scripts/check-timezone-boundaries.sh
+bash scripts/check-frontend.sh
 python3 scripts/check-websocket-envelope.py
+bash scripts/check-migrations.sh
 bash scripts/check-cpp-proto-toolchain.sh
 bash scripts/check-go-proto-generation.sh
 bash scripts/check-backend-persistence.sh

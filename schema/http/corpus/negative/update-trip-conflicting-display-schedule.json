@@ -1,0 +1,9 @@
+{
+  "display_schedule": {
+    "local_date": "2026-08-15",
+    "local_time": "09:00:00",
+    "time_zone_name": "America/New_York"
+  },
+  "remove_display_schedule": true
+}
+

@@ -46,14 +46,32 @@ func (authenticator *DevelopmentAuthenticator) Authenticate(ctx context.Context,
 		  AND revoked_at IS NULL
 		  AND (expires_at IS NULL OR expires_at > clock_timestamp())
 	`, digest[:]).Scan(&userID, &storedDigest)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrAuthenticationFailed
-	}
 	if err != nil {
-		return "", fmt.Errorf("authenticate development token: %w", err)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("authenticate development token: %w", err)
+		}
+	} else {
+		if len(storedDigest) != sha256.Size || subtle.ConstantTimeCompare(digest[:], storedDigest) != 1 {
+			return "", ErrAuthenticationFailed
+		}
+		return userID, nil
 	}
-	if len(storedDigest) != sha256.Size || subtle.ConstantTimeCompare(digest[:], storedDigest) != 1 {
-		return "", ErrAuthenticationFailed
+	if err := authenticator.pool.QueryRow(ctx, `
+		WITH consumed AS (
+			UPDATE websocket_auth_tickets t SET consumed_at = clock_timestamp()
+			FROM user_sessions s
+			WHERE t.token_sha256 = $1 AND t.consumed_at IS NULL AND t.expires_at > clock_timestamp()
+			  AND s.id = t.session_id AND s.user_id = t.user_id AND s.revoked_at IS NULL
+			  AND s.replaced_by_session_id IS NULL AND s.idle_expires_at > clock_timestamp()
+			  AND s.absolute_expires_at > clock_timestamp()
+			RETURNING t.user_id
+		)
+		SELECT user_id::text FROM consumed
+	`, digest[:]).Scan(&userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrAuthenticationFailed
+		}
+		return "", fmt.Errorf("authenticate websocket ticket: %w", err)
 	}
 	return userID, nil
 }

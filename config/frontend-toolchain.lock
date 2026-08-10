@@ -1,0 +1,57 @@
+# V1.5 frontend build and dependency policy. Every version is exact; the
+# application scaffold must commit package-lock.json lockfileVersion 3 and use
+# npm ci. Version changes require this file, the lockfile, and container checks
+# to change together.
+toolchain:
+  platform: linux/amd64
+  node_source_tag: node:24.18.0-bookworm-slim
+  node_version: 24.18.0
+  npm_version: 11.16.0
+  image_digest: sha256:d45d78e7929b46875bbd4e29bea672d5bc48186c6c3588306521c815e78352d6
+  dockerfile: docker/frontend/Dockerfile
+  package_lock_version: 3
+
+runtime_dependencies:
+  react: 19.2.8
+  react-dom: 19.2.8
+  react-router-dom: 7.18.2
+  mapbox-gl: 3.28.1
+  "@mapbox/search-js-react": 1.6.0
+
+development_dependencies:
+  # openapi-typescript 7.13.0 declares TypeScript ^5.x. Keep the ordinary
+  # TypeScript package on the newest compatible 5.x release; npm peer checks
+  # must pass without --force or --legacy-peer-deps.
+  typescript: 5.9.3
+  vite: 8.2.1
+  "@vitejs/plugin-react": 6.0.5
+  vitest: 4.1.10
+  jsdom: 30.0.1
+  "@testing-library/react": 16.3.2
+  "@testing-library/dom": 10.4.1
+  "@testing-library/jest-dom": 7.0.0
+  "@types/react": 19.2.18
+  "@types/react-dom": 19.2.4
+  "@types/node": 24.13.3
+  eslint: 10.8.1
+  typescript-eslint: 8.66.0
+  prettier: 3.9.6
+  openapi-typescript: 7.13.0
+  "@redocly/cli": 2.46.0
+
+dependency_overrides:
+  # Redocly currently resolves js-yaml 4.3.0. Force the compatible 4.3.1
+  # security release that fixes GHSA-5p4m-2wfm-xmqj.
+  js-yaml: 4.3.1
+
+install_policy:
+  command: npm ci --ignore-scripts
+  exact_direct_versions_only: true
+  committed_lockfile_required: true
+  lifecycle_scripts_default: deny
+  lifecycle_script_allowlist: []
+  audit_level: high
+  generated_http_types:
+    source: schema/http/liveroute-v1.5.openapi.yaml
+    generator: openapi-typescript
+    committed_output: frontend/src/generated/liveroute-api.ts

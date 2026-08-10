@@ -1,0 +1,18 @@
+{
+  "enable_high_accuracy": true,
+  "maximum_age_ms": 2000,
+  "position_timeout_ms": 10000,
+  "maximum_accepted_accuracy_meters": 50,
+  "maximum_sample_age_ms": 10000,
+  "maximum_future_skew_ms": 1000,
+  "minimum_send_interval_ms": 1000,
+  "movement_threshold_meters": 10,
+  "stationary_heartbeat_interval_ms": 5000,
+  "telemetry_ack_timeout_ms": 10000,
+  "stale_ui_after_ms": 15000,
+  "maximum_in_flight_location_messages": 1,
+  "maximum_pending_location_samples": 1,
+  "hidden_document_policy": "pause-and-require-fresh-sample",
+  "disconnected_policy": "discard-and-require-fresh-sample",
+  "persistent_storage": "forbidden"
+}
