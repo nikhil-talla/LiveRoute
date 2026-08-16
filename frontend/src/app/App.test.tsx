@@ -96,11 +96,20 @@ function api(overrides: Partial<LiveRouteApi> = {}): LiveRouteApi {
       throw new Error("Google login is not used in this test");
     },
     getSession: async () => session,
+    logout: async () => undefined,
     listTrips: async () => trips,
     getTrip: async () => trip,
     createTrip: async () => trip,
+    updateTrip: async () => trip,
+    deleteTrip: async () => undefined,
+    addTripActivity: async () => trip,
+    replaceTripActivity: async () => trip,
+    deleteTripActivity: async () => trip,
     activateTrip: async () => {
       throw new Error("activation is not used in this test");
+    },
+    deactivateTrip: async () => {
+      throw new Error("deactivation is not used in this test");
     },
     createWebSocketTicket: async () => {
       throw new Error("WebSocket tickets are not used in this test");
@@ -131,6 +140,14 @@ describe("App session restoration", () => {
     expect(screen.getByText("Nikhil")).toBeInTheDocument();
   });
 
+  it("opens the active trip planner from the live navigation", async () => {
+    render(<TestApp api={api()} initialEntries={["/live"]} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Saturday in Providence" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows the signed-out experience for an unauthenticated session", async () => {
     render(
       <TestApp
@@ -150,6 +167,20 @@ describe("App session restoration", () => {
     ).toBeDisabled();
   });
 
+  it("revokes the session from the application shell", async () => {
+    const logout = vi.fn(async () => undefined);
+    render(<TestApp api={api({ logout })} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    await waitFor(() =>
+      expect(logout).toHaveBeenCalledWith(session.csrf_token),
+    );
+    expect(
+      await screen.findByRole("heading", { name: /Build the plan/i }),
+    ).toBeInTheDocument();
+  });
+
   it("loads the full saved plan when an inactive trip is opened", async () => {
     render(
       <TestApp api={api()} initialEntries={[`/planner/${trip.trip_id}`]} />,
@@ -163,6 +194,78 @@ describe("App session restoration", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Set the public Mapbox token",
     );
+  });
+
+  it("saves inactive metadata and activity edits through revisioned mutations", async () => {
+    const updateTrip = vi.fn(async () => ({ ...trip, trip_revision: "5" }));
+    const replaceTripActivity = vi.fn(async () => ({
+      ...trip,
+      trip_revision: "6",
+    }));
+    render(
+      <TestApp
+        api={api({ updateTrip, replaceTripActivity })}
+        initialEntries={[`/planner/${trip.trip_id}`]}
+      />,
+    );
+
+    fireEvent.change(await screen.findByLabelText("Trip name"), {
+      target: { value: "Updated Providence day" },
+    });
+    fireEvent.change(screen.getByLabelText("Travel mode"), {
+      target: { value: "driving" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(updateTrip).toHaveBeenCalledTimes(1));
+    expect(updateTrip).toHaveBeenCalledWith(
+      trip.trip_id,
+      { trip_name: "Updated Providence day" },
+      "4",
+      session.csrf_token,
+    );
+    expect(replaceTripActivity).toHaveBeenCalledWith(
+      trip.trip_id,
+      trip.saved_plan.activities[0]!.activity_id,
+      expect.objectContaining({
+        ordinal: 0,
+        inbound_travel_mode: "driving",
+      }),
+      "5",
+      session.csrf_token,
+    );
+  });
+
+  it("deletes an inactive trip only after confirmation", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const deleteTrip = vi.fn(async () => undefined);
+    try {
+      render(
+        <TestApp
+          api={api({ deleteTrip })}
+          initialEntries={[`/planner/${trip.trip_id}`]}
+        />,
+      );
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Delete trip" }),
+      );
+
+      await waitFor(() => expect(deleteTrip).toHaveBeenCalledTimes(1));
+      expect(deleteTrip).toHaveBeenCalledWith(
+        trip.trip_id,
+        trip.trip_revision,
+        session.csrf_token,
+      );
+      expect(
+        await screen.findByRole("heading", { name: "Trips" }),
+      ).toBeInTheDocument();
+      expect(confirm).toHaveBeenCalledWith(
+        "Delete this saved trip permanently?",
+      );
+    } finally {
+      confirm.mockRestore();
+    }
   });
 
   it("starts a fully scheduled trip from the browser location", async () => {
@@ -213,6 +316,43 @@ describe("App session restoration", () => {
         value: originalGeolocation,
       });
     }
+  });
+
+  it("stops an active trip and returns it to the saved state", async () => {
+    const activeTrip: Trip = {
+      ...trip,
+      execution_state: "active",
+      active_execution: {
+        execution_plan_id: "77777777-7777-4777-8777-777777777777",
+        activated_at_unix_ms: 1_786_291_200_000,
+      },
+    };
+    const deactivateTrip = vi.fn(
+      async (): Promise<ExecutionTransition> =>
+        ({ trip, operation: {} }) as ExecutionTransition,
+    );
+
+    render(
+      <TestApp
+        api={api({
+          getTrip: async () => activeTrip,
+          deactivateTrip,
+        })}
+        initialEntries={["/planner/" + trip.trip_id]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop trip" }));
+    await waitFor(() =>
+      expect(deactivateTrip).toHaveBeenCalledWith(
+        trip.trip_id,
+        "4",
+        session.csrf_token,
+      ),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Go" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps a new trip local until it has a valid activity", async () => {

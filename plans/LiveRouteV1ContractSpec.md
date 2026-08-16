@@ -59,6 +59,17 @@ Reusing a `(trip_id, message_id)` with an identical algorithm and digest returns
 - `runtime_epoch` is PostgreSQL-issued and starts at 1 on the first lease acquisition. Every new lease holder/process acquisition increments it by exactly one while holding the trip row lock.
 - `trip_revision` is durable. Atomic `create_trip` commits revision 1 with the initial user-authored plan; later revisions increment by one for either a canonical-first user trip/current-plan edit committed in PostgreSQL or an accepted runtime-first durable mutation finalized in PostgreSQL.
 - `mutation_sequence` is durable, starts at 1 with `create_trip`, and is never reused. Canonical-first user edits, accepted runtime-first commands, and terminally rejected runtime-first commands all consume a sequence. Only a canonical-first committed edit or accepted runtime-first mutation advances `trip_revision`.
+- Additive V1.5 HTTP-saved trips are the one initialization exception: while
+  inactive and before their first absolute execution plan exists they retain
+  `next_mutation_sequence = 1` and `finalized_mutation_sequence = 0`. Each
+  activation consumes the current next value `N` as a finalized full-bootstrap
+  baseline checkpoint, advances the next value to `N + 1`, and bootstraps C++
+  with accepted/finalized watermark `N`. This checkpoint is not an
+  `ApplyTripEvent`; it has no synthetic command intent or outbox row. The HTTP
+  idempotency record, durable execution operation, and immutable target plan are
+  its audit record. Reactivation never resets or reuses the sequence. Therefore
+  zero remains valid only for an inactive saved trip with no active absolute
+  plan, never for an admitted C++ runtime.
 - `planner_state_version` is scoped to `runtime_epoch`, starts at 0 after a higher-epoch bootstrap, and increments once for each accepted state-changing durable event or telemetry observation in that epoch.
 - `planning_generation` is internal, starts at 0 per runtime epoch, and increments whenever accepted input invalidates planning work.
 - `observation_sequence` is owned by the backend in memory, scoped to `(trip_id, runtime_epoch)`, starts at 1, and may contain gaps. It is never stored in PostgreSQL or a durable snapshot.

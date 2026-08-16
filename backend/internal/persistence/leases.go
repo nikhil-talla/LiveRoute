@@ -320,3 +320,36 @@ func (store *LeaseStore) Current(
 	lease.RuntimeEpoch = uint64(epoch)
 	return lease, nil
 }
+
+func (store *LeaseStore) Release(
+	ctx context.Context,
+	tripID string,
+	holderID string,
+	runtimeEpoch uint64,
+) error {
+	if tripID == "" || holderID == "" || runtimeEpoch == 0 || runtimeEpoch > math.MaxInt64 {
+		return errors.New("lease release input is invalid")
+	}
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin lease release: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockTrip(ctx, tx, tripID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM trip_runtime_leases
+		WHERE trip_id = $1 AND holder_id = $2 AND runtime_epoch = $3
+	`, tripID, holderID, int64(runtimeEpoch))
+	if err != nil {
+		return fmt.Errorf("release runtime lease: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrLeaseLost
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit lease release: %w", err)
+	}
+	return nil
+}

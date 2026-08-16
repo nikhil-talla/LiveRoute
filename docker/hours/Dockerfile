@@ -55,6 +55,8 @@ COPY data/hours/liveroute-v1-hours-seed.json \
   /opt/liveroute/share/hours/liveroute-v1-hours-seed.json
 COPY --chmod=0555 docker/hours/verify-assets.sh \
   /usr/local/bin/liveroute-verify-hours-assets
+COPY --chmod=0555 docker/hours/install-tzdata.sh \
+  /usr/local/bin/liveroute-install-tzdata
 
 ENV TZDIR=/opt/liveroute/share/tzdata/2026c/zoneinfo
 

@@ -366,6 +366,8 @@ func validateCreateSavedTrip(request CreateSavedTripRequest) error {
 		if activity.Ordinal != index || !validCanonicalUUID(activity.PlaceID) ||
 			(activity.InboundTravelMode != "walking" && activity.InboundTravelMode != "driving") ||
 			(activity.ActivityClass != "fixed" && activity.ActivityClass != "flexible") ||
+			activity.PriorityRank < -2147483648 || activity.PriorityRank > 2147483647 ||
+			activity.UtilityScore < -2147483648 || activity.UtilityScore > 2147483647 ||
 			activity.Timing.CanShorten || activity.Timing.OpenWindows == nil || len(activity.Timing.OpenWindows) > 32 ||
 			activity.Timing.ReservationGraceSeconds < 0 || activity.Timing.ReservationGraceSeconds > 4294967295 ||
 			!validDurationRange(activity.Timing.MinDurationSeconds, activity.Timing.PreferredDurationSeconds, activity.Timing.MaxDurationSeconds) ||

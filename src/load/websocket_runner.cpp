@@ -188,7 +188,8 @@ class WebSocketConnection {
       *error = "curl_easy_init failed";
       return false;
     }
-    headers_ = curl_slist_append(headers_, "Origin: http://localhost");
+    headers_ =
+        curl_slist_append(headers_, "Origin: http://localhost:5173");
     if (target.rfind("ws://", 0) != 0) {
       *error = "V1 load target must use loopback ws://";
       return false;

@@ -18,6 +18,8 @@ var (
 type runtimeLeaseManager interface {
 	Acquire(context.Context, string, string, time.Duration) (persistence.RuntimeLease, error)
 	Renew(context.Context, string, string, uint64, time.Duration) (persistence.RuntimeLease, error)
+	Current(context.Context, string, string) (persistence.RuntimeLease, error)
+	Release(context.Context, string, string, uint64) error
 }
 
 type runtimeBootstrapper interface {
@@ -204,10 +206,29 @@ func (supervisor *RuntimeSupervisor) deactivate(tripID string) {
 	supervisor.mu.Unlock()
 }
 
-func (supervisor *RuntimeSupervisor) Deactivate(tripID string) {
-	if canonicalUUID(tripID) {
-		supervisor.deactivate(tripID)
+func (supervisor *RuntimeSupervisor) Deactivate(ctx context.Context, tripID string) error {
+	if ctx == nil || !canonicalUUID(tripID) {
+		return errors.New("runtime deactivation input is invalid")
 	}
+	supervisor.mu.Lock()
+	state, exists := supervisor.state[tripID]
+	_, activating := supervisor.activating[tripID]
+	supervisor.mu.Unlock()
+	if exists {
+		if err := supervisor.leases.Release(ctx, tripID, supervisor.holderID, state.RuntimeEpoch); err != nil && !errors.Is(err, persistence.ErrLeaseLost) {
+			return err
+		}
+	} else if activating {
+		if lease, err := supervisor.leases.Current(ctx, tripID, supervisor.holderID); err == nil {
+			if err := supervisor.leases.Release(ctx, tripID, supervisor.holderID, lease.RuntimeEpoch); err != nil && !errors.Is(err, persistence.ErrLeaseLost) {
+				return err
+			}
+		} else if !errors.Is(err, persistence.ErrLeaseLost) {
+			return err
+		}
+	}
+	supervisor.deactivate(tripID)
+	return nil
 }
 
 func (supervisor *RuntimeSupervisor) ActiveTripCount() int {

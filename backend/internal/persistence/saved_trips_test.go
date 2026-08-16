@@ -44,6 +44,12 @@ func TestSavedTripStoreCreateUsesOnlyRelativeSavedAuthority(t *testing.T) {
 		placeRecordID  = "94444444-4444-4444-8444-444444444444"
 		placeReplayKey = "95555555-5555-4555-8555-555555555555"
 		createKey      = "96666666-6666-4666-8666-666666666666"
+		updateKey      = "97777777-7777-4777-8777-777777777777"
+		staleKey       = "98888888-8888-4888-8888-888888888888"
+		deleteKey      = "99999999-9999-4999-8999-999999999999"
+		addKey         = "a1111111-1111-4111-8111-111111111111"
+		replaceKey     = "a2222222-2222-4222-8222-222222222222"
+		deleteActKey   = "a3333333-3333-4333-8333-333333333333"
 	)
 	_, _ = pool.Exec(ctx, "DELETE FROM users WHERE id = $1", userID)
 	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DELETE FROM users WHERE id = $1", userID) })
@@ -140,6 +146,109 @@ func TestSavedTripStoreCreateUsesOnlyRelativeSavedAuthority(t *testing.T) {
 	request.RequestDigest[0] = 2
 	if _, err := store.Create(ctx, request); !errors.Is(err, ErrHTTPIdempotencyReused) {
 		t.Fatalf("changed replay error = %v, want idempotency reuse", err)
+	}
+
+	updatedName := "Updated Providence morning"
+	updatedZone := "America/Chicago"
+	update := UpdateSavedTripRequest{
+		UserID: userID, TripID: created.Trip.TripID, IdempotencyKey: updateKey,
+		ExpectedRevision: 1, RequestDigest: [32]byte{3}, TripName: &updatedName,
+		DefaultTimeZoneName: &updatedZone,
+		DisplaySchedule:     &DisplayScheduleInput{LocalDate: "2026-08-12", LocalTime: "10:15:00", TimeZoneName: updatedZone},
+	}
+	mutated, err := store.Update(ctx, update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutated.Duplicate || mutated.Trip.TripRevision != "2" || mutated.Trip.TripName != updatedName ||
+		mutated.Trip.DefaultTimeZoneName != updatedZone || mutated.Trip.DisplaySchedule == nil ||
+		mutated.Trip.SavedPlan.SavedPlanID == created.Trip.SavedPlan.SavedPlanID ||
+		len(mutated.Trip.SavedPlan.Activities) != 1 || mutated.Trip.SavedPlan.Activities[0].ActivityID != created.Trip.SavedPlan.Activities[0].ActivityID {
+		t.Fatalf("unexpected updated trip: %+v", mutated)
+	}
+	var planCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM saved_trip_plans WHERE trip_id=$1`, created.Trip.TripID).Scan(&planCount); err != nil {
+		t.Fatal(err)
+	}
+	if planCount != 2 {
+		t.Fatalf("saved plan revision count=%d, want 2", planCount)
+	}
+	updateReplay, err := store.Update(ctx, update)
+	if err != nil || !updateReplay.Duplicate || updateReplay.Trip.SavedPlan.SavedPlanID != mutated.Trip.SavedPlan.SavedPlanID {
+		t.Fatalf("unexpected update replay: %+v err=%v", updateReplay, err)
+	}
+	stale := update
+	stale.IdempotencyKey, stale.RequestDigest = staleKey, [32]byte{4}
+	if _, err := store.Update(ctx, stale); !errors.Is(err, ErrTripRevisionStale) {
+		t.Fatalf("stale update error=%v", err)
+	}
+	originalActivityID := mutated.Trip.SavedPlan.Activities[0].ActivityID
+	addedActivity := request.Activities[0]
+	addedActivity.Ordinal = 0
+	addedActivity.Schedule = SavedScheduleInput{State: "unscheduled"}
+	addedActivity.UtilityScore = 7
+	added, err := store.AddActivity(ctx, SavedActivityMutationRequest{
+		UserID: userID, TripID: created.Trip.TripID, IdempotencyKey: addKey,
+		ExpectedRevision: 2, RequestDigest: [32]byte{5}, Activity: &addedActivity,
+	})
+	if err != nil || added.Duplicate || added.Trip.TripRevision != "3" || len(added.Trip.SavedPlan.Activities) != 2 ||
+		added.Trip.SavedPlan.Activities[1].ActivityID != originalActivityID {
+		t.Fatalf("unexpected added activity: %+v err=%v", added, err)
+	}
+	addedActivityID := added.Trip.SavedPlan.Activities[0].ActivityID
+	addReplay, err := store.AddActivity(ctx, SavedActivityMutationRequest{
+		UserID: userID, TripID: created.Trip.TripID, IdempotencyKey: addKey,
+		ExpectedRevision: 2, RequestDigest: [32]byte{5}, Activity: &addedActivity,
+	})
+	if err != nil || !addReplay.Duplicate || addReplay.Trip.TripRevision != "3" {
+		t.Fatalf("unexpected add replay: %+v err=%v", addReplay, err)
+	}
+	replacement := request.Activities[0]
+	replacement.Ordinal = 0
+	replacement.UtilityScore = 11
+	replaced, err := store.ReplaceActivity(ctx, SavedActivityMutationRequest{
+		UserID: userID, TripID: created.Trip.TripID, ActivityID: originalActivityID,
+		IdempotencyKey: replaceKey, ExpectedRevision: 3, RequestDigest: [32]byte{6}, Activity: &replacement,
+	})
+	if err != nil || replaced.Trip.TripRevision != "4" || len(replaced.Trip.SavedPlan.Activities) != 2 ||
+		replaced.Trip.SavedPlan.Activities[0].ActivityID != originalActivityID ||
+		replaced.Trip.SavedPlan.Activities[0].UtilityScore != 11 || replaced.Trip.SavedPlan.Activities[1].ActivityID != addedActivityID {
+		t.Fatalf("unexpected replaced activity: %+v err=%v", replaced, err)
+	}
+	activityDeleted, err := store.DeleteActivity(ctx, SavedActivityMutationRequest{
+		UserID: userID, TripID: created.Trip.TripID, ActivityID: addedActivityID,
+		IdempotencyKey: deleteActKey, ExpectedRevision: 4, RequestDigest: [32]byte{7},
+	})
+	if err != nil || activityDeleted.Trip.TripRevision != "5" || len(activityDeleted.Trip.SavedPlan.Activities) != 1 ||
+		activityDeleted.Trip.SavedPlan.Activities[0].ActivityID != originalActivityID {
+		t.Fatalf("unexpected deleted activity: %+v err=%v", activityDeleted, err)
+	}
+
+	deletedReplay, err := store.Delete(ctx, DeleteSavedTripRequest{
+		UserID: userID, TripID: created.Trip.TripID, IdempotencyKey: deleteKey,
+		ExpectedRevision: 5, RequestDigest: [32]byte{8},
+	})
+	if err != nil || deletedReplay {
+		t.Fatalf("delete duplicate=%t err=%v", deletedReplay, err)
+	}
+	deletedReplay, err = store.Delete(ctx, DeleteSavedTripRequest{
+		UserID: userID, TripID: created.Trip.TripID, IdempotencyKey: deleteKey,
+		ExpectedRevision: 5, RequestDigest: [32]byte{8},
+	})
+	if err != nil || !deletedReplay {
+		t.Fatalf("delete replay duplicate=%t err=%v", deletedReplay, err)
+	}
+	var tripCount, retainedDeleteCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM trips WHERE id=$1),
+		       (SELECT count(*) FROM http_idempotency_records
+		        WHERE user_id=$2 AND normalized_path=$3 AND response_status=204
+		          AND trip_id IS NULL AND resource_id=$1)
+	`, created.Trip.TripID, userID, "/api/v1/trips/"+created.Trip.TripID).Scan(&tripCount, &retainedDeleteCount); err != nil {
+		t.Fatal(err)
+	}
+	if tripCount != 0 || retainedDeleteCount != 1 {
+		t.Fatalf("trip count=%d retained delete count=%d", tripCount, retainedDeleteCount)
 	}
 }
 

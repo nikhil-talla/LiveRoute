@@ -119,3 +119,4 @@ timezone_boundaries:
   lock_file: config/timezone-boundaries.lock
   boundary_policy: lowest-lexicographic-US-IANA-zone
   no_polygon_policy: reject-place-resolution
+  provider_startup_timeout_seconds: 300

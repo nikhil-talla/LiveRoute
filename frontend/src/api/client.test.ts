@@ -215,6 +215,155 @@ describe("HttpLiveRouteApi", () => {
     );
   });
 
+  it("deactivates with CSRF, idempotency, and a strong trip revision precondition", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ trip: {}, operation: {} }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await new HttpLiveRouteApi("http://localhost:8080").deactivateTrip(
+      "22222222-2222-4222-8222-222222222222",
+      "7",
+      "csrf-token",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/trips/22222222-2222-4222-8222-222222222222/deactivate",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({
+          "If-Match": '"trip-revision-7"',
+          "X-CSRF-Token": "csrf-token",
+          "Idempotency-Key": expect.any(String),
+        }),
+      }),
+    );
+  });
+
+  it("uses revision-checked HTTP mutations for saved-plan editing", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ trip: "updated" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const activity = {
+      place_id: "66666666-6666-4666-8666-666666666666",
+      ordinal: 0,
+      schedule: { state: "unscheduled" as const },
+      inbound_travel_mode: "driving" as const,
+      activity_class: "flexible" as const,
+      priority_rank: 0,
+      utility_score: 0,
+      timing: {
+        open_windows: [{ opens_offset_ms: 0, closes_offset_ms: 86_400_000 }],
+        reservation_grace_seconds: 0,
+        min_duration_seconds: 3_600,
+        preferred_duration_seconds: 3_600,
+        max_duration_seconds: 3_600,
+        mandatory: false,
+        can_shorten: false as const,
+        can_move: true,
+        can_skip: true,
+      },
+    };
+    const client = new HttpLiveRouteApi("http://localhost:8080");
+
+    await client.updateTrip(
+      "trip-id",
+      { trip_name: "Updated" },
+      "4",
+      "csrf-token",
+    );
+    await client.addTripActivity("trip-id", activity, "5", "csrf-token");
+    await client.replaceTripActivity(
+      "trip-id",
+      "activity-id",
+      activity,
+      "6",
+      "csrf-token",
+    );
+    await client.deleteTripActivity(
+      "trip-id",
+      "activity-id",
+      "7",
+      "csrf-token",
+    );
+
+    expect(fetchMock.mock.calls.map(([, init]) => init?.method)).toEqual([
+      "PATCH",
+      "POST",
+      "PATCH",
+      "DELETE",
+    ]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://localhost:8080/api/v1/trips/trip-id",
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "http://localhost:8080/api/v1/trips/trip-id/activities",
+    );
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      "http://localhost:8080/api/v1/trips/trip-id/activities/activity-id",
+    );
+    expect(fetchMock.mock.calls[3]?.[1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "If-Match": '"trip-revision-7"',
+          "X-CSRF-Token": "csrf-token",
+          "Idempotency-Key": expect.any(String),
+        }),
+      }),
+    );
+  });
+
+  it("deletes a saved trip and accepts the contract's empty response", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await new HttpLiveRouteApi("http://localhost:8080").deleteTrip(
+      "trip-id",
+      "8",
+      "csrf-token",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/trips/trip-id",
+      expect.objectContaining({
+        method: "DELETE",
+        headers: expect.objectContaining({
+          "If-Match": '"trip-revision-8"',
+          "X-CSRF-Token": "csrf-token",
+          "Idempotency-Key": expect.any(String),
+        }),
+      }),
+    );
+  });
+
+  it("logs out with CSRF and no idempotency body", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await new HttpLiveRouteApi("http://localhost:8080").logout("csrf-token");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/auth/logout",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "X-CSRF-Token": "csrf-token",
+        },
+      }),
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty("body");
+  });
+
   it("requests a WebSocket ticket without an idempotency body", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(

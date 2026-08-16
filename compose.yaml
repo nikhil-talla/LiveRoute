@@ -3,6 +3,14 @@ name: liveroute
 secrets:
   liveroute_dev_token:
     file: ${LIVEROUTE_DEV_TOKEN_FILE:-./secrets/liveroute_dev_token}
+  liveroute_mapbox_token:
+    file: ${LIVEROUTE_MAPBOX_TOKEN_FILE:-./secrets/liveroute_mapbox_token}
+  liveroute_csrf_hmac_key:
+    file: ${LIVEROUTE_CSRF_HMAC_KEY_FILE:-./secrets/liveroute_csrf_hmac_key}
+
+volumes:
+  liveroute_timezone_boundaries:
+  liveroute_tzdata:
 
 # The skeleton gate builds and tests the C++ service. The planner profile runs
 # the gRPC boundary and its minimal protocol/ping client. The OSRM profile
@@ -46,6 +54,24 @@ services:
       context: .
       dockerfile: docker/hours/Dockerfile
     profiles: ["hours"]
+
+  timezone-boundaries-install:
+    build:
+      context: .
+      dockerfile: docker/timezone-boundaries/Dockerfile
+    entrypoint: ["/usr/local/bin/liveroute-install-timezone-boundaries"]
+    volumes:
+      - liveroute_timezone_boundaries:/export
+    profiles: ["backend"]
+
+  tzdata-install:
+    build:
+      context: .
+      dockerfile: docker/hours/Dockerfile
+    entrypoint: ["/usr/local/bin/liveroute-install-tzdata"]
+    volumes:
+      - liveroute_tzdata:/export
+    profiles: ["backend"]
 
   osrm-car-prepare:
     build:
@@ -163,6 +189,10 @@ services:
       LIVEROUTE_DEV_TIME_ZONE_NAME: America/New_York
     secrets:
       - liveroute_dev_token
+    # File-backed Compose secrets keep host ownership. The runtime image uses
+    # UID/GID 10001, so grant it only the host secret group for read access.
+    group_add:
+      - "${LIVEROUTE_SECRET_GID:-1000}"
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
@@ -180,8 +210,20 @@ services:
       LIVEROUTE_PLANNER_TARGET: planner-service:50051
       LIVEROUTE_BACKEND_INSTANCE_ID: 550e8400-e29b-41d4-a716-446655440006
       LIVEROUTE_BIND_ADDRESS: :8080
+      LIVEROUTE_MAPBOX_TOKEN_FILE: /run/secrets/liveroute_mapbox_token
+      LIVEROUTE_CSRF_HMAC_KEY_FILE: /run/secrets/liveroute_csrf_hmac_key
+      LIVEROUTE_CSRF_HMAC_KEY_ID: ${LIVEROUTE_CSRF_HMAC_KEY_ID:-local-v1}
+      LIVEROUTE_GOOGLE_WEB_CLIENT_ID: ${LIVEROUTE_GOOGLE_WEB_CLIENT_ID:-}
+      ZONEINFO: /opt/liveroute/share/tzdata/2026c/zoneinfo
     secrets:
       - liveroute_dev_token
+      - liveroute_mapbox_token
+      - liveroute_csrf_hmac_key
+    group_add:
+      - "${LIVEROUTE_SECRET_GID:-1000}"
+    volumes:
+      - liveroute_timezone_boundaries:/opt/liveroute/share/timezone-boundaries:ro
+      - liveroute_tzdata:/opt/liveroute/share/tzdata:ro
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -193,4 +235,8 @@ services:
         condition: service_healthy
       osrm-foot:
         condition: service_healthy
+      timezone-boundaries-install:
+        condition: service_completed_successfully
+      tzdata-install:
+        condition: service_completed_successfully
     profiles: ["backend"]

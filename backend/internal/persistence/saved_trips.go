@@ -291,7 +291,7 @@ func (store *SavedTripStore) get(ctx context.Context, query savedTripQuerier, us
 		return TripView{}, errors.New("saved trip plan has no activities")
 	}
 	if result.ExecutionState == "activating" || result.ExecutionState == "deactivating" {
-		result.TransitionOperation, err = store.loadExecutionOperation(ctx, userID, tripID)
+		result.TransitionOperation, err = loadExecutionOperation(ctx, query, userID, tripID)
 		if err != nil {
 			return TripView{}, err
 		}
@@ -300,11 +300,15 @@ func (store *SavedTripStore) get(ctx context.Context, query savedTripQuerier, us
 }
 
 func (store *SavedTripStore) loadExecutionOperation(ctx context.Context, userID, tripID string) (*ExecutionOperationView, error) {
+	return loadExecutionOperation(ctx, store.pool, userID, tripID)
+}
+
+func loadExecutionOperation(ctx context.Context, query savedTripQuerier, userID, tripID string) (*ExecutionOperationView, error) {
 	var operation ExecutionOperationView
 	var createdAt, updatedAt time.Time
 	var targetID, safeError *string
 	var completedAt *time.Time
-	err := store.pool.QueryRow(ctx, `
+	err := query.QueryRow(ctx, `
 		SELECT id::text, kind, state, last_step, target_execution_plan_id::text, safe_error_code, created_at, updated_at, completed_at
 		FROM trip_execution_operations WHERE owner_user_id = $1 AND trip_id = $2
 		ORDER BY updated_at DESC LIMIT 1

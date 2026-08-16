@@ -674,7 +674,10 @@ POST /api/v1/trips/{trip_id}/activate
 The activation request includes a required starting location, obtained from
 browser GPS or explicitly selected by the user for a simulation. The backend
 uses its receipt time as `activated_at`; a client must not choose the
-authoritative execution clock.
+authoritative execution clock. The coordinate is validated and included in the
+activation request's canonical idempotency identity, but it is an ephemeral
+navigation/telemetry seed rather than durable trip state. It does not affect
+relative-to-absolute plan materialization.
 
 Backend then:
 
@@ -690,7 +693,11 @@ Backend then:
 6. Marks the trip active only after bootstrap succeeds. A transient bootstrap
    failure leaves the recoverable operation in `activating`; it does not create
    a second execution plan or report the trip as active.
-7. Returns the active canonical state, including each stored activity display
+7. On the original, still-live activation attempt only, may submit the starting
+   coordinate through the normal telemetry admission path as observation
+   sequence 1, observed at the server's activation receipt time. This is
+   best-effort and does not delay or determine activation success.
+8. Returns the active canonical state, including each stored activity display
    label and accepted permanent coordinate, with its revision/plan identity.
 
 ## Durable execution lifecycle
@@ -713,11 +720,22 @@ is a conflict.
 
 Activation transaction one locks the user and trip, validates the fully
 scheduled relative plan, chooses `activated_at` once, creates exactly one
-immutable absolute execution plan, and commits `activating`. After commit, a
-bounded coordinator obtains the lease and bootstraps the exact plan. Its success
-transaction compares `operation_id`, revision, plan id, and lease epoch before
-changing `activating` to `active`. A stale worker cannot complete a newer
+immutable absolute execution plan, consumes the trip's current
+`next_mutation_sequence` value `N` as the finalized bootstrap-baseline
+checkpoint, advances the next value to `N + 1`, and commits `activating`. The
+first activation therefore bootstraps at accepted/finalized watermark 1, never
+zero. Reactivation continues the existing durable sequence rather than resetting
+or reusing it. After commit, a bounded coordinator obtains the lease and
+bootstraps the exact plan at watermark `N`. Its success transaction compares
+`operation_id`, revision, plan id, lease epoch, and acknowledged watermarks
+before changing `activating` to `active`. A stale worker cannot complete a newer
 operation.
+
+The baseline checkpoint creates no `command_intents` or `planner_outbox` row:
+there is no event to replay before the baseline, and full bootstrap itself
+installs the complete canonical state. The HTTP idempotency record and durable
+activation operation provide request replay and audit, including the immutable
+target execution-plan id. Subsequent runtime events start at sequence `N + 1`.
 
 Transient lease, planner, or transport failures return `202 Accepted` with the
 same operation id and transition status; the client polls the existing
@@ -727,6 +745,14 @@ step. A terminal validation failure before transaction one changes no state. A
 terminal bootstrap incompatibility records the failure, fences/releases any
 acquired runtime authority, removes only the unstarted execution instance, and
 returns the trip to `inactive`; the reusable saved plan remains unchanged.
+
+Recovery does not reproduce the activation request's starting location. In
+accordance with the V1 higher-epoch contract, it sends `BootstrapTrip` with no
+`current_observation` and a zero observation watermark, then waits for fresh
+telemetry from the reconnected client. `trip_execution_operations` therefore
+does not store a starting coordinate. A crash may lose this advisory seed, just
+as it may lose any other non-durable telemetry; it cannot change the durable
+execution plan or transition outcome.
 
 Deactivation first commits `deactivating`, fences new commands and proposals,
 and records its operation id. The coordinator then deactivates or epoch-fences

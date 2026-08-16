@@ -318,6 +318,8 @@ def main() -> int:
         fail("timezone boundary policy differs between policy and dataset lock")
     if timezone_policy["no_polygon_policy"] != timezone_dataset["no_polygon_policy"]:
         fail("timezone no-polygon policy differs between policy and dataset lock")
+    if timezone_policy["provider_startup_timeout_seconds"] != 300:
+        fail("provider-enabled backend startup timeout must be exactly 300 seconds")
     for field in ("sha256", "extracted_geojson_sha256"):
         value = timezone_dataset[field]
         if not isinstance(value, str) or len(value) != 64 or any(

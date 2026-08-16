@@ -43,5 +43,7 @@ COPY config/timezone-boundaries.lock \
   /opt/liveroute/share/timezone-boundaries/timezone-boundaries.lock
 COPY --chmod=0555 docker/timezone-boundaries/verify-assets.sh \
   /usr/local/bin/liveroute-verify-timezone-boundaries
+COPY --chmod=0555 docker/timezone-boundaries/install-assets.sh \
+  /usr/local/bin/liveroute-install-timezone-boundaries
 
 ENTRYPOINT ["/usr/local/bin/liveroute-verify-timezone-boundaries"]

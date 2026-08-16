@@ -3,6 +3,7 @@ package persistence
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHMACKeyRingRequiresDistinctUsableKeys(t *testing.T) {
@@ -52,5 +53,30 @@ func TestSavedTripListRejectsInvalidUserBeforeDatabaseAccess(t *testing.T) {
 	store := &SavedTripStore{}
 	if _, err := store.List(nil, "not-a-uuid"); err == nil {
 		t.Fatal("invalid user id was accepted")
+	}
+}
+
+func TestHTTPAuthStoreCreatesLoginNoncePostgres(t *testing.T) {
+	pool, ctx := openPersistenceTestPool(t)
+	ring, err := NewHMACKeyRing(
+		HMACKey{ID: "current", Value: []byte(strings.Repeat("k", 32))},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewHTTPAuthStore(pool, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, err := store.CreateLoginNonce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM oidc_login_nonces WHERE nonce_sha256 = $1`, sha256Bytes(nonce.Nonce))
+	})
+	if nonce.ExpiresAt.Before(time.Now()) {
+		t.Fatalf("nonce expired at %s", nonce.ExpiresAt)
 	}
 }

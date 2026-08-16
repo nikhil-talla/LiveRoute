@@ -68,6 +68,18 @@ func NewHMACKeyRing(current HMACKey, previous []HMACKey) (HMACKeyRing, error) {
 
 func (keys HMACKeyRing) CurrentID() string { return keys.current.ID }
 
+func (keys HMACKeyRing) HMAC(keyID string, value []byte) ([sha256.Size]byte, bool) {
+	key, ok := keys.key(keyID)
+	if !ok {
+		return [sha256.Size]byte{}, false
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(value)
+	var result [sha256.Size]byte
+	copy(result[:], mac.Sum(nil))
+	return result, true
+}
+
 func (keys HMACKeyRing) key(id string) ([]byte, bool) {
 	if id == keys.current.ID {
 		return keys.current.Value, true
@@ -150,9 +162,9 @@ func (store *HTTPAuthStore) CreateLoginNonce(ctx context.Context) (LoginNonce, e
 	}
 	var expiresAt time.Time
 	err = store.pool.QueryRow(ctx, `
-		WITH current_time AS (SELECT clock_timestamp() AS value)
+		WITH request_clock AS (SELECT clock_timestamp() AS value)
 		INSERT INTO oidc_login_nonces (id, nonce_sha256, browser_binding_sha256, created_at, expires_at)
-		SELECT $1, $2, $3, value, value + $4::interval FROM current_time
+		SELECT $1, $2, $3, value, value + $4::interval FROM request_clock
 		RETURNING expires_at
 	`, id, sha256Bytes(nonce), sha256Bytes(binding), oidcNonceLifetime.String()).Scan(&expiresAt)
 	if err != nil {
@@ -308,10 +320,10 @@ func (store *HTTPAuthStore) IssueWebSocketTicket(ctx context.Context, session Se
 	}
 	var expiresAt time.Time
 	err = store.pool.QueryRow(ctx, `
-		WITH current_time AS (SELECT clock_timestamp() AS value)
+		WITH request_clock AS (SELECT clock_timestamp() AS value)
 		INSERT INTO websocket_auth_tickets (id, session_id, user_id, token_sha256, created_at, expires_at)
 		SELECT $1, s.id, s.user_id, $2, value, value + $3::interval
-		FROM user_sessions s, current_time
+		FROM user_sessions s, request_clock
 		WHERE s.token_sha256 = $4 AND s.revoked_at IS NULL
 		  AND s.replaced_by_session_id IS NULL AND s.idle_expires_at > value AND s.absolute_expires_at > value
 		RETURNING expires_at
@@ -380,9 +392,9 @@ func insertSession(ctx context.Context, tx pgx.Tx, user AuthUser, keyID string) 
 	result.ID, result.FamilyID, result.CSRFKeyID = id, familyID, keyID
 	result.Token, result.PresentedToken = token, token
 	err = tx.QueryRow(ctx, `
-		WITH current_time AS (SELECT clock_timestamp() AS value)
+		WITH request_clock AS (SELECT clock_timestamp() AS value)
 		INSERT INTO user_sessions (id, session_family_id, user_id, token_sha256, csrf_key_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at, rotate_after)
-		SELECT $1, $2, $3, $4, $5, value, value, value + $6::interval, value + $7::interval, value + $8::interval FROM current_time
+		SELECT $1, $2, $3, $4, $5, value, value, value + $6::interval, value + $7::interval, value + $8::interval FROM request_clock
 		RETURNING idle_expires_at, absolute_expires_at
 	`, id, familyID, user.ID, sha256Bytes(token), keyID, sessionIdleLifetime.String(), sessionAbsoluteLife.String(), sessionRotationAge.String()).Scan(&result.IdleExpiresAt, &result.AbsoluteExpiresAt)
 	if err != nil {
@@ -406,10 +418,10 @@ func rotateSession(ctx context.Context, tx pgx.Tx, old Session, keyID string) (S
 		return Session{}, err
 	}
 	err = tx.QueryRow(ctx, `
-		WITH current_time AS (SELECT clock_timestamp() AS value)
+		WITH request_clock AS (SELECT clock_timestamp() AS value)
 		INSERT INTO user_sessions (id, session_family_id, user_id, token_sha256, csrf_key_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at, rotate_after)
 		SELECT $1, session_family_id, user_id, $2, $3, value, value, LEAST(value + $4::interval, absolute_expires_at), absolute_expires_at, LEAST(value + $5::interval, absolute_expires_at)
-		FROM user_sessions, current_time WHERE id = $6
+		FROM user_sessions, request_clock WHERE id = $6
 		RETURNING idle_expires_at, absolute_expires_at
 	`, result.ID, sha256Bytes(result.Token), keyID, sessionIdleLifetime.String(), sessionRotationAge.String(), old.ID).Scan(&result.IdleExpiresAt, &result.AbsoluteExpiresAt)
 	if err != nil {

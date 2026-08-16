@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/liveroute/liveroute/backend/internal/dispatch"
 	"github.com/liveroute/liveroute/backend/internal/gateway"
 	"github.com/liveroute/liveroute/backend/internal/persistence"
+	"github.com/liveroute/liveroute/backend/internal/place"
 	"github.com/liveroute/liveroute/backend/internal/plannertransport"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
@@ -109,6 +111,36 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	var placeStore *persistence.PlaceStore
+	var placeResolver *place.MapboxResolver
+	mapboxToken, configured, err := loadOptionalSecret("LIVEROUTE_MAPBOX_TOKEN", "LIVEROUTE_MAPBOX_TOKEN_FILE", "/run/secrets/liveroute_mapbox_token")
+	if err != nil {
+		return err
+	}
+	if configured {
+		timeZones, loadErr := place.LoadTimeZoneResolver(
+			envOr("LIVEROUTE_TIMEZONE_BOUNDARIES_PATH", "/opt/liveroute/share/timezone-boundaries/2026c/combined-with-oceans.json"),
+			"17f0821bad87d7a44dcebff12ad70b82bf973c54942e29fe20f5f9f8be4b3db6",
+			envOr("LIVEROUTE_TZDATA_ZONE_TABLE_PATH", "/opt/liveroute/share/tzdata/2026c/zoneinfo/zone1970.tab"),
+		)
+		if loadErr != nil {
+			return loadErr
+		}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DialContext = (&net.Dialer{Timeout: 500 * time.Millisecond, KeepAlive: 30 * time.Second}).DialContext
+		placeResolver, err = place.NewMapboxResolver(place.MapboxConfig{
+			Endpoint: "https://api.mapbox.com/search/geocode/v6/reverse", Token: mapboxToken,
+			Client: &http.Client{Transport: transport, Timeout: 3 * time.Second}, TimeZones: timeZones,
+			MaxResponseBytes: 262144, GlobalConcurrency: 16, PerUserConcurrency: 1, AttemptsPerMinute: 5,
+		})
+		if err != nil {
+			return err
+		}
+		placeStore, err = persistence.NewPlaceStore(pool, hmacKeys, placeResolver)
+		if err != nil {
+			return err
+		}
+	}
 	var googleVerifier *auth.GoogleVerifier
 	if clientID := strings.TrimSpace(os.Getenv("LIVEROUTE_GOOGLE_WEB_CLIENT_ID")); clientID != "" {
 		googleVerifier, err = auth.NewGoogleVerifier(rootContext, clientID, &http.Client{Timeout: 3 * time.Second})
@@ -145,6 +177,8 @@ func run(args []string) error {
 		return err
 	}
 	defer supervisor.Close()
+	var activationMu sync.Mutex
+	activationRuns := make(map[string]struct{})
 	telemetry, err := dispatch.NewTelemetryDispatcher(planner, supervisor, time.Duration(cfg.Planner.AttemptTimeoutMS)*time.Millisecond)
 	if err != nil {
 		return err
@@ -165,6 +199,56 @@ func run(args []string) error {
 	proposalConsumer, err := dispatch.NewProposalConsumer(holderID, proposals)
 	if err != nil {
 		return err
+	}
+	startActivation := func(tripID, operationID string) {
+		activationMu.Lock()
+		if _, exists := activationRuns[tripID]; exists {
+			activationMu.Unlock()
+			return
+		}
+		activationRuns[tripID] = struct{}{}
+		activationMu.Unlock()
+		go func() {
+			defer func() {
+				activationMu.Lock()
+				delete(activationRuns, tripID)
+				activationMu.Unlock()
+			}()
+			if err := supervisor.Activate(rootContext, tripID); err != nil {
+				slog.Warn("activation runtime bootstrap failed", "trip_id", tripID, "operation_id", operationID, "error", err)
+				return
+			}
+			state, ok := supervisor.RuntimeState(tripID)
+			if !ok {
+				slog.Warn("activation runtime state disappeared", "trip_id", tripID, "operation_id", operationID)
+				return
+			}
+			if _, err := savedTrips.CompleteActivation(rootContext, persistence.CompleteActivationRequest{
+				TripID: tripID, OperationID: operationID, HolderID: holderID, RuntimeEpoch: state.RuntimeEpoch,
+			}); err != nil {
+				slog.Warn("activation completion failed", "trip_id", tripID, "operation_id", operationID, "error", err)
+			}
+		}()
+	}
+	startDeactivation := func(tripID, operationID string) {
+		go func() {
+			state, ok := supervisor.RuntimeState(tripID)
+			runtimeEpoch := uint64(0)
+			if ok {
+				runtimeEpoch = state.RuntimeEpoch
+			} else if lease, err := leases.Current(rootContext, tripID, holderID); err == nil {
+				runtimeEpoch = lease.RuntimeEpoch
+			}
+			if err := supervisor.Deactivate(rootContext, tripID); err != nil {
+				slog.Warn("deactivation runtime teardown failed", "trip_id", tripID, "operation_id", operationID, "error", err)
+				return
+			}
+			if _, err := savedTrips.CompleteDeactivation(rootContext, persistence.CompleteDeactivationRequest{
+				TripID: tripID, OperationID: operationID, HolderID: holderID, RuntimeEpoch: runtimeEpoch,
+			}); err != nil {
+				slog.Warn("deactivation completion failed", "trip_id", tripID, "operation_id", operationID, "error", err)
+			}
+		}()
 	}
 
 	createAdapter, err := gateway.NewCreateTripAdapter(canonicalState)
@@ -249,7 +333,7 @@ func run(args []string) error {
 	grpcHealth := healthpb.NewHealthClient(plannerConnection)
 	plannerHealth := gateway.GRPCServingCheck(grpcHealth, "liveroute.v1.LiveRoutePlanner")
 	healthHandler, err := gateway.NewHealthHandler(gateway.ReadinessChecks{
-		MigrationsCurrent: func(ctx context.Context) error { return persistence.MigrationsCurrent(ctx, pool, 3) },
+		MigrationsCurrent: func(ctx context.Context) error { return persistence.MigrationsCurrent(ctx, pool, 4) },
 		PostgreSQLPing:    func(ctx context.Context) error { return persistence.PostgreSQLPing(ctx, pool) },
 		PlannerStreamReady: func(ctx context.Context) error {
 			if !planner.StreamReady() {
@@ -259,6 +343,15 @@ func run(args []string) error {
 		},
 		OSRMCarServing:  gateway.OSRMTableServingCheck(http.DefaultClient, cfg.Routing.CarEndpoint, "driving"),
 		OSRMFootServing: gateway.OSRMTableServingCheck(http.DefaultClient, cfg.Routing.FootEndpoint, "walking"),
+		Additional: []gateway.ReadinessCheck{func(context.Context) error {
+			if placeResolver == nil {
+				return errors.New("permanent geocoder is not configured")
+			}
+			if !placeResolver.Ready() {
+				return errors.New("permanent geocoder rejected its credential")
+			}
+			return nil
+		}},
 	})
 	if err != nil {
 		return err
@@ -268,7 +361,7 @@ func run(args []string) error {
 		return err
 	}
 	httpAuthHandler, err := gateway.NewHTTPAuthHandler(gateway.HTTPAuthConfig{
-		Store: httpAuthStore, Trips: savedTrips, GoogleVerifier: googleVerifier, AllowedOrigins: cfg.WebSocket.AllowedOrigins,
+		Store: httpAuthStore, Trips: savedTrips, Places: placeStore, StartActivation: startActivation, StartDeactivation: startDeactivation, GoogleVerifier: googleVerifier, AllowedOrigins: cfg.WebSocket.AllowedOrigins,
 		SecureCookies: false, FrontendOrigin: "http://localhost:5173",
 	})
 	if err != nil {
@@ -289,7 +382,7 @@ func run(args []string) error {
 		return proposalConsumer.Run(ctx, planner.Notifications())
 	})
 	go runWorker(rootContext, "runtime recovery", func(ctx context.Context) error {
-		return recoverLeasedTrips(ctx, leases, supervisor)
+		return recoverLeasedTrips(ctx, leases, savedTrips, supervisor, startActivation, startDeactivation)
 	})
 	if err := server.Serve(rootContext, listener); errors.Is(err, context.Canceled) {
 		return nil
@@ -298,11 +391,27 @@ func run(args []string) error {
 	}
 }
 
-func recoverLeasedTrips(ctx context.Context, leases *persistence.LeaseStore, supervisor *dispatch.RuntimeSupervisor) error {
-	if leases == nil || supervisor == nil {
+func recoverLeasedTrips(ctx context.Context, leases *persistence.LeaseStore, savedTrips *persistence.SavedTripStore, supervisor *dispatch.RuntimeSupervisor, startActivation, startDeactivation func(string, string)) error {
+	if leases == nil || savedTrips == nil || supervisor == nil || startActivation == nil || startDeactivation == nil {
 		return errors.New("runtime recovery dependencies are required")
 	}
 	for {
+		activations, activationErr := savedTrips.PendingActivations(ctx)
+		if activationErr != nil && !errors.Is(activationErr, context.Canceled) {
+			slog.Warn("list pending activations for recovery failed", "error", activationErr)
+		} else if activationErr == nil {
+			for _, activation := range activations {
+				startActivation(activation.TripID, activation.OperationID)
+			}
+		}
+		deactivations, deactivationErr := savedTrips.PendingDeactivations(ctx)
+		if deactivationErr != nil && !errors.Is(deactivationErr, context.Canceled) {
+			slog.Warn("list pending deactivations for recovery failed", "error", deactivationErr)
+		} else if deactivationErr == nil {
+			for _, deactivation := range deactivations {
+				startDeactivation(deactivation.TripID, deactivation.OperationID)
+			}
+		}
 		tripIDs, err := leases.LeasedTrips(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("list leased trips for recovery failed", "error", err)
@@ -730,6 +839,25 @@ func loadHTTPHMACKeys() (persistence.HMACKeyRing, error) {
 		value = []byte(keyText)
 	}
 	return persistence.NewHMACKeyRing(persistence.HMACKey{ID: keyID, Value: value}, nil)
+}
+
+func loadOptionalSecret(valueEnvironment, fileEnvironment, defaultPath string) (string, bool, error) {
+	if value := strings.TrimSpace(os.Getenv(valueEnvironment)); value != "" {
+		return value, true, nil
+	}
+	path := envOr(fileEnvironment, defaultPath)
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read %s: %w", fileEnvironment, err)
+	}
+	value := strings.TrimSpace(string(raw))
+	if value == "" {
+		return "", false, fmt.Errorf("%s is empty", fileEnvironment)
+	}
+	return value, true, nil
 }
 
 func canonicalUUID(value string) bool {

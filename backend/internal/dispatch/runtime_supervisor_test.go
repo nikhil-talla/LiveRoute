@@ -35,6 +35,14 @@ func (fake *supervisorLeaseFake) Renew(context.Context, string, string, uint64, 
 	return persistence.RuntimeLease{RuntimeEpoch: 4}, nil
 }
 
+func (fake *supervisorLeaseFake) Release(context.Context, string, string, uint64) error {
+	return nil
+}
+
+func (fake *supervisorLeaseFake) Current(context.Context, string, string) (persistence.RuntimeLease, error) {
+	return persistence.RuntimeLease{RuntimeEpoch: 1}, nil
+}
+
 type supervisorBootstrapFake struct {
 	mu      sync.Mutex
 	calls   int

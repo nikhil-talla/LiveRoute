@@ -52,8 +52,13 @@ deterministic fixture, not a serving-path place lookup.
 - The locked Rhode Island `.osm.pbf` file described in
   [docs/osrm.md](docs/osrm.md).
 - For the backend profile, a regular development-token file containing exactly
-  43 bytes. Keep it outside version control and set
-  `LIVEROUTE_DEV_TOKEN_FILE` to its absolute path.
+  43 bytes, plus a local CSRF/HMAC key file containing at least 32 random
+  bytes encoded as raw base64url. Keep both outside version control. For the
+  default repository layout, set the files to mode `0640`, keep `secrets/`
+  mode `0700`, and set `LIVEROUTE_SECRET_GID` to the host group that owns the
+  files if it is not `1000`. Compose grants only that group to the non-root
+  runtime services. `LIVEROUTE_DEV_TOKEN_FILE` and
+  `LIVEROUTE_CSRF_HMAC_KEY_FILE` may point to alternate absolute paths.
 
 PostgreSQL, Go, C++ build tools, Protobuf, and OSRM run in containers; they do
 not need to be installed on the host.
@@ -78,6 +83,10 @@ curl --fail http://127.0.0.1:8080/readyz
 
 The backend is exposed only on `127.0.0.1:8080`. PostgreSQL, planner gRPC, and
 both OSRM profiles remain private to the Compose network.
+When the Mapbox provider is configured, cold startup verifies and loads the
+pinned 182 MB timezone-boundary dataset before readiness. Local acceptance
+allows at most 300 seconds for that provider-enabled cold start; exceeding the
+ceiling is a failure, not a reason to report partial readiness.
 
 Important verification entry points:
 
@@ -92,6 +101,8 @@ bash scripts/check-cpp-proto-toolchain.sh
 bash scripts/check-go-proto-generation.sh
 bash scripts/check-backend-persistence.sh
 bash scripts/check-backend-planner-stream.sh
+LIVEROUTE_DEV_TOKEN_FILE=/absolute/path/to/liveroute_dev_token \
+  bash scripts/check-websocket-load.sh
 ```
 
 Some checks build multiple pinned images or start disposable PostgreSQL/OSRM

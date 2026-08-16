@@ -11,6 +11,8 @@ import type {
   Session,
   Trip,
   TripList,
+  ActivityInput,
+  UpdateTripRequest,
   WebSocketTicket,
 } from "./types";
 
@@ -21,6 +23,7 @@ export interface LiveRouteApi {
     signal?: AbortSignal,
   ): Promise<Session>;
   getSession(signal?: AbortSignal): Promise<Session>;
+  logout(csrfToken: string, signal?: AbortSignal): Promise<void>;
   listTrips(signal?: AbortSignal): Promise<TripList>;
   getTrip(tripId: string, signal?: AbortSignal): Promise<Trip>;
   createTrip(
@@ -28,9 +31,50 @@ export interface LiveRouteApi {
     csrfToken: string,
     signal?: AbortSignal,
   ): Promise<Trip>;
+  updateTrip(
+    tripId: string,
+    request: UpdateTripRequest,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip>;
+  deleteTrip(
+    tripId: string,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  addTripActivity(
+    tripId: string,
+    activity: ActivityInput,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip>;
+  replaceTripActivity(
+    tripId: string,
+    activityId: string,
+    activity: ActivityInput,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip>;
+  deleteTripActivity(
+    tripId: string,
+    activityId: string,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip>;
   activateTrip(
     tripId: string,
     request: ActivateTripRequest,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<ExecutionTransition>;
+  deactivateTrip(
+    tripId: string,
     tripRevision: string,
     csrfToken: string,
     signal?: AbortSignal,
@@ -93,6 +137,7 @@ export class HttpLiveRouteApi implements LiveRouteApi {
     if (!response.ok) {
       throw new ApiError(response.status, await readProblem(response));
     }
+    if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
 
@@ -116,6 +161,7 @@ export class HttpLiveRouteApi implements LiveRouteApi {
     if (!response.ok) {
       throw new ApiError(response.status, await readProblem(response));
     }
+    if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
 
@@ -147,11 +193,55 @@ export class HttpLiveRouteApi implements LiveRouteApi {
     if (!response.ok) {
       throw new ApiError(response.status, await readProblem(response));
     }
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  }
+
+  async #mutation<T>(
+    method: "PATCH" | "DELETE",
+    path: string,
+    body: unknown,
+    csrfToken: string,
+    signal: AbortSignal | undefined,
+    ifMatch: string,
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "X-CSRF-Token": csrfToken,
+      "Idempotency-Key": crypto.randomUUID(),
+      "If-Match": ifMatch,
+    };
+    const request: RequestInit = {
+      method,
+      credentials: "include",
+      headers,
+      signal,
+    };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      request.body = JSON.stringify(body);
+    }
+    const response = await fetch(this.#origin + "/api/v1" + path, request);
+    if (!response.ok) {
+      throw new ApiError(response.status, await readProblem(response));
+    }
+    if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
 
   getSession(signal?: AbortSignal): Promise<Session> {
     return this.#get<Session>("/session", signal);
+  }
+
+  logout(csrfToken: string, signal?: AbortSignal): Promise<void> {
+    return this.#post<void>(
+      "/auth/logout",
+      undefined,
+      csrfToken,
+      signal,
+      undefined,
+      false,
+    );
   }
 
   createGoogleLoginNonce(signal?: AbortSignal): Promise<GoogleNonceResponse> {
@@ -185,6 +275,96 @@ export class HttpLiveRouteApi implements LiveRouteApi {
     return this.#post<Trip>("/trips", request, csrfToken, signal);
   }
 
+  updateTrip(
+    tripId: string,
+    request: UpdateTripRequest,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip> {
+    return this.#mutation<Trip>(
+      "PATCH",
+      "/trips/" + encodeURIComponent(tripId),
+      request,
+      csrfToken,
+      signal,
+      '"trip-revision-' + tripRevision + '"',
+    );
+  }
+
+  deleteTrip(
+    tripId: string,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.#mutation<void>(
+      "DELETE",
+      "/trips/" + encodeURIComponent(tripId),
+      undefined,
+      csrfToken,
+      signal,
+      '"trip-revision-' + tripRevision + '"',
+    );
+  }
+
+  addTripActivity(
+    tripId: string,
+    activity: ActivityInput,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip> {
+    return this.#post<Trip>(
+      "/trips/" + encodeURIComponent(tripId) + "/activities",
+      activity,
+      csrfToken,
+      signal,
+      '"trip-revision-' + tripRevision + '"',
+    );
+  }
+
+  replaceTripActivity(
+    tripId: string,
+    activityId: string,
+    activity: ActivityInput,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip> {
+    return this.#mutation<Trip>(
+      "PATCH",
+      "/trips/" +
+        encodeURIComponent(tripId) +
+        "/activities/" +
+        encodeURIComponent(activityId),
+      activity,
+      csrfToken,
+      signal,
+      '"trip-revision-' + tripRevision + '"',
+    );
+  }
+
+  deleteTripActivity(
+    tripId: string,
+    activityId: string,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<Trip> {
+    return this.#mutation<Trip>(
+      "DELETE",
+      "/trips/" +
+        encodeURIComponent(tripId) +
+        "/activities/" +
+        encodeURIComponent(activityId),
+      undefined,
+      csrfToken,
+      signal,
+      '"trip-revision-' + tripRevision + '"',
+    );
+  }
+
   activateTrip(
     tripId: string,
     request: ActivateTripRequest,
@@ -195,6 +375,21 @@ export class HttpLiveRouteApi implements LiveRouteApi {
     return this.#post<ExecutionTransition>(
       "/trips/" + encodeURIComponent(tripId) + "/activate",
       request,
+      csrfToken,
+      signal,
+      '"trip-revision-' + tripRevision + '"',
+    );
+  }
+
+  deactivateTrip(
+    tripId: string,
+    tripRevision: string,
+    csrfToken: string,
+    signal?: AbortSignal,
+  ): Promise<ExecutionTransition> {
+    return this.#post<ExecutionTransition>(
+      "/trips/" + encodeURIComponent(tripId) + "/deactivate",
+      undefined,
       csrfToken,
       signal,
       '"trip-revision-' + tripRevision + '"',

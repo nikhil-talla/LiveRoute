@@ -100,6 +100,7 @@ type ReadinessChecks struct {
 	PlannerStreamReady ReadinessCheck
 	OSRMCarServing     ReadinessCheck
 	OSRMFootServing    ReadinessCheck
+	Additional         []ReadinessCheck
 }
 
 func (checks ReadinessChecks) validate() error {
@@ -107,6 +108,11 @@ func (checks ReadinessChecks) validate() error {
 		checks.PlannerStreamReady == nil || checks.OSRMCarServing == nil ||
 		checks.OSRMFootServing == nil {
 		return errors.New("all readiness checks are required")
+	}
+	for _, check := range checks.Additional {
+		if check == nil {
+			return errors.New("additional readiness checks cannot be nil")
+		}
 	}
 	return nil
 }
@@ -136,6 +142,7 @@ func (h *HealthHandler) Readyz(writer http.ResponseWriter, request *http.Request
 		h.checks.OSRMCarServing,
 		h.checks.OSRMFootServing,
 	}
+	checks = append(checks, h.checks.Additional...)
 	for _, check := range checks {
 		if err := check(request.Context()); err != nil {
 			writeHealth(writer, http.StatusServiceUnavailable, "not_ready")

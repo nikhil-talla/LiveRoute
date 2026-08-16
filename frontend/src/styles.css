@@ -161,6 +161,19 @@ h3,
   font-size: 12px;
 }
 
+.user-sign-out {
+  margin-left: auto;
+  color: #bfcac5;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidebar-error {
+  margin: 10px 0 0;
+  color: #f3b6a8;
+  font-size: 12px;
+}
+
 .app-content {
   min-width: 0;
 }
@@ -234,6 +247,17 @@ h3,
   align-items: center;
   gap: 7px;
   text-decoration: none;
+}
+
+.button-link:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.danger-link {
+  color: #a43f32;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .trip-section {
@@ -350,6 +374,16 @@ h3,
 .activity-editor {
   display: grid;
   gap: 22px;
+}
+
+.planner-editor-list,
+.planner-editor-item {
+  display: grid;
+  gap: 12px;
+}
+
+.planner-editor-item {
+  margin-top: 24px;
 }
 
 .form-grid {
@@ -757,7 +791,17 @@ h3,
   }
 
   .sidebar nav {
-    display: none;
+    display: flex;
+    grid-column: 1 / -1;
+    gap: 4px;
+    margin-top: 18px;
+    overflow-x: auto;
+  }
+
+  .sidebar nav a {
+    flex: 0 0 auto;
+    padding: 9px 11px;
+    white-space: nowrap;
   }
 
   .user-card {
@@ -773,6 +817,29 @@ h3,
   .content-page {
     width: min(100% - 36px, 720px);
     padding-top: 44px;
+  }
+
+  .page-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 22px;
+    margin-bottom: 34px;
+  }
+
+  .planner-actions {
+    flex-wrap: wrap;
+  }
+
+  .trip-section {
+    padding: 22px 18px;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .row-arrow {
+    display: none;
   }
 
   .signed-out-page {

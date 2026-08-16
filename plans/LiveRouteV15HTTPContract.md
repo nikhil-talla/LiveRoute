@@ -322,8 +322,13 @@ lowest valid US IANA name when polygons overlap or the point lies on a shared
 boundary, and rejects a point in no valid polygon. No external timezone request
 is made.
 
-The resolution token is 32 random bytes encoded as 43-character unpadded
-base64url, stored only as SHA-256, bound to the user/permanent coordinate/address/
+The resolution token is 32 cryptographically pseudorandom bytes produced as
+`HMAC-SHA-256(active HTTP HMAC key, "liveroute.place-resolution-token.v1" || NUL || resolution_attempt_id)`
+and encoded as 43-character unpadded base64url. The idempotency row retains the
+non-secret HMAC key id, so an exact response can be reconstructed during the
+required retired-key retention period without persisting the raw token in
+`response_body`; PostgreSQL stores only the token's SHA-256. The token is bound
+through its immutable resolution-attempt row to the user/permanent coordinate/address/
 timezone, single-use, and valid for 10 minutes. `POST /places` creates one
 immutable Place or exactly replays it. Place correction creates a new Place and
 a revision-checked trip edit.
@@ -394,6 +399,33 @@ a revision-checked trip edit.
   execution plan, and uses the durable `inactive -> activating -> active`
   operation described in the frontend plan. This materialization is derived once
   from the locked saved-plan revision and never rewrites that saved revision.
+- Activation atomically consumes the current `next_mutation_sequence` value `N`
+  as the absolute execution baseline checkpoint, sets
+  `finalized_mutation_sequence = N`, and advances
+  `next_mutation_sequence = N + 1`. The first activation therefore changes the
+  initial `(next = 1, finalized = 0)` state to `(next = 2, finalized = 1)`;
+  later activations continue the durable sequence and never reset or reuse it.
+  `BootstrapTrip.finalized_mutation_sequence`, and the successful
+  `TripBootstrapped` accepted/finalized watermarks, are exactly `N`.
+- The activation baseline checkpoint is not a replayable `ApplyTripEvent` and
+  creates no synthetic `command_intents` or `planner_outbox` row. Its durable
+  identity and audit are the completed HTTP idempotency record, the activation
+  `trip_execution_operations` row, and its immutable
+  `target_execution_plan_id`. Full bootstrap is the only delivery mechanism for
+  that baseline. Subsequent runtime mutations begin at `N + 1`; there is no
+  active V1.5 runtime with a zero accepted/finalized mutation watermark.
+- `starting_location` is a required, validated, idempotency-bound activation
+  input but is not durable canonical state and does not affect absolute-plan
+  materialization. After the initiating process successfully bootstraps the new
+  runtime, it may admit that coordinate through the ordinary telemetry path as
+  observation sequence 1 with the server activation receipt time. It must not
+  store the coordinate in `trip_execution_operations`, execution plans,
+  snapshots, idempotency responses, or logs. If activation is resumed after a
+  process crash, recovery bootstraps the durable plan with
+  `current_observation` absent and `current_observation_sequence = 0`, exactly as
+  required for a higher epoch, then waits for fresh client telemetry. Losing the
+  advisory seed is permitted and never rolls back or fails an otherwise
+  successful activation.
 - Deactivation uses `active|activating -> deactivating -> inactive`, fences
   runtime authority, invalidates proposals, and clears execution-only pointers.
   Startup recovery resumes a bounded page of transition rows. Stable states have
@@ -404,6 +436,23 @@ a revision-checked trip edit.
 Proposal accept/reject and active activity lifecycle commands remain on the
 existing WebSocket contract. Proposal acceptance is final only at
 `planner_applied` plus the refreshed matching `subscription_state`.
+
+## Provider-enabled startup readiness
+
+- A provider-enabled backend remains not ready until the pinned timezone
+  boundary artifact has passed its size/SHA-256 checks, the matching tzdata zone
+  table has been validated, and the immutable US boundary index is fully loaded.
+  Place resolution must not run against a partially loaded resolver.
+- The container-first local acceptance ceiling for this cold start is exactly
+  300 seconds from Compose startup through a successful backend `/readyz`.
+  `scripts/check-websocket-load.sh` enforces this ceiling. Exceeding it fails the
+  check; the harness must not silently extend the deadline.
+- This five-minute ceiling is an operational timeout, not a latency target or
+  evidence that the current approximately 182 MB GeoJSON loading path is
+  optimal. A future preprocessing/index optimization must preserve the locked
+  source digest, US-zone filtering, lexicographic boundary tie-break, and
+  no-polygon rejection behavior, and must be accepted from measured startup and
+  resolver-equivalence tests before the ceiling is reduced.
 
 ## Retention and secret handling
 

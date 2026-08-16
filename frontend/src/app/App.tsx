@@ -17,11 +17,14 @@ import type { LiveRouteApi } from "../api/client";
 import type {
   ActivityInput,
   CreateTripRequest,
+  DisplaySchedule,
   Place,
+  SavedActivity,
   Session,
   Trip,
   TripList,
   TripSummary,
+  UpdateTripRequest,
 } from "../api/types";
 import { MapPreview } from "../map/MapPreview";
 import type { RouteGeometry } from "../map/directions";
@@ -78,6 +81,41 @@ interface ProposalDecision {
 interface ActiveNavigationState {
   nextActivityId: string;
   scheduledStartUnixMs?: number;
+}
+
+interface EditableActivity {
+  activityId?: string;
+  place: Place;
+  input: ActivityInput;
+}
+
+function inputFromSavedActivity(activity: SavedActivity): EditableActivity {
+  return {
+    activityId: activity.activity_id,
+    place: activity.place,
+    input: {
+      place_id: activity.place.place_id,
+      ordinal: activity.ordinal,
+      schedule: activity.schedule,
+      inbound_travel_mode: activity.inbound_travel_mode,
+      activity_class: activity.activity_class,
+      priority_rank: activity.priority_rank,
+      utility_score: activity.utility_score,
+      timing: activity.timing,
+    },
+  };
+}
+
+function sameJSON(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function displayTimeInput(value: string): string {
+  return value.length >= 5 ? value.slice(0, 5) : value;
+}
+
+function displayTimeValue(value: string): string {
+  return value.length === 5 ? value + ":00" : value;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
@@ -353,32 +391,18 @@ function TripsPage({ trips }: { trips: TripList }): ReactNode {
   );
 }
 
-function PlaceholderPage({
-  title,
-  detail,
-}: {
-  title: string;
-  detail: string;
-}): ReactNode {
-  return (
-    <main className="content-page placeholder-page">
-      <p className="eyebrow">Next implementation slice</p>
-      <h1>{title}</h1>
-      <p className="lede compact">{detail}</p>
-      <Link to="/trips">Back to trips</Link>
-    </main>
-  );
-}
-
 function PlannerPage({
   tripId,
   api,
   csrfToken,
+  onTripsChanged,
 }: {
   tripId: string;
   api: LiveRouteApi;
   csrfToken: string;
+  onTripsChanged: () => Promise<void>;
 }): ReactNode {
+  const navigate = useNavigate();
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -397,6 +421,27 @@ function PlannerPage({
     | { kind: "submitting" }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+  const [deactivationState, setDeactivationState] = useState<
+    | { kind: "idle" }
+    | { kind: "submitting" }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [draftTripName, setDraftTripName] = useState("");
+  const [draftTimeZoneName, setDraftTimeZoneName] = useState("");
+  const [draftDisplaySchedule, setDraftDisplaySchedule] =
+    useState<DisplaySchedule | null>(null);
+  const [draftActivities, setDraftActivities] = useState<EditableActivity[]>(
+    [],
+  );
+  const [removedActivityIds, setRemovedActivityIds] = useState<string[]>([]);
+  const [editState, setEditState] = useState<
+    { kind: "idle" } | { kind: "saving" } | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [deleteState, setDeleteState] = useState<
+    { kind: "idle" } | { kind: "deleting" } | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const originalTripRef = useRef<Trip | null>(null);
+  const transitionRefreshPendingRef = useRef(false);
   const [locationState, setLocationState] = useState<{
     sample: GpsLocationSample | null;
     stale: boolean;
@@ -493,7 +538,18 @@ function PlannerPage({
     const controller = new AbortController();
     void api
       .getTrip(tripId, controller.signal)
-      .then((trip) => setState({ kind: "ready", trip }))
+      .then((trip) => {
+        originalTripRef.current = trip;
+        setDraftTripName(trip.trip_name);
+        setDraftTimeZoneName(trip.default_time_zone_name);
+        setDraftDisplaySchedule(trip.display_schedule ?? null);
+        setDraftActivities(
+          trip.saved_plan.activities.map(inputFromSavedActivity),
+        );
+        setRemovedActivityIds([]);
+        setEditState({ kind: "idle" });
+        setState({ kind: "ready", trip });
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         setState({
@@ -506,6 +562,184 @@ function PlannerPage({
       });
     return () => controller.abort();
   }, [api, tripId, attempt]);
+
+  const addDraftPlace = (place: Place): void => {
+    setDraftActivities((current) => [
+      ...current,
+      {
+        place,
+        input: createDefaultActivity(place.place_id, current.length),
+      },
+    ]);
+  };
+
+  const removeDraftActivity = (index: number): void => {
+    if (draftActivities.length <= 1) return;
+    const removed = draftActivities[index];
+    if (removed?.activityId) {
+      setRemovedActivityIds((ids) =>
+        ids.includes(removed.activityId!) ? ids : [...ids, removed.activityId!],
+      );
+    }
+    setDraftActivities((current) => {
+      return current
+        .filter((_, activityIndex) => activityIndex !== index)
+        .map((activity, ordinal) => ({
+          ...activity,
+          input: { ...activity.input, ordinal },
+        }));
+    });
+  };
+
+  const saveInactiveTrip = async (): Promise<void> => {
+    if (
+      state.kind !== "ready" ||
+      state.trip.execution_state !== "inactive" ||
+      !draftTripName.trim() ||
+      !draftTimeZoneName.trim() ||
+      draftActivities.length === 0
+    ) {
+      return;
+    }
+    if (
+      draftDisplaySchedule !== null &&
+      (!/^\d{4}-\d{2}-\d{2}$/.test(draftDisplaySchedule.local_date) ||
+        !/^\d{2}:\d{2}:\d{2}$/.test(draftDisplaySchedule.local_time) ||
+        !draftDisplaySchedule.time_zone_name.trim())
+    ) {
+      setEditState({
+        kind: "error",
+        message: "Complete the display date, time, and timezone first.",
+      });
+      return;
+    }
+    setEditState({ kind: "saving" });
+    let currentTrip = state.trip;
+    try {
+      const metadata: UpdateTripRequest = {};
+      if (draftTripName.trim() !== currentTrip.trip_name) {
+        metadata.trip_name = draftTripName.trim();
+      }
+      if (draftTimeZoneName.trim() !== currentTrip.default_time_zone_name) {
+        metadata.default_time_zone_name = draftTimeZoneName.trim();
+      }
+      if (
+        draftDisplaySchedule === null &&
+        currentTrip.display_schedule !== undefined
+      ) {
+        metadata.remove_display_schedule = true;
+      } else if (
+        draftDisplaySchedule !== null &&
+        !sameJSON(draftDisplaySchedule, currentTrip.display_schedule)
+      ) {
+        metadata.display_schedule = draftDisplaySchedule;
+      }
+      if (Object.keys(metadata).length > 0) {
+        currentTrip = await api.updateTrip(
+          tripId,
+          metadata,
+          currentTrip.trip_revision,
+          csrfToken,
+        );
+      }
+
+      for (const activityId of removedActivityIds) {
+        currentTrip = await api.deleteTripActivity(
+          tripId,
+          activityId,
+          currentTrip.trip_revision,
+          csrfToken,
+        );
+      }
+
+      const originalTrip = originalTripRef.current;
+      for (const editable of draftActivities) {
+        const activity = {
+          ...editable.input,
+          ordinal: draftActivities.indexOf(editable),
+        };
+        if (editable.activityId) {
+          const original = originalTrip?.saved_plan.activities.find(
+            (candidate) => candidate.activity_id === editable.activityId,
+          );
+          if (
+            original &&
+            !removedActivityIds.includes(editable.activityId) &&
+            sameJSON(activity, inputFromSavedActivity(original).input) &&
+            currentTrip.saved_plan.activities.some(
+              (candidate) => candidate.activity_id === editable.activityId,
+            )
+          ) {
+            continue;
+          }
+          currentTrip = await api.replaceTripActivity(
+            tripId,
+            editable.activityId,
+            activity,
+            currentTrip.trip_revision,
+            csrfToken,
+          );
+        } else {
+          currentTrip = await api.addTripActivity(
+            tripId,
+            activity,
+            currentTrip.trip_revision,
+            csrfToken,
+          );
+        }
+      }
+      originalTripRef.current = currentTrip;
+      setState({ kind: "ready", trip: currentTrip });
+      setEditState({ kind: "idle" });
+      void onTripsChanged();
+    } catch (error: unknown) {
+      try {
+        const refreshed = await api.getTrip(tripId);
+        originalTripRef.current = refreshed;
+        setDraftTripName(refreshed.trip_name);
+        setDraftTimeZoneName(refreshed.default_time_zone_name);
+        setDraftDisplaySchedule(refreshed.display_schedule ?? null);
+        setDraftActivities(
+          refreshed.saved_plan.activities.map(inputFromSavedActivity),
+        );
+        setRemovedActivityIds([]);
+        setState({ kind: "ready", trip: refreshed });
+      } catch {
+        // Keep the last server response if recovery itself is unavailable.
+      }
+      setEditState({
+        kind: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "The saved plan could not be updated.",
+      });
+    }
+  };
+
+  const deleteInactiveTrip = async (): Promise<void> => {
+    if (
+      state.kind !== "ready" ||
+      state.trip.execution_state !== "inactive" ||
+      !window.confirm("Delete this saved trip permanently?")
+    ) {
+      return;
+    }
+    setDeleteState({ kind: "deleting" });
+    try {
+      await api.deleteTrip(tripId, state.trip.trip_revision, csrfToken);
+      await onTripsChanged();
+      void navigate("/trips");
+    } catch (error: unknown) {
+      setDeleteState({
+        kind: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "The saved trip could not be deleted.",
+      });
+    }
+  };
 
   useEffect(() => {
     if (
@@ -520,6 +754,19 @@ function PlannerPage({
     }, 1000);
     return () => window.clearTimeout(timer);
   }, [state]);
+
+  useEffect(() => {
+    if (
+      !transitionRefreshPendingRef.current ||
+      state.kind !== "ready" ||
+      (state.trip.execution_state !== "active" &&
+        state.trip.execution_state !== "inactive")
+    ) {
+      return;
+    }
+    transitionRefreshPendingRef.current = false;
+    void onTripsChanged();
+  }, [onTripsChanged, state]);
 
   const executionState =
     state.kind === "ready" ? state.trip.execution_state : "loading";
@@ -822,10 +1069,13 @@ function PlannerPage({
             csrfToken,
           )
           .then((transition) => {
+            transitionRefreshPendingRef.current = true;
             setState({ kind: "ready", trip: transition.trip });
             setActivationState({ kind: "idle" });
+            void onTripsChanged();
           })
           .catch((error: unknown) => {
+            transitionRefreshPendingRef.current = false;
             setActivationState({
               kind: "error",
               message:
@@ -846,6 +1096,31 @@ function PlannerPage({
       },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 10_000 },
     );
+  };
+
+  const stopTrip = (): void => {
+    if (state.kind !== "ready" || state.trip.execution_state !== "active") {
+      return;
+    }
+    setDeactivationState({ kind: "submitting" });
+    void api
+      .deactivateTrip(tripId, state.trip.trip_revision, csrfToken)
+      .then((transition) => {
+        transitionRefreshPendingRef.current = true;
+        setState({ kind: "ready", trip: transition.trip });
+        setDeactivationState({ kind: "idle" });
+        void onTripsChanged();
+      })
+      .catch((error: unknown) => {
+        transitionRefreshPendingRef.current = false;
+        setDeactivationState({
+          kind: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "The trip could not be stopped.",
+        });
+      });
   };
 
   if (state.kind === "loading") {
@@ -900,6 +1175,20 @@ function PlannerPage({
                   ? "Starting…"
                   : "Go"}
             </button>
+          ) : trip.execution_state === "active" ? (
+            <>
+              <button
+                className="button-link"
+                type="button"
+                onClick={stopTrip}
+                disabled={deactivationState.kind === "submitting"}
+              >
+                {deactivationState.kind === "submitting"
+                  ? "Stopping…"
+                  : "Stop trip"}
+              </button>
+              <span className="state-pill state-active">active</span>
+            </>
           ) : (
             <span className={`state-pill state-${trip.execution_state}`}>
               {trip.execution_state}
@@ -908,6 +1197,16 @@ function PlannerPage({
           <Link className="button-link" to="/trips">
             Back to trips
           </Link>
+          {trip.execution_state === "inactive" ? (
+            <button
+              className="button-link danger-link"
+              type="button"
+              onClick={() => void deleteInactiveTrip()}
+              disabled={deleteState.kind === "deleting"}
+            >
+              {deleteState.kind === "deleting" ? "Deleting…" : "Delete trip"}
+            </button>
+          ) : null}
         </div>
       </header>
       {trip.execution_state === "inactive" &&
@@ -921,6 +1220,16 @@ function PlannerPage({
       {activationState.kind === "error" ? (
         <p className="form-error" role="alert">
           {activationState.message}
+        </p>
+      ) : null}
+      {deactivationState.kind === "error" ? (
+        <p className="form-error" role="alert">
+          {deactivationState.message}
+        </p>
+      ) : null}
+      {deleteState.kind === "error" ? (
+        <p className="form-error" role="alert">
+          {deleteState.message}
         </p>
       ) : null}
       {trip.execution_state === "active" ? (
@@ -1033,26 +1342,188 @@ function PlannerPage({
             <p className="eyebrow">Your stops</p>
             <h2 id="activities-title">Activities</h2>
           </div>
-          <span>{trip.saved_plan.activities.length}</span>
+          <span>
+            {trip.execution_state === "inactive"
+              ? draftActivities.length
+              : trip.saved_plan.activities.length}
+          </span>
         </div>
-        <ol className="planner-activity-list">
-          {trip.saved_plan.activities.map((activity) => (
-            <li key={activity.activity_id} className="planner-activity">
-              <span className="trip-icon" aria-hidden="true">
-                {activity.ordinal + 1}
-              </span>
-              <span>
-                <strong>{activity.place.display_name}</strong>
-                <small>
-                  {activity.schedule.state === "scheduled"
-                    ? `${formatOffset(activity.schedule.start_offset_ms)} – ${formatOffset(activity.schedule.end_offset_ms)}`
-                    : "Unscheduled"}
-                </small>
-              </span>
-              <span className="state-pill">{activity.inbound_travel_mode}</span>
-            </li>
-          ))}
-        </ol>
+        {trip.execution_state === "inactive" ? (
+          <>
+            <div className="form-grid">
+              <label className="field-label" htmlFor="saved-trip-name">
+                Trip name
+                <input
+                  id="saved-trip-name"
+                  className="text-input"
+                  value={draftTripName}
+                  maxLength={120}
+                  onChange={(event) => setDraftTripName(event.target.value)}
+                />
+              </label>
+              <label className="field-label" htmlFor="saved-trip-time-zone">
+                Trip timezone
+                <input
+                  id="saved-trip-time-zone"
+                  className="text-input"
+                  value={draftTimeZoneName}
+                  onChange={(event) => setDraftTimeZoneName(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="editor-group">
+              <label className="check-field">
+                <input
+                  type="checkbox"
+                  checked={draftDisplaySchedule !== null}
+                  onChange={(event) =>
+                    setDraftDisplaySchedule(
+                      event.target.checked
+                        ? {
+                            local_date: "",
+                            local_time: "09:00:00",
+                            time_zone_name: draftTimeZoneName,
+                          }
+                        : null,
+                    )
+                  }
+                />
+                Add a display-only date and time
+              </label>
+              {draftDisplaySchedule ? (
+                <div className="form-grid">
+                  <label className="field-label">
+                    Display date
+                    <input
+                      className="text-input"
+                      type="date"
+                      value={draftDisplaySchedule.local_date}
+                      onChange={(event) =>
+                        setDraftDisplaySchedule({
+                          ...draftDisplaySchedule,
+                          local_date: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="field-label">
+                    Display time
+                    <input
+                      className="text-input"
+                      type="time"
+                      step={1}
+                      value={displayTimeInput(draftDisplaySchedule.local_time)}
+                      onChange={(event) =>
+                        setDraftDisplaySchedule({
+                          ...draftDisplaySchedule,
+                          local_time: displayTimeValue(event.target.value),
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="field-label">
+                    Display timezone
+                    <input
+                      className="text-input"
+                      value={draftDisplaySchedule.time_zone_name}
+                      onChange={(event) =>
+                        setDraftDisplaySchedule({
+                          ...draftDisplaySchedule,
+                          time_zone_name: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </div>
+            <div className="planner-editor-list">
+              {draftActivities.map((editable, index) => (
+                <div
+                  className="planner-editor-item"
+                  key={editable.activityId ?? editable.place.place_id}
+                >
+                  <div className="place-confirmation">
+                    <strong>{editable.place.display_name}</strong>
+                    <small>
+                      <span>
+                        {editable.input.schedule.state === "scheduled"
+                          ? `${formatOffset(editable.input.schedule.start_offset_ms)} – ${formatOffset(editable.input.schedule.end_offset_ms)}`
+                          : "Unscheduled"}
+                      </span>
+                      {" · "}
+                      {editable.place.time_zone_name}
+                    </small>
+                  </div>
+                  <ActivityEditor
+                    value={{ ...editable.input, ordinal: index }}
+                    onChange={(input) =>
+                      setDraftActivities((current) =>
+                        current.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? {
+                                ...candidate,
+                                input: { ...input, ordinal: index },
+                              }
+                            : candidate,
+                        ),
+                      )
+                    }
+                    title={`Review stop ${index + 1}`}
+                  />
+                  <button
+                    className="button-link danger-link"
+                    type="button"
+                    onClick={() => removeDraftActivity(index)}
+                    disabled={draftActivities.length <= 1}
+                  >
+                    Remove stop
+                  </button>
+                </div>
+              ))}
+            </div>
+            <PlaceSearch
+              key={draftActivities.length}
+              api={api}
+              csrfToken={csrfToken}
+              onPlaceConfirmed={addDraftPlace}
+            />
+            {editState.kind === "error" ? (
+              <p className="form-error" role="alert">
+                {editState.message}
+              </p>
+            ) : null}
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void saveInactiveTrip()}
+              disabled={editState.kind === "saving"}
+            >
+              {editState.kind === "saving" ? "Saving changes…" : "Save changes"}
+            </button>
+          </>
+        ) : (
+          <ol className="planner-activity-list">
+            {trip.saved_plan.activities.map((activity) => (
+              <li key={activity.activity_id} className="planner-activity">
+                <span className="trip-icon" aria-hidden="true">
+                  {activity.ordinal + 1}
+                </span>
+                <span>
+                  <strong>{activity.place.display_name}</strong>
+                  <small>
+                    {activity.schedule.state === "scheduled"
+                      ? `${formatOffset(activity.schedule.start_offset_ms)} – ${formatOffset(activity.schedule.end_offset_ms)}`
+                      : "Unscheduled"}
+                  </small>
+                </span>
+                <span className="state-pill">
+                  {activity.inbound_travel_mode}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
       </section>
       <MapPreview
         trip={trip}
@@ -1060,13 +1531,6 @@ function PlannerPage({
         onCanonicalRoutes={setCanonicalRoutes}
         routeOverride={routeOverride}
       />
-      <div className="empty-state planner-coming-soon">
-        <h3>Map and editing are next</h3>
-        <p>
-          Place search, route preview, and saved-plan editing will use this
-          canonical trip data.
-        </p>
-      </div>
     </main>
   );
 }
@@ -1078,44 +1542,62 @@ function formatOffset(offsetMs: number): string {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
-function formatActivityDuration(seconds: number): string {
-  if (seconds % 3600 === 0) return String(seconds / 3600) + " hour(s)";
-  if (seconds % 60 === 0) return String(seconds / 60) + " minutes";
-  return String(seconds) + " seconds";
-}
-
 export function NewTripPage({
   api,
   csrfToken,
   defaultTimeZoneName,
+  onTripsChanged,
 }: {
   api: LiveRouteApi;
   csrfToken: string;
   defaultTimeZoneName: string;
+  onTripsChanged: () => Promise<void>;
 }): ReactNode {
   const navigate = useNavigate();
   const [tripName, setTripName] = useState("");
   const [tripTimeZoneName, setTripTimeZoneName] = useState(defaultTimeZoneName);
-  const [draftActivity, setDraftActivity] = useState<{
-    place: Place;
-    input: ActivityInput;
-  } | null>(null);
+  const [displaySchedule, setDisplaySchedule] =
+    useState<DisplaySchedule | null>(null);
+  const [draftActivities, setDraftActivities] = useState<EditableActivity[]>(
+    [],
+  );
   const [saveState, setSaveState] = useState<
     { kind: "idle" } | { kind: "saving" } | { kind: "error"; message: string }
   >({ kind: "idle" });
 
   const saveTrip = async (): Promise<void> => {
-    if (!tripName.trim() || !draftActivity || !tripTimeZoneName.trim()) {
+    if (
+      !tripName.trim() ||
+      draftActivities.length === 0 ||
+      !tripTimeZoneName.trim()
+    ) {
+      return;
+    }
+    if (
+      displaySchedule !== null &&
+      (!/^\d{4}-\d{2}-\d{2}$/.test(displaySchedule.local_date) ||
+        !/^\d{2}:\d{2}:\d{2}$/.test(displaySchedule.local_time) ||
+        !displaySchedule.time_zone_name.trim())
+    ) {
+      setSaveState({
+        kind: "error",
+        message: "Complete the display date, time, and timezone first.",
+      });
       return;
     }
     setSaveState({ kind: "saving" });
     const request: CreateTripRequest = {
       trip_name: tripName.trim(),
       default_time_zone_name: tripTimeZoneName.trim(),
-      activities: [draftActivity.input],
+      ...(displaySchedule ? { display_schedule: displaySchedule } : {}),
+      activities: draftActivities.map(({ input }, ordinal) => ({
+        ...input,
+        ordinal,
+      })),
     };
     try {
       const createdTrip = await api.createTrip(request, csrfToken);
+      void onTripsChanged();
       void navigate("/planner/" + createdTrip.trip_id);
     } catch (error: unknown) {
       setSaveState({
@@ -1173,40 +1655,139 @@ export function NewTripPage({
           Initialized from your stored default; you can change it for this trip.
         </p>
         <p className="configuration-note">Trip timezone: {tripTimeZoneName}</p>
-        {draftActivity ? (
-          <div className="place-confirmation" role="status">
-            <p className="eyebrow">Confirmed destination</p>
-            <strong>{draftActivity.place.display_name}</strong>
-            <small>
-              {draftActivity.input.inbound_travel_mode} ·{" "}
-              {formatActivityDuration(
-                draftActivity.input.timing.preferred_duration_seconds,
-              )}{" "}
-              · {draftActivity.input.activity_class} ·{" "}
-              {draftActivity.input.timing.can_skip
-                ? "skippable"
-                : "not skippable"}{" "}
-              · {draftActivity.place.time_zone_name}
-            </small>
-          </div>
+        <div className="editor-group">
+          <label className="check-field">
+            <input
+              type="checkbox"
+              checked={displaySchedule !== null}
+              onChange={(event) =>
+                setDisplaySchedule(
+                  event.target.checked
+                    ? {
+                        local_date: "",
+                        local_time: "09:00:00",
+                        time_zone_name: tripTimeZoneName,
+                      }
+                    : null,
+                )
+              }
+            />
+            Add a display-only date and time
+          </label>
+          {displaySchedule ? (
+            <div className="form-grid">
+              <label className="field-label">
+                Display date
+                <input
+                  className="text-input"
+                  type="date"
+                  value={displaySchedule.local_date}
+                  onChange={(event) =>
+                    setDisplaySchedule({
+                      ...displaySchedule,
+                      local_date: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <label className="field-label">
+                Display time
+                <input
+                  className="text-input"
+                  type="time"
+                  step={1}
+                  value={displayTimeInput(displaySchedule.local_time)}
+                  onChange={(event) =>
+                    setDisplaySchedule({
+                      ...displaySchedule,
+                      local_time: displayTimeValue(event.target.value),
+                    })
+                  }
+                />
+              </label>
+              <label className="field-label">
+                Display timezone
+                <input
+                  className="text-input"
+                  value={displaySchedule.time_zone_name}
+                  onChange={(event) =>
+                    setDisplaySchedule({
+                      ...displaySchedule,
+                      time_zone_name: event.target.value,
+                    })
+                  }
+                />
+              </label>
+            </div>
+          ) : null}
+        </div>
+        {draftActivities.length > 0 ? (
+          <ol className="planner-activity-list">
+            {draftActivities.map((activity, index) => (
+              <li className="planner-activity" key={activity.place.place_id}>
+                <span className="trip-icon" aria-hidden="true">
+                  {index + 1}
+                </span>
+                <span>
+                  <strong>{activity.place.display_name}</strong>
+                  <small>{activity.place.time_zone_name}</small>
+                </span>
+              </li>
+            ))}
+          </ol>
         ) : null}
       </section>
       <PlaceSearch
+        key={draftActivities.length}
         api={api}
         csrfToken={csrfToken}
         onPlaceConfirmed={(place) =>
-          setDraftActivity({
-            place,
-            input: createDefaultActivity(place.place_id, 0),
-          })
+          setDraftActivities((current) => [
+            ...current,
+            {
+              place,
+              input: createDefaultActivity(place.place_id, current.length),
+            },
+          ])
         }
       />
-      {draftActivity ? (
-        <ActivityEditor
-          value={draftActivity.input}
-          onChange={(input) => setDraftActivity({ ...draftActivity, input })}
-        />
-      ) : null}
+      {draftActivities.map((activity, index) => (
+        <div
+          className="planner-editor-item"
+          key={activity.place.place_id + "-" + index}
+        >
+          <ActivityEditor
+            value={{ ...activity.input, ordinal: index }}
+            onChange={(input) =>
+              setDraftActivities((current) =>
+                current.map((candidate, candidateIndex) =>
+                  candidateIndex === index
+                    ? { ...candidate, input: { ...input, ordinal: index } }
+                    : candidate,
+                ),
+              )
+            }
+            title={`Review stop ${index + 1}`}
+          />
+          <button
+            className="button-link danger-link"
+            type="button"
+            onClick={() =>
+              setDraftActivities((current) =>
+                current
+                  .filter((_, candidateIndex) => candidateIndex !== index)
+                  .map((candidate, ordinal) => ({
+                    ...candidate,
+                    input: { ...candidate.input, ordinal },
+                  })),
+              )
+            }
+            disabled={draftActivities.length <= 1}
+          >
+            Remove stop
+          </button>
+        </div>
+      ))}
       <div className="empty-state planner-coming-soon">
         <h3>Save your inactive trip</h3>
         <p>
@@ -1225,7 +1806,7 @@ export function NewTripPage({
           disabled={
             !tripName.trim() ||
             !tripTimeZoneName.trim() ||
-            !draftActivity ||
+            draftActivities.length === 0 ||
             saveState.kind === "saving"
           }
           onClick={() => void saveTrip()}
@@ -1241,12 +1822,34 @@ function AppShell({
   session,
   trips,
   api,
+  onTripsChanged,
+  onSignedOut,
 }: {
   session: Session;
   trips: TripList;
   api: LiveRouteApi;
+  onTripsChanged: () => Promise<void>;
+  onSignedOut: () => Promise<void>;
 }): ReactNode {
   const active = trips.current_execution_trip !== undefined;
+  const [signOutState, setSignOutState] = useState<
+    | { kind: "idle" }
+    | { kind: "submitting" }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  const signOut = async (): Promise<void> => {
+    setSignOutState({ kind: "submitting" });
+    try {
+      await onSignedOut();
+    } catch (error: unknown) {
+      setSignOutState({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Sign out failed.",
+      });
+    }
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -1270,7 +1873,20 @@ function AppShell({
             <strong>{session.user.display_name}</strong>
             <small>Signed in</small>
           </div>
+          <button
+            className="button-link user-sign-out"
+            type="button"
+            onClick={() => void signOut()}
+            disabled={signOutState.kind === "submitting"}
+          >
+            {signOutState.kind === "submitting" ? "Signing out…" : "Sign out"}
+          </button>
         </div>
+        {signOutState.kind === "error" ? (
+          <p className="sidebar-error" role="alert">
+            {signOutState.message}
+          </p>
+        ) : null}
       </aside>
       <div className="app-content">
         <Routes>
@@ -1282,6 +1898,7 @@ function AppShell({
                 api={api}
                 csrfToken={session.csrf_token}
                 defaultTimeZoneName={session.user.default_time_zone_name}
+                onTripsChanged={onTripsChanged}
               />
             }
           />
@@ -1289,9 +1906,9 @@ function AppShell({
             path="/live"
             element={
               active ? (
-                <PlaceholderPage
-                  title="Live trip"
-                  detail="Live execution will connect after activation and WebSocket-ticket handling are implemented."
+                <Navigate
+                  to={`/planner/${trips.current_execution_trip!.trip_id}`}
+                  replace
                 />
               ) : (
                 <Navigate to="/trips" replace />
@@ -1309,10 +1926,12 @@ function PlannerRoute({
   api,
   csrfToken,
   defaultTimeZoneName,
+  onTripsChanged,
 }: {
   api: LiveRouteApi;
   csrfToken: string;
   defaultTimeZoneName: string;
+  onTripsChanged: () => Promise<void>;
 }): ReactNode {
   const { tripId } = useParams();
   if (tripId === "new") {
@@ -1321,11 +1940,17 @@ function PlannerRoute({
         api={api}
         csrfToken={csrfToken}
         defaultTimeZoneName={defaultTimeZoneName}
+        onTripsChanged={onTripsChanged}
       />
     );
   }
   return tripId ? (
-    <PlannerPage api={api} tripId={tripId} csrfToken={csrfToken} />
+    <PlannerPage
+      api={api}
+      tripId={tripId}
+      csrfToken={csrfToken}
+      onTripsChanged={onTripsChanged}
+    />
   ) : (
     <Navigate to="/trips" replace />
   );
@@ -1334,6 +1959,18 @@ function PlannerRoute({
 export function AppRoutes({ api = liveRouteApi }: AppRoutesProps): ReactNode {
   const [state, setState] = useState<AppState>({ phase: "loading" });
   const [attempt, setAttempt] = useState(0);
+
+  const refreshTrips = useCallback(async (): Promise<void> => {
+    try {
+      const trips = await api.listTrips();
+      setState((current) =>
+        current.phase === "ready" ? { ...current, trips } : current,
+      );
+    } catch {
+      // The action that caused the refresh already reports its own result.
+      // Keep the last known navigation state if a background refresh fails.
+    }
+  }, [api]);
 
   const retry = useCallback(() => {
     setState({ phase: "loading" });
@@ -1361,6 +1998,12 @@ export function AppRoutes({ api = liveRouteApi }: AppRoutesProps): ReactNode {
     },
     [api],
   );
+
+  const signedOut = useCallback(async (): Promise<void> => {
+    if (state.phase !== "ready") return;
+    await api.logout(state.session.csrf_token);
+    setState({ phase: "anonymous" });
+  }, [api, state]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1393,7 +2036,15 @@ export function AppRoutes({ api = liveRouteApi }: AppRoutesProps): ReactNode {
     return <SignedOutScreen api={api} onAuthenticated={authenticated} />;
   if (state.phase === "error")
     return <ErrorScreen message={state.message} retry={retry} />;
-  return <AppShell api={api} session={state.session} trips={state.trips} />;
+  return (
+    <AppShell
+      api={api}
+      session={state.session}
+      trips={state.trips}
+      onTripsChanged={refreshTrips}
+      onSignedOut={signedOut}
+    />
+  );
 }
 
 export function App(): ReactNode {

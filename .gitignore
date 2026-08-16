@@ -10,6 +10,7 @@ out/
 # Local credentials
 /secrets/
 /.env
+/.env*
 /.env.*
 !/.env.example
 /frontend/.env

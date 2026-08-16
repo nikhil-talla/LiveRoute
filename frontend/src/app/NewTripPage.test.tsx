@@ -50,6 +50,7 @@ describe("NewTripPage", () => {
           api={api}
           csrfToken="csrf-token"
           defaultTimeZoneName="America/New_York"
+          onTripsChanged={async () => undefined}
         />
       </MemoryRouter>,
     );
@@ -59,6 +60,13 @@ describe("NewTripPage", () => {
     });
     fireEvent.change(screen.getByLabelText("Trip timezone"), {
       target: { value: "America/Chicago" },
+    });
+    fireEvent.click(screen.getByLabelText("Add a display-only date and time"));
+    fireEvent.change(screen.getByLabelText("Display date"), {
+      target: { value: "2026-08-20" },
+    });
+    fireEvent.change(screen.getByLabelText("Display time"), {
+      target: { value: "09:30" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Confirm test place" }));
     fireEvent.change(screen.getByLabelText("Travel mode"), {
@@ -71,6 +79,11 @@ describe("NewTripPage", () => {
       expect.objectContaining({
         trip_name: "Saturday in Providence",
         default_time_zone_name: "America/Chicago",
+        display_schedule: {
+          local_date: "2026-08-20",
+          local_time: "09:30:00",
+          time_zone_name: "America/Chicago",
+        },
         activities: [
           expect.objectContaining({
             place_id: "11111111-1111-4111-8111-111111111111",

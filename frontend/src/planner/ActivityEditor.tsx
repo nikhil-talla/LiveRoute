@@ -5,6 +5,7 @@ import type { ActivityInput } from "../api/types";
 interface ActivityEditorProps {
   value: ActivityInput;
   onChange: (value: ActivityInput) => void;
+  title?: string;
 }
 
 function numberValue(event: ChangeEvent<HTMLInputElement>): number {
@@ -27,6 +28,7 @@ function formatDuration(seconds: number): string {
 export function ActivityEditor({
   value,
   onChange,
+  title = "Review this stop",
 }: ActivityEditorProps): ReactNode {
   const update = (changes: Partial<ActivityInput>): void => {
     onChange({ ...value, ...changes });
@@ -74,12 +76,12 @@ export function ActivityEditor({
   return (
     <section
       className="trip-section activity-editor"
-      aria-labelledby="activity-settings-title"
+      aria-labelledby={`activity-settings-title-${value.ordinal}`}
     >
       <div className="section-heading">
         <div>
           <p className="eyebrow">Activity settings</p>
-          <h2 id="activity-settings-title">Review this stop</h2>
+          <h2 id={`activity-settings-title-${value.ordinal}`}>{title}</h2>
         </div>
         <span aria-label="Activity number">{value.ordinal + 1}</span>
       </div>

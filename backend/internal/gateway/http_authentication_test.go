@@ -52,3 +52,24 @@ func TestHTTPAuthHandlerProtectsTripListWithSessionAuthentication(t *testing.T) 
 		t.Fatalf("status=%d, want unauthorized", response.Code)
 	}
 }
+
+func TestParseTripETagIsExact(t *testing.T) {
+	for raw, expected := range map[string]uint64{
+		`"trip-revision-0"`:                    0,
+		`"trip-revision-1"`:                    1,
+		`"trip-revision-18446744073709551615"`: ^uint64(0),
+	} {
+		actual, ok := parseTripETag(raw)
+		if !ok || actual != expected {
+			t.Fatalf("parseTripETag(%q)=(%d,%t), want (%d,true)", raw, actual, ok, expected)
+		}
+	}
+	for _, raw := range []string{
+		"", "trip-revision-1", `"trip-revision-01"`, `"trip-revision--1"`,
+		`"trip-revision-18446744073709551616"`, `W/"trip-revision-1"`,
+	} {
+		if _, ok := parseTripETag(raw); ok {
+			t.Fatalf("invalid ETag accepted: %q", raw)
+		}
+	}
+}

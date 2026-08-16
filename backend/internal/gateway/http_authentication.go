@@ -10,12 +10,14 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/liveroute/liveroute/backend/internal/auth"
 	"github.com/liveroute/liveroute/backend/internal/canonicaljson"
 	"github.com/liveroute/liveroute/backend/internal/persistence"
+	"github.com/liveroute/liveroute/backend/internal/place"
 )
 
 const (
@@ -27,12 +29,15 @@ const (
 )
 
 type HTTPAuthConfig struct {
-	Store          *persistence.HTTPAuthStore
-	Trips          *persistence.SavedTripStore
-	GoogleVerifier *auth.GoogleVerifier
-	AllowedOrigins []string
-	SecureCookies  bool
-	FrontendOrigin string
+	Store             *persistence.HTTPAuthStore
+	Trips             *persistence.SavedTripStore
+	Places            *persistence.PlaceStore
+	StartActivation   func(tripID, operationID string)
+	StartDeactivation func(tripID, operationID string)
+	GoogleVerifier    *auth.GoogleVerifier
+	AllowedOrigins    []string
+	SecureCookies     bool
+	FrontendOrigin    string
 }
 
 type HTTPAuthHandler struct {
@@ -94,6 +99,18 @@ func (handler *HTTPAuthHandler) ServeHTTP(writer http.ResponseWriter, request *h
 			return
 		}
 		handler.listTrips(writer, request)
+	case "/places/resolve":
+		if request.Method != http.MethodPost {
+			handler.problem(writer, request, http.StatusMethodNotAllowed, "INVALID_ARGUMENT", false, "method not allowed")
+			return
+		}
+		handler.resolvePlace(writer, request)
+	case "/places":
+		if request.Method != http.MethodPost {
+			handler.problem(writer, request, http.StatusMethodNotAllowed, "INVALID_ARGUMENT", false, "method not allowed")
+			return
+		}
+		handler.createPlace(writer, request)
 	case "/auth/logout":
 		if request.Method != http.MethodPost {
 			handler.problem(writer, request, http.StatusMethodNotAllowed, "INVALID_ARGUMENT", false, "method not allowed")
@@ -107,16 +124,481 @@ func (handler *HTTPAuthHandler) ServeHTTP(writer http.ResponseWriter, request *h
 		}
 		handler.createWebSocketTicket(writer, request)
 	default:
-		if strings.HasPrefix(path, "/trips/") {
-			if request.Method != http.MethodGet {
+		segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+		if len(segments) == 2 && segments[0] == "trips" {
+			tripID := segments[1]
+			switch request.Method {
+			case http.MethodGet:
+				handler.getTrip(writer, request, tripID)
+			case http.MethodPatch:
+				handler.updateTrip(writer, request, tripID)
+			case http.MethodDelete:
+				handler.deleteTrip(writer, request, tripID)
+			default:
 				handler.problem(writer, request, http.StatusMethodNotAllowed, "INVALID_ARGUMENT", false, "method not allowed")
-				return
 			}
-			handler.getTrip(writer, request, strings.TrimPrefix(path, "/trips/"))
+			return
+		}
+		if len(segments) == 3 && segments[0] == "trips" &&
+			(segments[2] == "activate" || segments[2] == "deactivate") &&
+			request.Method == http.MethodPost {
+			if segments[2] == "activate" {
+				handler.activateTrip(writer, request, segments[1])
+			} else {
+				handler.deactivateTrip(writer, request, segments[1])
+			}
+			return
+		}
+		if len(segments) == 3 && segments[0] == "trips" && segments[2] == "activities" && request.Method == http.MethodPost {
+			handler.mutateTripActivity(writer, request, segments[1], "", "add")
+			return
+		}
+		if len(segments) == 4 && segments[0] == "trips" && segments[2] == "activities" {
+			switch request.Method {
+			case http.MethodPatch:
+				handler.mutateTripActivity(writer, request, segments[1], segments[3], "replace")
+			case http.MethodDelete:
+				handler.mutateTripActivity(writer, request, segments[1], segments[3], "delete")
+			default:
+				handler.problem(writer, request, http.StatusMethodNotAllowed, "INVALID_ARGUMENT", false, "method not allowed")
+			}
 			return
 		}
 		handler.problem(writer, request, http.StatusNotFound, "NOT_FOUND", false, "resource not found")
 	}
+}
+
+type activationCoordinateJSON struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+}
+
+type activateTripJSON struct {
+	StartingLocation *activationCoordinateJSON `json:"starting_location"`
+}
+
+func (handler *HTTPAuthHandler) activateTrip(writer http.ResponseWriter, request *http.Request, tripID string) {
+	session, key, revision, ifMatch, ok := handler.admitTripMutation(writer, request, tripID, true)
+	if !ok {
+		return
+	}
+	var body activateTripJSON
+	if err := decodeJSON(request, &body); err != nil || body.StartingLocation == nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "starting_location is required")
+		return
+	}
+	path := "/api/v1/trips/" + tripID + "/activate"
+	_, digest, err := canonicalHTTPIdentity(http.MethodPost, path, ifMatch, body)
+	if err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "activation request is invalid")
+		return
+	}
+	result, err := handler.config.Trips.Activate(request.Context(), persistence.ActivateSavedTripRequest{
+		UserID: session.User.ID, TripID: tripID, IdempotencyKey: key,
+		ExpectedRevision: revision, RequestDigest: digest,
+		StartingLatitude: body.StartingLocation.Latitude, StartingLongitude: body.StartingLocation.Longitude,
+	})
+	if handler.handleTripMutationError(writer, request, err) {
+		return
+	}
+	if handler.config.StartActivation != nil &&
+		(!result.Duplicate || result.Transition.Operation.State == "pending") {
+		handler.config.StartActivation(tripID, result.Transition.Operation.OperationID)
+	}
+	writer.Header().Set("ETag", `"trip-revision-`+result.Transition.Trip.TripRevision+`"`)
+	handler.writeJSON(writer, http.StatusAccepted, result.Transition)
+}
+
+func (handler *HTTPAuthHandler) deactivateTrip(writer http.ResponseWriter, request *http.Request, tripID string) {
+	session, key, revision, ifMatch, ok := handler.admitTripMutation(writer, request, tripID, false)
+	if !ok {
+		return
+	}
+	if request.Body != nil {
+		limited, err := io.ReadAll(io.LimitReader(request.Body, 1))
+		if err != nil || len(limited) != 0 {
+			handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "deactivation request body is not allowed")
+			return
+		}
+	}
+	path := "/api/v1/trips/" + tripID + "/deactivate"
+	_, digest, err := canonicalHTTPIdentity(http.MethodPost, path, ifMatch, nil)
+	if err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "deactivation request is invalid")
+		return
+	}
+	result, err := handler.config.Trips.Deactivate(request.Context(), persistence.DeactivateSavedTripRequest{
+		UserID: session.User.ID, TripID: tripID, IdempotencyKey: key,
+		ExpectedRevision: revision, RequestDigest: digest,
+	})
+	if handler.handleTripMutationError(writer, request, err) {
+		return
+	}
+	if handler.config.StartDeactivation != nil &&
+		(!result.Duplicate || result.Transition.Operation.State == "pending") {
+		handler.config.StartDeactivation(tripID, result.Transition.Operation.OperationID)
+	}
+	writer.Header().Set("ETag", `"trip-revision-`+result.Transition.Trip.TripRevision+`"`)
+	handler.writeJSON(writer, http.StatusAccepted, result.Transition)
+}
+
+func (handler *HTTPAuthHandler) mutateTripActivity(writer http.ResponseWriter, request *http.Request, tripID, activityID, kind string) {
+	requireJSON := kind != "delete"
+	session, key, revision, ifMatch, ok := handler.admitTripMutation(writer, request, tripID, requireJSON)
+	if !ok {
+		return
+	}
+	if kind != "add" && !validHTTPUUID(activityID) {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "activity id is invalid")
+		return
+	}
+	path := "/api/v1/trips/" + tripID + "/activities"
+	method := http.MethodPost
+	var activity *persistence.SavedActivityInput
+	var identityBody any
+	if kind != "delete" {
+		var body persistence.SavedActivityInput
+		if err := decodeJSON(request, &body); err != nil {
+			handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "activity is invalid")
+			return
+		}
+		activity, identityBody = &body, body
+	} else {
+		if request.Body != nil {
+			limited, err := io.ReadAll(io.LimitReader(request.Body, 1))
+			if err != nil || len(limited) != 0 {
+				handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "DELETE request body is not allowed")
+				return
+			}
+		}
+	}
+	if kind != "add" {
+		path += "/" + activityID
+		if kind == "replace" {
+			method = http.MethodPatch
+		} else {
+			method = http.MethodDelete
+		}
+	}
+	_, digest, err := canonicalHTTPIdentity(method, path, ifMatch, identityBody)
+	if err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "activity mutation is invalid")
+		return
+	}
+	mutation := persistence.SavedActivityMutationRequest{
+		UserID: session.User.ID, TripID: tripID, ActivityID: activityID, IdempotencyKey: key,
+		ExpectedRevision: revision, RequestDigest: digest, Activity: activity,
+	}
+	var result persistence.MutatedSavedTrip
+	if kind == "add" {
+		result, err = handler.config.Trips.AddActivity(request.Context(), mutation)
+	} else if kind == "replace" {
+		result, err = handler.config.Trips.ReplaceActivity(request.Context(), mutation)
+	} else {
+		result, err = handler.config.Trips.DeleteActivity(request.Context(), mutation)
+	}
+	if handler.handleTripMutationError(writer, request, err) {
+		return
+	}
+	writer.Header().Set("ETag", `"trip-revision-`+result.Trip.TripRevision+`"`)
+	status := http.StatusOK
+	if kind == "add" {
+		status = http.StatusCreated
+	}
+	handler.writeJSON(writer, status, result.Trip)
+}
+
+func (handler *HTTPAuthHandler) updateTrip(writer http.ResponseWriter, request *http.Request, tripID string) {
+	session, key, revision, ifMatch, ok := handler.admitTripMutation(writer, request, tripID, true)
+	if !ok {
+		return
+	}
+	var body persistence.UpdateSavedTripRequest
+	if err := decodeJSON(request, &body); err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "trip update is invalid")
+		return
+	}
+	_, digest, err := canonicalHTTPIdentity(http.MethodPatch, "/api/v1/trips/"+tripID, ifMatch, body)
+	if err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "trip update is invalid")
+		return
+	}
+	body.UserID, body.TripID, body.IdempotencyKey = session.User.ID, tripID, key
+	body.ExpectedRevision, body.RequestDigest = revision, digest
+	result, err := handler.config.Trips.Update(request.Context(), body)
+	if handler.handleTripMutationError(writer, request, err) {
+		return
+	}
+	writer.Header().Set("ETag", `"trip-revision-`+result.Trip.TripRevision+`"`)
+	handler.writeJSON(writer, http.StatusOK, result.Trip)
+}
+
+func (handler *HTTPAuthHandler) deleteTrip(writer http.ResponseWriter, request *http.Request, tripID string) {
+	session, key, revision, ifMatch, ok := handler.admitTripMutation(writer, request, tripID, false)
+	if !ok {
+		return
+	}
+	if request.Body != nil {
+		limited, err := io.ReadAll(io.LimitReader(request.Body, 1))
+		if err != nil || len(limited) != 0 {
+			handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "DELETE request body is not allowed")
+			return
+		}
+	}
+	_, digest, err := canonicalHTTPIdentity(http.MethodDelete, "/api/v1/trips/"+tripID, ifMatch, nil)
+	if err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "trip deletion is invalid")
+		return
+	}
+	_, err = handler.config.Trips.Delete(request.Context(), persistence.DeleteSavedTripRequest{
+		UserID: session.User.ID, TripID: tripID, IdempotencyKey: key,
+		ExpectedRevision: revision, RequestDigest: digest,
+	})
+	if handler.handleTripMutationError(writer, request, err) {
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (handler *HTTPAuthHandler) admitTripMutation(writer http.ResponseWriter, request *http.Request, tripID string, requireJSON bool) (persistence.Session, string, uint64, string, bool) {
+	if !handler.checkOrigin(writer, request) {
+		return persistence.Session{}, "", 0, "", false
+	}
+	session, ok := handler.authenticateSession(writer, request, true)
+	if !ok {
+		return persistence.Session{}, "", 0, "", false
+	}
+	if handler.config.Trips == nil {
+		handler.problem(writer, request, http.StatusServiceUnavailable, "DURABILITY_UNAVAILABLE", true, "trip storage is not configured")
+		return persistence.Session{}, "", 0, "", false
+	}
+	if !validHTTPUUID(tripID) || strings.Contains(tripID, "/") {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "trip id is invalid")
+		return persistence.Session{}, "", 0, "", false
+	}
+	if request.URL.RawQuery != "" {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "query parameters are not allowed")
+		return persistence.Session{}, "", 0, "", false
+	}
+	key := request.Header.Get("Idempotency-Key")
+	if !validHTTPUUID(key) {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "Idempotency-Key is invalid")
+		return persistence.Session{}, "", 0, "", false
+	}
+	ifMatch := request.Header.Get("If-Match")
+	if ifMatch == "" {
+		handler.problem(writer, request, http.StatusPreconditionRequired, "PRECONDITION_REQUIRED", false, "If-Match is required")
+		return persistence.Session{}, "", 0, "", false
+	}
+	revision, valid := parseTripETag(ifMatch)
+	if !valid {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "If-Match is invalid")
+		return persistence.Session{}, "", 0, "", false
+	}
+	if requireJSON {
+		mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "Content-Type must be application/json")
+			return persistence.Session{}, "", 0, "", false
+		}
+	}
+	return session, key, revision, ifMatch, true
+}
+
+func (handler *HTTPAuthHandler) handleTripMutationError(writer http.ResponseWriter, request *http.Request, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, persistence.ErrSavedTripInput):
+		handler.problem(writer, request, http.StatusUnprocessableEntity, "INVALID_ARGUMENT", false, "trip mutation is invalid")
+	case errors.Is(err, persistence.ErrTripNotFound):
+		handler.problem(writer, request, http.StatusNotFound, "NOT_FOUND", false, "trip not found")
+	case errors.Is(err, persistence.ErrSavedActivityNotFound):
+		handler.problem(writer, request, http.StatusNotFound, "NOT_FOUND", false, "activity not found")
+	case errors.Is(err, persistence.ErrSavedTripNotInactive):
+		handler.problem(writer, request, http.StatusConflict, "CONFLICT", false, "trip must be inactive")
+	case errors.Is(err, persistence.ErrExecutionTripConflict):
+		handler.problem(writer, request, http.StatusConflict, "CONFLICT", false, "another trip is already executing")
+	case errors.Is(err, persistence.ErrActivationUnscheduled), errors.Is(err, persistence.ErrActivationOutsideDay):
+		handler.problem(writer, request, http.StatusUnprocessableEntity, "INVALID_ARGUMENT", false, "trip cannot be activated")
+	case errors.Is(err, persistence.ErrSavedTripNotExecuting):
+		handler.problem(writer, request, http.StatusConflict, "CONFLICT", false, "trip is not executing")
+	case errors.Is(err, persistence.ErrLeaseHeld):
+		handler.problem(writer, request, http.StatusConflict, "CONFLICT", true, "runtime lease is still held")
+	case errors.Is(err, persistence.ErrTripRevisionStale):
+		handler.problem(writer, request, http.StatusPreconditionFailed, "PRECONDITION_FAILED", false, "trip revision does not match")
+	case errors.Is(err, persistence.ErrHTTPIdempotencyReused):
+		handler.problem(writer, request, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", false, "Idempotency-Key was already used for a different request")
+	case errors.Is(err, persistence.ErrHTTPMutationPending):
+		handler.problem(writer, request, http.StatusServiceUnavailable, "DURABILITY_UNAVAILABLE", true, "trip mutation is still pending")
+	default:
+		handler.problem(writer, request, http.StatusServiceUnavailable, "DURABILITY_UNAVAILABLE", true, "trip mutation could not be saved")
+	}
+	return true
+}
+
+func parseTripETag(value string) (uint64, bool) {
+	const prefix = `"trip-revision-`
+	if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, `"`) {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(value, prefix), `"`)
+	if raw == "" || len(raw) > 20 || len(raw) > 1 && raw[0] == '0' {
+		return 0, false
+	}
+	result, err := strconv.ParseUint(raw, 10, 64)
+	return result, err == nil
+}
+
+func (handler *HTTPAuthHandler) resolvePlace(writer http.ResponseWriter, request *http.Request) {
+	session, idempotencyKey, ok := handler.admitPlaceMutation(writer, request)
+	if !ok {
+		return
+	}
+	var body struct {
+		Latitude  *float64 `json:"latitude"`
+		Longitude *float64 `json:"longitude"`
+	}
+	if err := decodeJSON(request, &body); err != nil || body.Latitude == nil || body.Longitude == nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "place coordinate is invalid")
+		return
+	}
+	coordinate := place.Coordinate{Latitude: *body.Latitude, Longitude: *body.Longitude}
+	if !place.ValidCoordinate(coordinate) {
+		handler.problem(writer, request, http.StatusUnprocessableEntity, "INVALID_ARGUMENT", false, "place coordinate is invalid")
+		return
+	}
+	identity, _, err := canonicalHTTPIdentity(http.MethodPost, "/api/v1/places/resolve", "", map[string]any{
+		"latitude": *body.Latitude, "longitude": *body.Longitude,
+	})
+	if err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "place coordinate is invalid")
+		return
+	}
+	result, err := handler.config.Places.Resolve(request.Context(), persistence.ResolvePlaceInput{
+		UserID: session.User.ID, IdempotencyKey: idempotencyKey, RequestIdentity: identity,
+		RequestID:  writer.Header().Get("X-Request-ID"),
+		Coordinate: coordinate,
+	})
+	if errors.Is(err, persistence.ErrHTTPIdempotencyReused) {
+		handler.problem(writer, request, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", false, "Idempotency-Key was already used for a different request")
+		return
+	}
+	if errors.Is(err, persistence.ErrHTTPMutationPending) {
+		handler.problem(writer, request, http.StatusServiceUnavailable, "PROVIDER_UNAVAILABLE", true, "place resolution outcome is unavailable; use a new key for another explicit attempt")
+		return
+	}
+	if errors.Is(err, persistence.ErrPlaceInput) {
+		handler.problem(writer, request, http.StatusUnprocessableEntity, "INVALID_ARGUMENT", false, "place coordinate is invalid")
+		return
+	}
+	if err != nil {
+		handler.problem(writer, request, http.StatusServiceUnavailable, "DURABILITY_UNAVAILABLE", true, "place resolution could not be recorded")
+		return
+	}
+	handler.writeStoredHTTPResult(writer, result)
+}
+
+func (handler *HTTPAuthHandler) createPlace(writer http.ResponseWriter, request *http.Request) {
+	session, idempotencyKey, ok := handler.admitPlaceMutation(writer, request)
+	if !ok {
+		return
+	}
+	var body struct {
+		ResolutionToken string `json:"resolution_token"`
+	}
+	if err := decodeJSON(request, &body); err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "place request is invalid")
+		return
+	}
+	_, digest, err := canonicalHTTPIdentity(http.MethodPost, "/api/v1/places", "", map[string]any{"resolution_token": body.ResolutionToken})
+	if err != nil {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "place request is invalid")
+		return
+	}
+	result, err := handler.config.Places.Create(request.Context(), persistence.CreatePlaceInput{
+		UserID: session.User.ID, IdempotencyKey: idempotencyKey, RequestDigest: digest,
+		ResolutionToken: body.ResolutionToken, RequestID: writer.Header().Get("X-Request-ID"),
+	})
+	if errors.Is(err, persistence.ErrHTTPIdempotencyReused) {
+		handler.problem(writer, request, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", false, "Idempotency-Key was already used for a different request")
+		return
+	}
+	if errors.Is(err, persistence.ErrHTTPMutationPending) {
+		handler.problem(writer, request, http.StatusServiceUnavailable, "DURABILITY_UNAVAILABLE", true, "place creation is still pending")
+		return
+	}
+	if errors.Is(err, persistence.ErrPlaceResolutionGone) {
+		handler.problem(writer, request, http.StatusGone, "NOT_FOUND", false, "place resolution has expired or was consumed")
+		return
+	}
+	if errors.Is(err, persistence.ErrPlaceInput) {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "place request is invalid")
+		return
+	}
+	if err != nil {
+		handler.problem(writer, request, http.StatusServiceUnavailable, "DURABILITY_UNAVAILABLE", true, "place could not be saved")
+		return
+	}
+	handler.writeStoredHTTPResult(writer, result)
+}
+
+func (handler *HTTPAuthHandler) admitPlaceMutation(writer http.ResponseWriter, request *http.Request) (persistence.Session, string, bool) {
+	if !handler.checkOrigin(writer, request) {
+		return persistence.Session{}, "", false
+	}
+	session, ok := handler.authenticateSession(writer, request, true)
+	if !ok {
+		return persistence.Session{}, "", false
+	}
+	if handler.config.Places == nil {
+		handler.problem(writer, request, http.StatusServiceUnavailable, "PROVIDER_UNAVAILABLE", true, "place resolution is not configured")
+		return persistence.Session{}, "", false
+	}
+	if request.URL.RawQuery != "" {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "query parameters are not allowed")
+		return persistence.Session{}, "", false
+	}
+	idempotencyKey := request.Header.Get("Idempotency-Key")
+	if !validHTTPUUID(idempotencyKey) {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "Idempotency-Key is invalid")
+		return persistence.Session{}, "", false
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		handler.problem(writer, request, http.StatusBadRequest, "INVALID_ARGUMENT", false, "Content-Type must be application/json")
+		return persistence.Session{}, "", false
+	}
+	return session, idempotencyKey, true
+}
+
+func canonicalHTTPIdentity(method, path, ifMatch string, body any) ([]byte, [sha256.Size]byte, error) {
+	rawBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, [sha256.Size]byte{}, err
+	}
+	raw, err := json.Marshal(struct {
+		Method      string          `json:"method"`
+		Path        string          `json:"path"`
+		IfMatch     string          `json:"if_match"`
+		ContentType string          `json:"content_type"`
+		Body        json.RawMessage `json:"body"`
+	}{Method: method, Path: path, IfMatch: ifMatch, ContentType: "application/json", Body: rawBody})
+	if err != nil {
+		return nil, [sha256.Size]byte{}, err
+	}
+	canonical, err := canonicaljson.Marshal(raw)
+	if err != nil {
+		return nil, [sha256.Size]byte{}, err
+	}
+	return canonical, sha256.Sum256(canonical), nil
+}
+
+func (handler *HTTPAuthHandler) writeStoredHTTPResult(writer http.ResponseWriter, result persistence.PlaceHTTPResult) {
+	writer.Header().Set("Content-Type", result.ContentType)
+	writer.WriteHeader(result.Status)
+	_, _ = writer.Write(result.Body)
 }
 
 func (handler *HTTPAuthHandler) createTrip(writer http.ResponseWriter, request *http.Request) {
