@@ -5,6 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { StrictMode } from "react";
 
 import type { LiveRouteApi } from "../api/client";
 import type { Session } from "../api/types";
@@ -85,11 +86,13 @@ describe("GoogleSignIn", () => {
     const onAuthenticated = vi.fn();
 
     render(
-      <GoogleSignIn
-        api={api({ authenticateWithGoogle })}
-        clientId="web-client.apps.googleusercontent.com"
-        onAuthenticated={onAuthenticated}
-      />,
+      <StrictMode>
+        <GoogleSignIn
+          api={api({ authenticateWithGoogle })}
+          clientId="web-client.apps.googleusercontent.com"
+          onAuthenticated={onAuthenticated}
+        />
+      </StrictMode>,
     );
 
     await screen.findByRole("button", { name: "Google account" });
@@ -114,5 +117,6 @@ describe("GoogleSignIn", () => {
       }),
     );
     expect(onAuthenticated).toHaveBeenCalledWith(session);
+    expect(initialize).toHaveBeenCalledTimes(1);
   });
 });

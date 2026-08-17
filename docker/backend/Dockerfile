@@ -29,6 +29,7 @@ RUN groupadd --system --gid 10001 liveroute \
     && useradd --system --uid 10001 --gid liveroute \
       --no-create-home --home-dir /nonexistent liveroute
 WORKDIR /app
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/liveroute-migrate /usr/local/bin/liveroute-migrate
 COPY --from=build /out/liveroute-admin /usr/local/bin/liveroute-admin
 COPY --from=build /out/liveroute-backend /usr/local/bin/liveroute-backend

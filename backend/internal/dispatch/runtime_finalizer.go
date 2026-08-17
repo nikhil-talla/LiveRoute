@@ -34,27 +34,27 @@ func (finalizer *RuntimeFinalizer) Finalize(
 	event *liveroutev1.ApplyTripEvent,
 	response *liveroutev1.PlannerStreamResponse,
 	ack *liveroutev1.EventAcknowledged,
-) error {
+) (persistence.FinalizedCommand, error) {
 	if ack.GetDisposition() == liveroutev1.EventDisposition_EVENT_DISPOSITION_ACCEPTED ||
 		ack.GetDisposition() == liveroutev1.EventDisposition_EVENT_DISPOSITION_DUPLICATE {
 		return finalizer.finalizeAccepted(ctx, row, event, response)
 	}
 	status, ok := terminalStatus(ack.GetStatus())
 	if !ok {
-		return errors.New("runtime acknowledgement is not terminal")
+		return persistence.FinalizedCommand{}, errors.New("runtime acknowledgement is not terminal")
 	}
 	outcome, err := stableOutcome(row.EventID, statusName(ack.GetStatus()), response.GetPlannerStateVersion())
 	if err != nil {
-		return err
+		return persistence.FinalizedCommand{}, err
 	}
 	if decision := event.GetPlanDecision(); decision != nil && ack.GetStatus() == liveroutev1.StatusCode_STATUS_CODE_STALE &&
 		ack.GetStaleReason() == liveroutev1.StaleReason_STALE_REASON_PLAN_PROPOSAL {
-		_, err = finalizer.store.FinalizeStaleProposalDecision(
+		result, finalizeErr := finalizer.store.FinalizeStaleProposalDecision(
 			ctx, proposalRequest(row, decision, response.GetPlannerStateVersion(), outcome),
 		)
-		return err
+		return result, finalizeErr
 	}
-	_, err = finalizer.store.FinalizeTerminal(ctx, persistence.FinalizeTerminalCommandRequest{
+	return finalizer.store.FinalizeTerminal(ctx, persistence.FinalizeTerminalCommandRequest{
 		TripID:                       row.TripID,
 		IntentID:                     row.CommandIntentID,
 		OutboxID:                     row.ID,
@@ -65,7 +65,6 @@ func (finalizer *RuntimeFinalizer) Finalize(
 		Status:                       status,
 		OutcomePayload:               outcome,
 	})
-	return err
 }
 
 func (finalizer *RuntimeFinalizer) finalizeAccepted(
@@ -73,10 +72,10 @@ func (finalizer *RuntimeFinalizer) finalizeAccepted(
 	row persistence.ClaimedOutboxRow,
 	event *liveroutev1.ApplyTripEvent,
 	response *liveroutev1.PlannerStreamResponse,
-) error {
+) (persistence.FinalizedCommand, error) {
 	outcome, err := stableOutcome(row.EventID, "OK", response.GetPlannerStateVersion())
 	if err != nil {
-		return err
+		return persistence.FinalizedCommand{}, err
 	}
 	if decision := event.GetPlanDecision(); decision != nil {
 		request := proposalRequest(
@@ -84,19 +83,18 @@ func (finalizer *RuntimeFinalizer) finalizeAccepted(
 		)
 		switch decision.GetDecision() {
 		case liveroutev1.PlanDecision_PLAN_DECISION_ACCEPT:
-			_, err = finalizer.store.FinalizeProposalAcceptance(ctx, request)
+			return finalizer.store.FinalizeProposalAcceptance(ctx, request)
 		case liveroutev1.PlanDecision_PLAN_DECISION_REJECT:
-			_, err = finalizer.store.FinalizeProposalRejection(ctx, request)
+			return finalizer.store.FinalizeProposalRejection(ctx, request)
 		default:
-			err = errors.New("accepted proposal decision is invalid")
+			return persistence.FinalizedCommand{}, errors.New("accepted proposal decision is invalid")
 		}
-		return err
 	}
 	mutation, err := acceptedMutation(event)
 	if err != nil {
-		return err
+		return persistence.FinalizedCommand{}, err
 	}
-	_, err = finalizer.store.FinalizeAcceptedMutation(ctx, persistence.FinalizeAcceptedMutationRequest{
+	return finalizer.store.FinalizeAcceptedMutation(ctx, persistence.FinalizeAcceptedMutationRequest{
 		TripID:                       row.TripID,
 		IntentID:                     row.CommandIntentID,
 		OutboxID:                     row.ID,
@@ -107,7 +105,6 @@ func (finalizer *RuntimeFinalizer) finalizeAccepted(
 		Mutation:                     mutation,
 		OutcomePayload:               outcome,
 	})
-	return err
 }
 
 func proposalRequest(

@@ -25,6 +25,32 @@ const (
 
 var ErrInvalidGoogleToken = errors.New("google identity token is invalid")
 
+type googleTokenValidationError struct {
+	stage string
+}
+
+func (err *googleTokenValidationError) Error() string {
+	return ErrInvalidGoogleToken.Error()
+}
+
+func (err *googleTokenValidationError) Unwrap() error {
+	return ErrInvalidGoogleToken
+}
+
+func invalidGoogleToken(stage string) error {
+	return &googleTokenValidationError{stage: stage}
+}
+
+// GoogleTokenValidationStage returns a non-sensitive validation-stage label
+// suitable for operational logs. It never includes token or claim values.
+func GoogleTokenValidationStage(err error) string {
+	var validationError *googleTokenValidationError
+	if errors.As(err, &validationError) {
+		return validationError.stage
+	}
+	return "unknown"
+}
+
 // ExtractNonce reads only the unsigned JWT payload so the handler can locate
 // the one stored nonce. The result is never trusted until Verify validates the
 // complete signed token against Google's keys and configured audience.
@@ -112,23 +138,27 @@ func newGoogleVerifier(
 func (verifier *GoogleVerifier) Verify(ctx context.Context, rawToken, expectedNonce string) (GoogleIdentity, error) {
 	if verifier == nil || verifier.verifier == nil || ctx == nil || expectedNonce == "" ||
 		len(rawToken) == 0 || len(rawToken) > maximumTokenBytes {
-		return GoogleIdentity{}, ErrInvalidGoogleToken
+		return GoogleIdentity{}, invalidGoogleToken("input")
 	}
 	if verifier.client != nil {
 		ctx = oidc.ClientContext(ctx, verifier.client)
 	}
 	token, err := verifier.verifier.Verify(ctx, rawToken)
 	if err != nil {
-		return GoogleIdentity{}, ErrInvalidGoogleToken
+		return GoogleIdentity{}, invalidGoogleToken(signedTokenValidationStage(err))
 	}
 	if token.Issuer != googleIssuer && token.Issuer != googleLegacyIssuer {
-		return GoogleIdentity{}, ErrInvalidGoogleToken
+		return GoogleIdentity{}, invalidGoogleToken("issuer")
 	}
-	if token.Subject == "" || len(token.Subject) > 255 || token.IssuedAt.IsZero() ||
-		token.IssuedAt.After(verifier.now()) ||
-		len(token.Nonce) != len(expectedNonce) ||
+	if token.Subject == "" || len(token.Subject) > 255 {
+		return GoogleIdentity{}, invalidGoogleToken("subject")
+	}
+	if token.IssuedAt.IsZero() || token.IssuedAt.After(verifier.now()) {
+		return GoogleIdentity{}, invalidGoogleToken("issued_at")
+	}
+	if len(token.Nonce) != len(expectedNonce) ||
 		subtle.ConstantTimeCompare([]byte(token.Nonce), []byte(expectedNonce)) != 1 {
-		return GoogleIdentity{}, ErrInvalidGoogleToken
+		return GoogleIdentity{}, invalidGoogleToken("nonce")
 	}
 
 	var claims struct {
@@ -138,13 +168,13 @@ func (verifier *GoogleVerifier) Verify(ctx context.Context, rawToken, expectedNo
 		Name            string `json:"name"`
 	}
 	if err := token.Claims(&claims); err != nil {
-		return GoogleIdentity{}, ErrInvalidGoogleToken
+		return GoogleIdentity{}, invalidGoogleToken("identity_claims")
 	}
 	if claims.AuthorizedParty != "" && claims.AuthorizedParty != verifier.clientID {
-		return GoogleIdentity{}, ErrInvalidGoogleToken
+		return GoogleIdentity{}, invalidGoogleToken("authorized_party")
 	}
 	if len(claims.Email) > 320 || (claims.Email != "" && !claims.EmailVerified) || len(claims.Name) > 200 {
-		return GoogleIdentity{}, ErrInvalidGoogleToken
+		return GoogleIdentity{}, invalidGoogleToken("profile_claims")
 	}
 	displayName := strings.TrimSpace(claims.Name)
 	if displayName == "" {
@@ -158,6 +188,35 @@ func (verifier *GoogleVerifier) Verify(ctx context.Context, rawToken, expectedNo
 		EmailVerified: claims.EmailVerified,
 		DisplayName:   displayName,
 	}, nil
+}
+
+func signedTokenValidationStage(err error) string {
+	var expired *oidc.TokenExpiredError
+	if errors.As(err, &expired) {
+		return "expired"
+	}
+	message := err.Error()
+	switch {
+	case strings.HasPrefix(message, "oidc: expected audience "):
+		return "audience"
+	case strings.HasPrefix(message, "oidc: current time "):
+		return "not_before"
+	case strings.Contains(message, "fetching keys context deadline exceeded"),
+		strings.Contains(message, "fetching keys context canceled"):
+		return "keys_timeout"
+	case strings.Contains(message, "fetching keys "):
+		return "keys_fetch"
+	case strings.HasSuffix(message, "failed to verify id token signature"):
+		return "signature"
+	case strings.HasPrefix(message, "failed to verify signature: "):
+		return "signature_or_keys"
+	case strings.HasPrefix(message, "oidc: malformed jwt: "),
+		strings.HasPrefix(message, "oidc: id token not signed"),
+		strings.HasPrefix(message, "oidc: multiple signatures"):
+		return "token_format"
+	default:
+		return "signed_token"
+	}
 }
 
 type cacheControlCapTransport struct {

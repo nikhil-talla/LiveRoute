@@ -32,7 +32,7 @@ type mirrorFinalizer interface {
 }
 
 type runtimeOutcomeFinalizer interface {
-	Finalize(context.Context, persistence.ClaimedOutboxRow, *liveroutev1.ApplyTripEvent, *liveroutev1.PlannerStreamResponse, *liveroutev1.EventAcknowledged) error
+	Finalize(context.Context, persistence.ClaimedOutboxRow, *liveroutev1.ApplyTripEvent, *liveroutev1.PlannerStreamResponse, *liveroutev1.EventAcknowledged) (persistence.FinalizedCommand, error)
 }
 
 type confirmationStore interface {
@@ -48,15 +48,22 @@ type Config struct {
 }
 
 type Dispatcher struct {
-	config        Config
-	outbox        outboxStore
-	leases        leaseStore
-	planner       plannerClient
-	mirrors       mirrorFinalizer
-	runtime       runtimeOutcomeFinalizer
-	confirmations confirmationStore
-	now           func() time.Time
-	retryDelay    func(uint64) (time.Duration, error)
+	config             Config
+	outbox             outboxStore
+	leases             leaseStore
+	planner            plannerClient
+	mirrors            mirrorFinalizer
+	runtime            runtimeOutcomeFinalizer
+	confirmations      confirmationStore
+	now                func() time.Time
+	retryDelay         func(uint64) (time.Duration, error)
+	onRuntimeFinalized func(persistence.FinalizedCommand, *liveroutev1.PlannerStreamResponse)
+}
+
+func (dispatcher *Dispatcher) SetOnRuntimeFinalized(
+	callback func(persistence.FinalizedCommand, *liveroutev1.PlannerStreamResponse),
+) {
+	dispatcher.onRuntimeFinalized = callback
 }
 
 // Run continuously services durable outbox work at a bounded polling cadence.
@@ -231,8 +238,12 @@ func (dispatcher *Dispatcher) dispatch(
 		return false, dispatcher.pause(ctx, row, "INTERNAL")
 	}
 	if row.ApplicationOrder == "runtime_first" {
-		if err := dispatcher.runtime.Finalize(ctx, row, event, response, ack); err != nil {
+		finalized, err := dispatcher.runtime.Finalize(ctx, row, event, response, ack)
+		if err != nil {
 			return false, err
+		}
+		if dispatcher.onRuntimeFinalized != nil {
+			dispatcher.onRuntimeFinalized(finalized, response)
 		}
 		if err := dispatcher.confirm(ctx, row.TripID, lease.RuntimeEpoch, row.MutationSequence); err != nil {
 			return true, err

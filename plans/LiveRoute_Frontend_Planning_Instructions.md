@@ -902,6 +902,15 @@ Next-activity and canonical-plan changes are derived from a newly published
 `subscription_state`. Completion of all activities is UI state; the reusable
 trip remains active until explicitly deactivated.
 
+For `activity_status_changed`, place the latest server-reported
+`trip_revision` in `command.expected_trip_revision`; it is not an envelope
+field. Permit at most one unresolved activity-status command per active trip.
+Do not advance the displayed activity state on `durable_recorded`: apply it
+only on the matching `planner_applied` acknowledgement, and replace local state
+from `subscription_state` or `resynchronization_state` whenever either arrives.
+`STALE`, `rejected`, and `expired` outcomes leave the displayed authoritative
+state unchanged and require refresh/retry with the newly reported revision.
+
 Do not send every possible UI state change as telemetry.
 
 Only send information the backend/planner needs.

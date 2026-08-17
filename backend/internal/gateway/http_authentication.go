@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -710,16 +711,19 @@ func (handler *HTTPAuthHandler) authenticateGoogle(writer http.ResponseWriter, r
 	}
 	bindingCookie, err := request.Cookie(handler.bindingCookieName())
 	if err != nil || bindingCookie.Value == "" {
+		handler.logGoogleAuthenticationRejection(writer, "binding_cookie")
 		handler.problem(writer, request, http.StatusUnauthorized, "UNAUTHENTICATED", false, "authentication failed")
 		return
 	}
 	nonce, err := auth.ExtractNonce(input.Credential)
 	if err != nil {
+		handler.logGoogleAuthenticationRejection(writer, "credential_nonce")
 		handler.problem(writer, request, http.StatusUnauthorized, "UNAUTHENTICATED", false, "authentication failed")
 		return
 	}
 	identity, err := handler.config.GoogleVerifier.Verify(request.Context(), input.Credential, nonce)
 	if err != nil {
+		handler.logGoogleAuthenticationRejection(writer, "token_"+auth.GoogleTokenValidationStage(err))
 		handler.problem(writer, request, http.StatusUnauthorized, "UNAUTHENTICATED", false, "authentication failed")
 		return
 	}
@@ -727,6 +731,11 @@ func (handler *HTTPAuthHandler) authenticateGoogle(writer http.ResponseWriter, r
 		Issuer: identity.Issuer, Subject: identity.Subject, Email: identity.Email, EmailVerified: identity.EmailVerified, DisplayName: identity.DisplayName,
 	}, input.DefaultTimeZoneName)
 	if errors.Is(err, persistence.ErrNonceNotFound) || errors.Is(err, persistence.ErrAuthenticationInput) {
+		stage := "nonce_binding"
+		if errors.Is(err, persistence.ErrAuthenticationInput) {
+			stage = "identity_input"
+		}
+		handler.logGoogleAuthenticationRejection(writer, stage)
 		handler.problem(writer, request, http.StatusUnauthorized, "UNAUTHENTICATED", false, "authentication failed")
 		return
 	}
@@ -737,6 +746,10 @@ func (handler *HTTPAuthHandler) authenticateGoogle(writer http.ResponseWriter, r
 	http.SetCookie(writer, handler.sessionCookie(session.Token, int(time.Until(session.AbsoluteExpiresAt).Seconds())))
 	http.SetCookie(writer, handler.clearBindingCookie())
 	handler.writeJSON(writer, http.StatusOK, sessionJSON(session))
+}
+
+func (handler *HTTPAuthHandler) logGoogleAuthenticationRejection(writer http.ResponseWriter, stage string) {
+	slog.Warn("Google authentication rejected", "request_id", writer.Header().Get("X-Request-ID"), "stage", stage)
 }
 
 func (handler *HTTPAuthHandler) getSession(writer http.ResponseWriter, request *http.Request) {

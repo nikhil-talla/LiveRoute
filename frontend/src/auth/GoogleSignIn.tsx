@@ -141,6 +141,16 @@ export function GoogleSignIn({
   const [error, setError] = useState(
     clientId ? "" : "Google sign-in is not configured for this deployment.",
   );
+  const initializedConfiguration = useRef<
+    | {
+        clientId: string;
+        nonce: string;
+      }
+    | undefined
+  >(undefined);
+  const credentialHandler = useRef<
+    (response: GoogleCredentialResponse) => void
+  >(() => undefined);
 
   const receiveCredential = useCallback(
     async (response: GoogleCredentialResponse): Promise<void> => {
@@ -178,6 +188,10 @@ export function GoogleSignIn({
     },
     [api, onAuthenticated],
   );
+  credentialHandler.current = receiveCredential;
+  const handleCredential = useCallback((response: GoogleCredentialResponse) => {
+    void credentialHandler.current(response);
+  }, []);
 
   useEffect(() => {
     if (!clientId) return;
@@ -193,11 +207,17 @@ export function GoogleSignIn({
           getLoginNonce(api),
         ]);
         if (!active || !button.current) return;
-        identity.initialize({
-          client_id: clientId,
-          nonce: nonce.nonce,
-          callback: (response) => void receiveCredential(response),
-        });
+        if (
+          initializedConfiguration.current?.clientId !== clientId ||
+          initializedConfiguration.current.nonce !== nonce.nonce
+        ) {
+          identity.initialize({
+            client_id: clientId,
+            nonce: nonce.nonce,
+            callback: handleCredential,
+          });
+          initializedConfiguration.current = { clientId, nonce: nonce.nonce };
+        }
         button.current.replaceChildren();
         identity.renderButton(button.current, {
           type: "standard",
@@ -233,7 +253,7 @@ export function GoogleSignIn({
       active = false;
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
     };
-  }, [api, attempt, clientId, receiveCredential]);
+  }, [api, attempt, clientId, handleCredential]);
 
   return (
     <div className="google-sign-in">

@@ -285,6 +285,31 @@ func (supervisor *RuntimeSupervisor) CommitObservation(
 	return nil
 }
 
+func (supervisor *RuntimeSupervisor) CommitMutation(
+	tripID string,
+	runtimeEpoch uint64,
+	acceptedMutationSequence uint64,
+	plannerStateVersion uint64,
+) error {
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	state, exists := supervisor.state[tripID]
+	if !exists {
+		return ErrRuntimeInactive
+	}
+	if state.RuntimeEpoch != runtimeEpoch {
+		return persistence.ErrLeaseLost
+	}
+	if acceptedMutationSequence > state.AcceptedMutationSequence {
+		state.AcceptedMutationSequence = acceptedMutationSequence
+	}
+	if plannerStateVersion > state.PlannerStateVersion {
+		state.PlannerStateVersion = plannerStateVersion
+	}
+	supervisor.state[tripID] = state
+	return nil
+}
+
 func (supervisor *RuntimeSupervisor) Close() {
 	supervisor.mu.Lock()
 	if !supervisor.closed {

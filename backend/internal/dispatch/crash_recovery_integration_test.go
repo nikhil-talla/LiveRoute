@@ -63,8 +63,8 @@ func (crashPlanner) Exchange(_ context.Context, request *liveroutev1.PlannerStre
 
 type crashBeforeFinalization struct{}
 
-func (crashBeforeFinalization) Finalize(context.Context, persistence.ClaimedOutboxRow, *liveroutev1.ApplyTripEvent, *liveroutev1.PlannerStreamResponse, *liveroutev1.EventAcknowledged) error {
-	return errors.New("injected backend crash before finalization")
+func (crashBeforeFinalization) Finalize(context.Context, persistence.ClaimedOutboxRow, *liveroutev1.ApplyTripEvent, *liveroutev1.PlannerStreamResponse, *liveroutev1.EventAcknowledged) (persistence.FinalizedCommand, error) {
+	return persistence.FinalizedCommand{}, errors.New("injected backend crash before finalization")
 }
 
 func TestRuntimeCommandConvergesAfterAcceptanceCrashAndHigherEpochBootstrap(t *testing.T) {

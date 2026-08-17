@@ -102,6 +102,60 @@ func BuildTelemetryStatusEnvelope(
 	})
 }
 
+func BuildRuntimeCommandFinalizedEnvelope(
+	finalized persistence.FinalizedCommand,
+	runtime RuntimeVersions,
+) ([]byte, error) {
+	phase := ""
+	switch finalized.State {
+	case "applied":
+		phase = "planner_applied"
+	case "rejected":
+		phase = "rejected"
+	case "expired":
+		phase = "expired"
+	default:
+		return nil, errors.New("runtime command finalization state is invalid")
+	}
+	versions := TripVersions{
+		TripRevision: strconv.FormatUint(finalized.ResultingTripRevision, 10),
+		RuntimeEpoch: strconv.FormatUint(runtime.RuntimeEpoch, 10),
+		PlannerStateVersion: strconv.FormatUint(
+			finalized.ResultingPlannerStateVersion,
+			10,
+		),
+		AcceptedMutationSequence: strconv.FormatUint(
+			runtime.AcceptedMutationSequence,
+			10,
+		),
+		AcceptedObservationSequence: strconv.FormatUint(
+			runtime.AcceptedObservationSequence,
+			10,
+		),
+	}
+	if !canonicalUUID(finalized.TripID) || !canonicalUUID(finalized.EventID) ||
+		finalized.MutationSequence == 0 || !validStatus(finalized.Status) ||
+		!validTripVersions(versions) {
+		return nil, errors.New("runtime command finalization envelope input is invalid")
+	}
+	return json.Marshal(map[string]any{
+		"protocol_version": protocolVersion, "server_message_id": newUUID(),
+		"kind": "command_acknowledgement", "status": finalized.Status, "retryable": false,
+		"trip_id":                       finalized.TripID,
+		"trip_revision":                 versions.TripRevision,
+		"runtime_epoch":                 versions.RuntimeEpoch,
+		"planner_state_version":         versions.PlannerStateVersion,
+		"accepted_mutation_sequence":    versions.AcceptedMutationSequence,
+		"accepted_observation_sequence": versions.AcceptedObservationSequence,
+		"payload": map[string]any{
+			"phase": phase, "message_id": finalized.EventID,
+			"mutation_sequence": strconv.FormatUint(finalized.MutationSequence, 10),
+			"recovery_state":    "current",
+		},
+		"in_reply_to_message_id": finalized.EventID,
+	})
+}
+
 func StateVersions(
 	state persistence.CanonicalTripState,
 	runtime RuntimeVersions,

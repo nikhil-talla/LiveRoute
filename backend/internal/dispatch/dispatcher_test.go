@@ -109,11 +109,16 @@ func (finalizer *fakeRuntimeFinalizer) Finalize(
 	_ context.Context,
 	row persistence.ClaimedOutboxRow,
 	_ *liveroutev1.ApplyTripEvent,
-	_ *liveroutev1.PlannerStreamResponse,
+	response *liveroutev1.PlannerStreamResponse,
 	_ *liveroutev1.EventAcknowledged,
-) error {
+) (persistence.FinalizedCommand, error) {
 	finalizer.row = &row
-	return nil
+	return persistence.FinalizedCommand{
+		TripID: row.TripID, EventID: row.EventID,
+		MutationSequence: row.MutationSequence, State: "applied", Status: "OK",
+		ResultingTripRevision:        row.ExpectedTripRevision + 1,
+		ResultingPlannerStateVersion: response.GetPlannerStateVersion(),
+	}, nil
 }
 
 func (store *fakeConfirmations) ConfirmFinalizedMutations(_ context.Context, request persistence.ConfirmFinalizedMutationsRequest) (persistence.ConfirmedFinalizedMutations, error) {
@@ -254,12 +259,20 @@ func TestDispatcherFinalizesRuntimeFirstEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var published persistence.FinalizedCommand
+	dispatcher.SetOnRuntimeFinalized(func(
+		finalized persistence.FinalizedCommand,
+		_ *liveroutev1.PlannerStreamResponse,
+	) {
+		published = finalized
+	})
 	resolved, err := dispatcher.RunOnce(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolved != 1 || runtime.row == nil || mirrors.request != nil ||
-		len(confirmations.sequences) != 1 {
+		len(confirmations.sequences) != 1 || published.EventID != row.EventID ||
+		published.State != "applied" {
 		t.Fatalf("runtime outcome did not finalize: %#v %#v", runtime.row, confirmations.sequences)
 	}
 }

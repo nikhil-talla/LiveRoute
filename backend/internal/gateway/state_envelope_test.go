@@ -46,3 +46,29 @@ func TestBuildCommandOutcomeMapsCanonicalMirrorRecovery(t *testing.T) {
 		t.Fatalf("unexpected command outcome: %#v", value)
 	}
 }
+
+func TestBuildRuntimeCommandFinalizedEnvelopePublishesPlannerApplied(t *testing.T) {
+	raw, err := BuildRuntimeCommandFinalizedEnvelope(persistence.FinalizedCommand{
+		TripID:           "550e8400-e29b-41d4-a716-446655440002",
+		EventID:          "550e8400-e29b-41d4-a716-446655440003",
+		MutationSequence: 8, State: "applied", Status: "OK",
+		ResultingTripRevision: 5, ResultingPlannerStateVersion: 9,
+	}, RuntimeVersions{
+		RuntimeEpoch: 2, AcceptedMutationSequence: 8,
+		AcceptedObservationSequence: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := envelope["payload"].(map[string]any)
+	if envelope["kind"] != "command_acknowledgement" ||
+		envelope["trip_revision"] != "5" ||
+		envelope["planner_state_version"] != "9" ||
+		payload["phase"] != "planner_applied" || payload["message_id"] != "550e8400-e29b-41d4-a716-446655440003" {
+		t.Fatalf("unexpected finalized command envelope: %#v", envelope)
+	}
+}

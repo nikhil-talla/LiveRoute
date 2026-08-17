@@ -371,4 +371,48 @@ describe("LiveTripSocket", () => {
     });
     client.close();
   });
+
+  it("sends activity status with the current trip revision", async () => {
+    const api = {
+      createWebSocketTicket: async () => ({
+        ticket: "A".repeat(43),
+        expires_at_unix_ms: 1,
+      }),
+    } as unknown as LiveRouteApi;
+    const client = new LiveTripSocket({
+      api,
+      csrfToken: "csrf-token",
+      tripId: "55555555-5555-4555-8555-555555555555",
+    });
+    const connected = client.connect();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    socket.receive(connectionReady());
+    socket.receive(subscriptionState());
+    await connected;
+
+    const messageId = client.sendActivityStatus(
+      "66666666-6666-4666-8666-666666666666",
+      "started",
+      "4",
+    );
+    expect(messageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(socket.sent[2]).toMatchObject({
+      protocol_version: "liveroute.v1",
+      kind: "trip_command",
+      trip_id: "55555555-5555-4555-8555-555555555555",
+      payload: {
+        command_kind: "activity_status_changed",
+        command: {
+          expected_trip_revision: "4",
+          activity_id: "66666666-6666-4666-8666-666666666666",
+          state: "started",
+        },
+      },
+    });
+    client.close();
+  });
 });

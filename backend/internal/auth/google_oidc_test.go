@@ -47,15 +47,16 @@ func TestGoogleVerifierRejectsInvalidSecurityClaims(t *testing.T) {
 		mutate        func(map[string]any)
 		signingKey    *rsa.PrivateKey
 		expectedNonce string
+		expectedStage string
 	}{
-		{name: "issuer", mutate: func(claims map[string]any) { claims["iss"] = "https://attacker.example" }, signingKey: key, expectedNonce: "browser-nonce"},
-		{name: "audience", mutate: func(claims map[string]any) { claims["aud"] = "other-client" }, signingKey: key, expectedNonce: "browser-nonce"},
-		{name: "signature", mutate: func(map[string]any) {}, signingKey: otherKey, expectedNonce: "browser-nonce"},
-		{name: "expiry", mutate: func(claims map[string]any) { claims["exp"] = now.Add(-time.Second).Unix() }, signingKey: key, expectedNonce: "browser-nonce"},
-		{name: "future issued-at", mutate: func(claims map[string]any) { claims["iat"] = now.Add(time.Second).Unix() }, signingKey: key, expectedNonce: "browser-nonce"},
-		{name: "nonce", mutate: func(map[string]any) {}, signingKey: key, expectedNonce: "different-nonce"},
-		{name: "authorized party", mutate: func(claims map[string]any) { claims["azp"] = "other-client" }, signingKey: key, expectedNonce: "browser-nonce"},
-		{name: "unverified retained email", mutate: func(claims map[string]any) { claims["email_verified"] = false }, signingKey: key, expectedNonce: "browser-nonce"},
+		{name: "issuer", mutate: func(claims map[string]any) { claims["iss"] = "https://attacker.example" }, signingKey: key, expectedNonce: "browser-nonce", expectedStage: "issuer"},
+		{name: "audience", mutate: func(claims map[string]any) { claims["aud"] = "other-client" }, signingKey: key, expectedNonce: "browser-nonce", expectedStage: "audience"},
+		{name: "signature", mutate: func(map[string]any) {}, signingKey: otherKey, expectedNonce: "browser-nonce", expectedStage: "signature_or_keys"},
+		{name: "expiry", mutate: func(claims map[string]any) { claims["exp"] = now.Add(-time.Second).Unix() }, signingKey: key, expectedNonce: "browser-nonce", expectedStage: "expired"},
+		{name: "future issued-at", mutate: func(claims map[string]any) { claims["iat"] = now.Add(time.Second).Unix() }, signingKey: key, expectedNonce: "browser-nonce", expectedStage: "issued_at"},
+		{name: "nonce", mutate: func(map[string]any) {}, signingKey: key, expectedNonce: "different-nonce", expectedStage: "nonce"},
+		{name: "authorized party", mutate: func(claims map[string]any) { claims["azp"] = "other-client" }, signingKey: key, expectedNonce: "browser-nonce", expectedStage: "authorized_party"},
+		{name: "unverified retained email", mutate: func(claims map[string]any) { claims["email_verified"] = false }, signingKey: key, expectedNonce: "browser-nonce", expectedStage: "profile_claims"},
 	}
 
 	for _, test := range tests {
@@ -66,7 +67,23 @@ func TestGoogleVerifierRejectsInvalidSecurityClaims(t *testing.T) {
 			if !errors.Is(err, ErrInvalidGoogleToken) {
 				t.Fatalf("Verify error = %v, want generic invalid-token error", err)
 			}
+			if stage := GoogleTokenValidationStage(err); stage != test.expectedStage {
+				t.Fatalf("GoogleTokenValidationStage() = %q, want %q", stage, test.expectedStage)
+			}
 		})
+	}
+}
+
+func TestSignedTokenValidationStageClassifiesKeyFetchFailures(t *testing.T) {
+	for input, expected := range map[string]string{
+		"failed to verify signature: fetching keys context deadline exceeded": "keys_timeout",
+		"failed to verify signature: fetching keys oidc: get keys failed":     "keys_fetch",
+		"failed to verify signature: failed to verify id token signature":     "signature",
+		"failed to verify signature: another verifier failure":                "signature_or_keys",
+	} {
+		if actual := signedTokenValidationStage(errors.New(input)); actual != expected {
+			t.Errorf("signedTokenValidationStage() = %q, want %q", actual, expected)
+		}
 	}
 }
 

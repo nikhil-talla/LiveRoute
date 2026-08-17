@@ -103,7 +103,7 @@ export function MapPreview({
     const bounds = new mapboxgl.LngLatBounds();
     for (const activity of trip.saved_plan.activities) {
       const { latitude, longitude } = activity.place;
-      new mapboxgl.Marker({ color: "#196a54" })
+      new mapboxgl.Marker({ color: "#1d4ed8" })
         .setLngLat([longitude, latitude])
         .setPopup(new mapboxgl.Popup().setText(activity.place.display_name))
         .addTo(map);
@@ -137,7 +137,7 @@ export function MapPreview({
           source: sourceId,
           layout: { "line-cap": "round", "line-join": "round" },
           paint: {
-            "line-color": "#f1785f",
+            "line-color": "#1d4ed8",
             "line-width": 4,
             "line-opacity": 0.86,
           },

@@ -156,3 +156,33 @@ func TestRuntimeSupervisorConcurrentActivationWaitsForBootstrap(t *testing.T) {
 		t.Fatalf("bootstrap=%d acquire=%d", bootstrap.calls, leases.acquires)
 	}
 }
+
+func TestRuntimeSupervisorCommitsMutationWatermarks(t *testing.T) {
+	supervisor, err := NewRuntimeSupervisor(
+		"550e8400-e29b-41d4-a716-446655440001",
+		50*time.Millisecond,
+		20*time.Millisecond,
+		1,
+		&supervisorLeaseFake{},
+		&supervisorBootstrapFake{},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
+	tripID := "550e8400-e29b-41d4-a716-446655440002"
+	if err := supervisor.Activate(context.Background(), tripID); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.CommitMutation(tripID, 4, 3, 7); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := supervisor.RuntimeState(tripID)
+	if !ok || state.AcceptedMutationSequence != 3 || state.PlannerStateVersion != 7 {
+		t.Fatalf("unexpected committed runtime state: %#v", state)
+	}
+	if err := supervisor.CommitMutation(tripID, 5, 4, 8); !errors.Is(err, persistence.ErrLeaseLost) {
+		t.Fatalf("epoch mismatch error=%v", err)
+	}
+}

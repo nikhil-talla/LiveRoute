@@ -56,6 +56,7 @@ type AppState =
 
 interface AppRoutesProps {
   api?: LiveRouteApi;
+  googleClientId?: string;
 }
 
 interface ProposalIdentity {
@@ -81,6 +82,26 @@ interface ProposalDecision {
 interface ActiveNavigationState {
   nextActivityId: string;
   scheduledStartUnixMs?: number;
+}
+
+type LiveActivityState = "planned" | "started" | "completed" | "skipped";
+
+interface LivePlanActivity {
+  activityId: string;
+  scheduledStartUnixMs?: number;
+}
+
+interface LiveRuntimeState {
+  activityStates: Map<string, LiveActivityState>;
+  scheduledActivities: LivePlanActivity[];
+}
+
+interface ActivityCommand {
+  messageId: string;
+  activityId: string;
+  targetState: Exclude<LiveActivityState, "planned">;
+  phase: string;
+  error?: string;
 }
 
 interface EditableActivity {
@@ -159,7 +180,7 @@ function parsePlannerProposal(value: unknown): PlannerProposal | null {
   };
 }
 
-function parseActiveNavigation(value: unknown): ActiveNavigationState | null {
+function parseLiveRuntimeState(value: unknown): LiveRuntimeState | null {
   const payload = recordValue(value);
   const trip = recordValue(payload?.trip);
   const currentPlan = recordValue(payload?.current_plan);
@@ -167,64 +188,103 @@ function parseActiveNavigation(value: unknown): ActiveNavigationState | null {
   const segments = Array.isArray(currentPlan?.segments)
     ? currentPlan.segments
     : [];
-  const activityStates = new Map<string, string>();
-  let currentActivityId: string | undefined;
+  const activityStates = new Map<string, LiveActivityState>();
   for (const value of activities) {
     const activity = recordValue(value);
     if (typeof activity?.activity_id !== "string") continue;
-    if (typeof activity.activity_state === "string") {
+    if (
+      activity.activity_state === "planned" ||
+      activity.activity_state === "started" ||
+      activity.activity_state === "completed" ||
+      activity.activity_state === "skipped"
+    ) {
       activityStates.set(activity.activity_id, activity.activity_state);
     }
-    if (activity.activity_state === "started") {
-      currentActivityId = activity.activity_id;
+  }
+  const scheduledActivities = segments.flatMap((value): LivePlanActivity[] => {
+    const segment = recordValue(value);
+    if (
+      segment?.state !== "scheduled" ||
+      typeof segment.activity_id !== "string"
+    ) {
+      return [];
     }
-  }
-  const scheduled = segments.filter(
-    (value): value is Record<string, unknown> => {
-      const segment = recordValue(value);
-      return (
-        segment?.state === "scheduled" &&
-        typeof segment.activity_id === "string"
-      );
-    },
+    return [
+      {
+        activityId: segment.activity_id,
+        ...(typeof segment.scheduled_start_unix_ms === "number"
+          ? { scheduledStartUnixMs: segment.scheduled_start_unix_ms }
+          : {}),
+      },
+    ];
+  });
+  if (activityStates.size === 0 || scheduledActivities.length === 0)
+    return null;
+  return { activityStates, scheduledActivities };
+}
+
+function activeNavigationFor(
+  runtime: LiveRuntimeState | null,
+): ActiveNavigationState | null {
+  if (!runtime) return null;
+  const startedIndex = runtime.scheduledActivities.findIndex(
+    (activity) => runtime.activityStates.get(activity.activityId) === "started",
   );
-  if (scheduled.length === 0) return null;
-  let nextIndex = 0;
-  if (currentActivityId) {
-    const currentIndex = scheduled.findIndex(
-      (segment) => segment.activity_id === currentActivityId,
-    );
-    if (currentIndex >= 0) nextIndex = currentIndex + 1;
-  }
-  while (
-    nextIndex < scheduled.length &&
-    (activityStates.get(scheduled[nextIndex]!.activity_id as string) ===
-      "completed" ||
-      activityStates.get(scheduled[nextIndex]!.activity_id as string) ===
-        "skipped")
-  ) {
-    nextIndex += 1;
-  }
-  const next = scheduled[nextIndex];
-  if (!next || typeof next.activity_id !== "string") return null;
+  const next = runtime.scheduledActivities.find((activity, index) => {
+    if (startedIndex >= 0 && index <= startedIndex) return false;
+    const state = runtime.activityStates.get(activity.activityId);
+    return state !== "completed" && state !== "skipped";
+  });
+  if (!next) return null;
   return {
-    nextActivityId: next.activity_id,
-    ...(typeof next.scheduled_start_unix_ms === "number"
-      ? { scheduledStartUnixMs: next.scheduled_start_unix_ms }
+    nextActivityId: next.activityId,
+    ...(next.scheduledStartUnixMs !== undefined
+      ? { scheduledStartUnixMs: next.scheduledStartUnixMs }
       : {}),
   };
 }
 
-function Brand(): ReactNode {
+function actionableActivityId(runtime: LiveRuntimeState | null): string | null {
+  if (!runtime) return null;
   return (
-    <Link className="brand" to="/trips" aria-label="LiveRoute trips">
+    runtime.scheduledActivities.find((activity) => {
+      const state = runtime.activityStates.get(activity.activityId);
+      return state === "planned" || state === "started";
+    })?.activityId ?? null
+  );
+}
+
+function Brand({ to = "/trips" }: { to?: string }): ReactNode {
+  const [logoUnavailable, setLogoUnavailable] = useState(false);
+
+  return (
+    <Link className="brand" to={to} aria-label="LiveRoute">
       <span className="brand-mark" aria-hidden="true">
-        LR
+        {logoUnavailable ? (
+          <svg viewBox="0 0 24 24" role="presentation">
+            <circle cx="12" cy="12" r="11" fill="currentColor" />
+            <path
+              d="M7 12c0-3.3 1.7-5 5-5s5 1.7 5 5"
+              fill="none"
+              stroke="white"
+              strokeLinecap="round"
+              strokeWidth="1.8"
+            />
+            <circle cx="7" cy="12" r="1.5" fill="white" opacity=".7" />
+            <circle cx="17" cy="12" r="1.5" fill="white" opacity=".7" />
+            <circle cx="12" cy="16" r="2.5" fill="white" />
+          </svg>
+        ) : (
+          <img
+            className="brand-logo-image"
+            src="/assets/liveroute-logo.png"
+            alt=""
+            draggable={false}
+            onError={() => setLogoUnavailable(true)}
+          />
+        )}
       </span>
-      <span>
-        <strong>LiveRoute</strong>
-        <small>Plans that move with you</small>
-      </span>
+      <strong>LiveRoute</strong>
     </Link>
   );
 }
@@ -243,27 +303,177 @@ function LoadingScreen(): ReactNode {
   );
 }
 
-function SignedOutScreen({
+function LandingScreen(): ReactNode {
+  const steps = [
+    [
+      "01",
+      "Plan your day",
+      "Add stops, set times, and arrange activities in the order that works for you.",
+    ],
+    [
+      "02",
+      "Start when you’re ready",
+      "LiveRoute activates the itinerary only when you decide to begin.",
+    ],
+    [
+      "03",
+      "Adapt when plans shift",
+      "Travel delays can trigger a suggested itinerary adjustment.",
+    ],
+    [
+      "04",
+      "You make the call",
+      "Review every suggestion and accept it or keep your current plan.",
+    ],
+  ] as const;
+  return (
+    <main className="landing-page">
+      <header className="landing-header">
+        <Brand to="/" />
+        <Link className="primary-button compact-button" to="/signin">
+          Sign in with Google
+        </Link>
+      </header>
+      <section className="landing-hero">
+        <div className="landing-copy">
+          <span className="early-access-pill">Now in early access</span>
+          <h1>
+            Plans that move
+            <br />
+            <span>with you.</span>
+          </h1>
+          <p className="lede">
+            Save an itinerary, start it when you’re ready, and adapt when travel
+            conditions change—without losing control of your plan.
+          </p>
+          <Link className="primary-button button-link hero-button" to="/signin">
+            Get started with Google
+          </Link>
+          <small>No credit card required. Free during early access.</small>
+        </div>
+        <aside
+          className="landing-itinerary"
+          aria-label="Example active itinerary"
+        >
+          <div className="preview-title-row">
+            <div>
+              <span>Saturday itinerary</span>
+              <strong>Providence arts day</strong>
+            </div>
+            <span className="state-pill state-active">Active</span>
+          </div>
+          <ol>
+            <li className="preview-complete">
+              <span>✓</span>
+              <div>
+                <strong>Providence Station</strong>
+                <small>9:00 AM</small>
+              </div>
+            </li>
+            <li className="preview-current">
+              <span>2</span>
+              <div>
+                <strong>RISD Museum</strong>
+                <small>10:30 AM</small>
+              </div>
+            </li>
+            <li>
+              <span>3</span>
+              <div>
+                <strong>India Point Park</strong>
+                <small>1:00 PM</small>
+              </div>
+            </li>
+            <li>
+              <span>4</span>
+              <div>
+                <strong>Federal Hill</strong>
+                <small>2:30 PM</small>
+              </div>
+            </li>
+          </ol>
+          <div className="landing-map" aria-hidden="true">
+            <svg viewBox="0 0 360 128" preserveAspectRatio="none">
+              <path
+                className="map-road"
+                d="M20 100 Q105 42 190 70 Q270 92 340 24"
+              />
+              <path
+                className="map-route"
+                d="M20 100 Q105 42 190 70 Q270 92 340 24"
+              />
+              <circle cx="20" cy="100" r="5" />
+              <circle cx="190" cy="70" r="5" />
+              <circle cx="340" cy="24" r="5" />
+            </svg>
+          </div>
+        </aside>
+      </section>
+      <section className="how-it-works" aria-labelledby="how-it-works-title">
+        <p className="eyebrow">How it works</p>
+        <h2 id="how-it-works-title">Build the plan. Keep the flexibility.</h2>
+        <div className="step-grid">
+          {steps.map(([number, title, description]) => (
+            <article key={number}>
+              <span>{number}</span>
+              <h3>{title}</h3>
+              <p>{description}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className="control-callout">
+        <span className="control-icon" aria-hidden="true">
+          ◎
+        </span>
+        <h2>You stay in control</h2>
+        <p>
+          LiveRoute never silently changes your itinerary. Your current plan
+          remains authoritative until you accept a suggested change.
+        </p>
+        <Link className="primary-button button-link" to="/signin">
+          Start planning
+        </Link>
+      </section>
+    </main>
+  );
+}
+
+function SignInScreen({
   api,
   onAuthenticated,
+  googleClientId,
 }: {
   api: LiveRouteApi;
   onAuthenticated(session: Session): void | Promise<void>;
+  googleClientId?: string;
 }): ReactNode {
   return (
     <main className="signed-out-page">
       <section className="signed-out-card">
-        <Brand />
-        <p className="eyebrow">Your day, still on track</p>
+        <Link className="back-link" to="/">
+          ← Back
+        </Link>
+        <Brand to="/" />
         <h1>Build the plan. Keep the flexibility.</h1>
         <p className="lede">
-          Save an itinerary once, then let LiveRoute suggest the smallest useful
-          changes when travel takes longer than expected.
+          Sign in to save itineraries, start live trips, and adapt when
+          conditions change—without losing control of your plan.
         </p>
-        <GoogleSignIn api={api} onAuthenticated={onAuthenticated} />
+        <GoogleSignIn
+          api={api}
+          clientId={googleClientId}
+          onAuthenticated={onAuthenticated}
+        />
       </section>
       <aside className="route-preview" aria-label="Example itinerary">
-        <p className="route-preview-label">Saturday · Providence</p>
+        <div className="preview-title-row">
+          <div>
+            <span>Your itinerary</span>
+            <strong>Providence afternoon</strong>
+          </div>
+          <span className="state-pill">Saved</span>
+        </div>
         <ol>
           <li>
             <span>09:30</span>
@@ -280,6 +490,33 @@ function SignedOutScreen({
         </ol>
       </aside>
     </main>
+  );
+}
+
+function AnonymousExperience({
+  api,
+  onAuthenticated,
+  googleClientId,
+}: {
+  api: LiveRouteApi;
+  onAuthenticated(session: Session): void | Promise<void>;
+  googleClientId?: string;
+}): ReactNode {
+  return (
+    <Routes>
+      <Route path="/" element={<LandingScreen />} />
+      <Route
+        path="/signin"
+        element={
+          <SignInScreen
+            api={api}
+            googleClientId={googleClientId}
+            onAuthenticated={onAuthenticated}
+          />
+        }
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 
@@ -318,7 +555,10 @@ function TripRow({ trip }: { trip: TripSummary }): ReactNode {
   return (
     <Link className="trip-row" to={`/planner/${trip.trip_id}`}>
       <span className="trip-icon" aria-hidden="true">
-        ↗
+        <svg viewBox="0 0 24 24" role="presentation">
+          <path d="M12 3a6 6 0 0 0-6 6c0 4.4 6 11 6 11s6-6.6 6-11a6 6 0 0 0-6-6Z" />
+          <circle cx="12" cy="9" r="2" />
+        </svg>
       </span>
       <span className="trip-row-copy">
         <strong>{trip.trip_name}</strong>
@@ -463,10 +703,19 @@ function PlannerPage({
     useState<PlannerProposal | null>(null);
   const [proposalDecision, setProposalDecision] =
     useState<ProposalDecision | null>(null);
-  const [activeNavigation, setActiveNavigation] =
-    useState<ActiveNavigationState | null>(null);
+  const [liveRuntimeState, setLiveRuntimeState] =
+    useState<LiveRuntimeState | null>(null);
+  const [liveTripRevision, setLiveTripRevision] = useState<string | null>(null);
+  const [activityCommand, setActivityCommand] =
+    useState<ActivityCommand | null>(null);
   const proposalDecisionRef = useRef<ProposalDecision | null>(null);
   proposalDecisionRef.current = proposalDecision;
+  const activityCommandRef = useRef<ActivityCommand | null>(null);
+  activityCommandRef.current = activityCommand;
+  const activeNavigation = useMemo(
+    () => activeNavigationFor(liveRuntimeState),
+    [liveRuntimeState],
+  );
 
   const navigationRoute = useMemo<NavigationRoute | null>(() => {
     if (
@@ -778,7 +1027,9 @@ function PlannerPage({
       setPlannerNotification(null);
       setPlannerProposal(null);
       setProposalDecision(null);
-      setActiveNavigation(null);
+      setLiveRuntimeState(null);
+      setLiveTripRevision(null);
+      setActivityCommand(null);
       return;
     }
     let mounted = true;
@@ -794,6 +1045,7 @@ function PlannerPage({
 
     const recordVersions = (message: ServerEnvelope): void => {
       if (message.trip_id !== tripId) return;
+      if (message.trip_revision) setLiveTripRevision(message.trip_revision);
       resume = {
         ...resume,
         ...(message.runtime_epoch
@@ -839,7 +1091,16 @@ function PlannerPage({
             message.kind === "subscription_state" ||
             message.kind === "resynchronization_state"
           ) {
-            setActiveNavigation(parseActiveNavigation(message.payload));
+            const runtime = parseLiveRuntimeState(message.payload);
+            setLiveRuntimeState(runtime);
+            const pendingActivity = activityCommandRef.current;
+            if (
+              pendingActivity &&
+              runtime?.activityStates.get(pendingActivity.activityId) ===
+                pendingActivity.targetState
+            ) {
+              setActivityCommand(null);
+            }
           }
           if (
             message.kind === "planner_notification" &&
@@ -885,6 +1146,35 @@ function PlannerPage({
                   ? { messageId, phase }
                   : current,
               );
+              const pendingActivity = activityCommandRef.current;
+              if (pendingActivity?.messageId === messageId) {
+                if (phase === "planner_applied") {
+                  setLiveRuntimeState((current) => {
+                    if (!current) return current;
+                    const next = {
+                      ...current,
+                      activityStates: new Map(current.activityStates),
+                    };
+                    next.activityStates.set(
+                      pendingActivity.activityId,
+                      pendingActivity.targetState,
+                    );
+                    return next;
+                  });
+                  setActivityCommand(null);
+                } else if (phase === "rejected" || phase === "expired") {
+                  setActivityCommand({
+                    ...pendingActivity,
+                    phase,
+                    error:
+                      phase === "expired"
+                        ? "The activity update expired before it was applied."
+                        : "The activity update was rejected. Refreshing live state may be required.",
+                  });
+                } else {
+                  setActivityCommand({ ...pendingActivity, phase });
+                }
+              }
             }
           }
           if (message.kind === "telemetry_status") {
@@ -1035,6 +1325,31 @@ function PlannerPage({
     if (messageId) setProposalDecision({ messageId, phase: "sending" });
   };
 
+  const changeActivityStatus = (
+    activityId: string,
+    targetState: Exclude<LiveActivityState, "planned">,
+  ): void => {
+    if (
+      !liveTripRevision ||
+      (activityCommandRef.current && !activityCommandRef.current.error)
+    ) {
+      return;
+    }
+    const messageId = activeSocketRef.current?.sendActivityStatus(
+      activityId,
+      targetState,
+      liveTripRevision,
+    );
+    if (messageId) {
+      setActivityCommand({
+        messageId,
+        activityId,
+        targetState,
+        phase: "sending",
+      });
+    }
+  };
+
   const startTrip = (): void => {
     if (
       state.kind !== "ready" ||
@@ -1145,8 +1460,11 @@ function PlannerPage({
   }
 
   const { trip } = state;
+  const liveActionableActivityId = actionableActivityId(liveRuntimeState);
   return (
-    <main className="content-page planner-page">
+    <main
+      className={`content-page planner-page ${trip.execution_state === "active" ? "live-planner-page" : ""}`}
+    >
       <header className="page-header">
         <div>
           <p className="eyebrow">Saved itinerary</p>
@@ -1209,328 +1527,415 @@ function PlannerPage({
           ) : null}
         </div>
       </header>
-      {trip.execution_state === "inactive" &&
-      trip.saved_plan.activities.some(
-        (activity) => activity.schedule.state !== "scheduled",
-      ) ? (
-        <p className="configuration-note">
-          Schedule every activity before starting this trip.
-        </p>
-      ) : null}
-      {activationState.kind === "error" ? (
-        <p className="form-error" role="alert">
-          {activationState.message}
-        </p>
-      ) : null}
-      {deactivationState.kind === "error" ? (
-        <p className="form-error" role="alert">
-          {deactivationState.message}
-        </p>
-      ) : null}
-      {deleteState.kind === "error" ? (
-        <p className="form-error" role="alert">
-          {deleteState.message}
-        </p>
-      ) : null}
-      {trip.execution_state === "active" ? (
-        <>
-          <p
-            className={
-              liveConnection.kind === "error"
-                ? "map-preview-error"
-                : "configuration-note"
-            }
-            role={liveConnection.kind === "error" ? "alert" : "status"}
-          >
-            {liveConnection.kind === "connecting"
-              ? "Connecting to the active trip…"
-              : liveConnection.kind === "subscribed"
-                ? "Live trip connected."
-                : liveConnection.kind === "error"
-                  ? liveConnection.message
-                  : "Preparing live trip connection…"}
-          </p>
-          {liveConnection.kind === "subscribed" ? (
+      <div className="planner-workspace">
+        <div className="planner-detail-panel">
+          {trip.execution_state === "inactive" &&
+          trip.saved_plan.activities.some(
+            (activity) => activity.schedule.state !== "scheduled",
+          ) ? (
+            <p className="configuration-note">
+              Schedule every activity before starting this trip.
+            </p>
+          ) : null}
+          {activationState.kind === "error" ? (
+            <p className="form-error" role="alert">
+              {activationState.message}
+            </p>
+          ) : null}
+          {deactivationState.kind === "error" ? (
+            <p className="form-error" role="alert">
+              {deactivationState.message}
+            </p>
+          ) : null}
+          {deleteState.kind === "error" ? (
+            <p className="form-error" role="alert">
+              {deleteState.message}
+            </p>
+          ) : null}
+          {trip.execution_state === "active" ? (
             <>
               <p
                 className={
-                  locationState.stale || locationState.permissionDenied
+                  liveConnection.kind === "error"
                     ? "map-preview-error"
                     : "configuration-note"
                 }
-                role={
-                  locationState.stale || locationState.permissionDenied
-                    ? "alert"
-                    : "status"
-                }
+                role={liveConnection.kind === "error" ? "alert" : "status"}
               >
-                {locationState.permissionDenied
-                  ? "Location permission is required for live location."
-                  : locationState.sample
-                    ? locationState.stale
-                      ? "Live location is stale."
-                      : `Live location · ±${Math.round(locationState.sample.accuracy)} m`
-                    : "Waiting for a live location…"}
+                {liveConnection.kind === "connecting"
+                  ? "Connecting to the active trip…"
+                  : liveConnection.kind === "subscribed"
+                    ? "Live trip connected."
+                    : liveConnection.kind === "error"
+                      ? liveConnection.message
+                      : "Preparing live trip connection…"}
               </p>
-              {routeDegraded ? (
-                <p className="map-preview-error" role="alert">
-                  Live rerouting is temporarily unavailable; the previous route
-                  remains visible.
+              {liveConnection.kind === "subscribed" ? (
+                <>
+                  <p
+                    className={
+                      locationState.stale || locationState.permissionDenied
+                        ? "map-preview-error"
+                        : "configuration-note"
+                    }
+                    role={
+                      locationState.stale || locationState.permissionDenied
+                        ? "alert"
+                        : "status"
+                    }
+                  >
+                    {locationState.permissionDenied
+                      ? "Location permission is required for live location."
+                      : locationState.sample
+                        ? locationState.stale
+                          ? "Live location is stale."
+                          : `Live location · ±${Math.round(locationState.sample.accuracy)} m`
+                        : "Waiting for a live location…"}
+                  </p>
+                  {routeDegraded ? (
+                    <p className="map-preview-error" role="alert">
+                      Live rerouting is temporarily unavailable; the previous
+                      route remains visible.
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
+              {plannerNotification &&
+              plannerNotification.notification !== "none" ? (
+                <p className="configuration-note" role="status">
+                  {plannerNotification.notification.replaceAll("_", " ")} ·{" "}
+                  {plannerNotification.reasons.join(", ")}
                 </p>
+              ) : null}
+              {plannerProposal ? (
+                <section
+                  className="trip-section proposal-card"
+                  aria-labelledby="proposal-title"
+                >
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">Suggested change</p>
+                      <h2 id="proposal-title">Review the proposed plan</h2>
+                    </div>
+                    <span className="state-pill">Not yet accepted</span>
+                  </div>
+                  <p>
+                    {plannerProposal.notification.replaceAll("_", " ")} ·{" "}
+                    {plannerProposal.reasons.join(", ")}
+                  </p>
+                  <p className="configuration-note">
+                    {plannerProposal.preservedCount} activities stay in place;{" "}
+                    {plannerProposal.revisedCount} are in the suggested suffix.
+                    The current route remains canonical until you accept.
+                  </p>
+                  {proposalDecision ? (
+                    <p className="configuration-note" role="status">
+                      Proposal decision:{" "}
+                      {proposalDecision.phase.replaceAll("_", " ")}.
+                    </p>
+                  ) : null}
+                  <div className="planner-actions">
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={() => decideProposal("accept_proposal")}
+                      disabled={proposalDecision !== null}
+                    >
+                      Accept suggestion
+                    </button>
+                    <button
+                      className="button-link"
+                      type="button"
+                      onClick={() => decideProposal("reject_proposal")}
+                      disabled={proposalDecision !== null}
+                    >
+                      Keep current plan
+                    </button>
+                  </div>
+                </section>
               ) : null}
             </>
           ) : null}
-          {plannerNotification &&
-          plannerNotification.notification !== "none" ? (
-            <p className="configuration-note" role="status">
-              {plannerNotification.notification.replaceAll("_", " ")} ·{" "}
-              {plannerNotification.reasons.join(", ")}
-            </p>
-          ) : null}
-          {plannerProposal ? (
-            <section
-              className="trip-section proposal-card"
-              aria-labelledby="proposal-title"
-            >
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">Suggested change</p>
-                  <h2 id="proposal-title">Review the proposed plan</h2>
-                </div>
-                <span className="state-pill">Not yet accepted</span>
+          <section className="trip-section" aria-labelledby="activities-title">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Your stops</p>
+                <h2 id="activities-title">Activities</h2>
               </div>
-              <p>
-                {plannerProposal.notification.replaceAll("_", " ")} ·{" "}
-                {plannerProposal.reasons.join(", ")}
-              </p>
-              <p className="configuration-note">
-                {plannerProposal.preservedCount} activities stay in place;{" "}
-                {plannerProposal.revisedCount} are in the suggested suffix. The
-                current route remains canonical until you accept.
-              </p>
-              {proposalDecision ? (
-                <p className="configuration-note" role="status">
-                  Proposal decision:{" "}
-                  {proposalDecision.phase.replaceAll("_", " ")}.
-                </p>
-              ) : null}
-              <div className="planner-actions">
+              <span>
+                {trip.execution_state === "inactive"
+                  ? draftActivities.length
+                  : trip.saved_plan.activities.length}
+              </span>
+            </div>
+            {trip.execution_state === "inactive" ? (
+              <>
+                <div className="form-grid">
+                  <label className="field-label" htmlFor="saved-trip-name">
+                    Trip name
+                    <input
+                      id="saved-trip-name"
+                      className="text-input"
+                      value={draftTripName}
+                      maxLength={120}
+                      onChange={(event) => setDraftTripName(event.target.value)}
+                    />
+                  </label>
+                  <label className="field-label" htmlFor="saved-trip-time-zone">
+                    Trip timezone
+                    <input
+                      id="saved-trip-time-zone"
+                      className="text-input"
+                      value={draftTimeZoneName}
+                      onChange={(event) =>
+                        setDraftTimeZoneName(event.target.value)
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="editor-group">
+                  <label className="check-field">
+                    <input
+                      type="checkbox"
+                      checked={draftDisplaySchedule !== null}
+                      onChange={(event) =>
+                        setDraftDisplaySchedule(
+                          event.target.checked
+                            ? {
+                                local_date: "",
+                                local_time: "09:00:00",
+                                time_zone_name: draftTimeZoneName,
+                              }
+                            : null,
+                        )
+                      }
+                    />
+                    Add a display-only date and time
+                  </label>
+                  {draftDisplaySchedule ? (
+                    <div className="form-grid">
+                      <label className="field-label">
+                        Display date
+                        <input
+                          className="text-input"
+                          type="date"
+                          value={draftDisplaySchedule.local_date}
+                          onChange={(event) =>
+                            setDraftDisplaySchedule({
+                              ...draftDisplaySchedule,
+                              local_date: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-label">
+                        Display time
+                        <input
+                          className="text-input"
+                          type="time"
+                          step={1}
+                          value={displayTimeInput(
+                            draftDisplaySchedule.local_time,
+                          )}
+                          onChange={(event) =>
+                            setDraftDisplaySchedule({
+                              ...draftDisplaySchedule,
+                              local_time: displayTimeValue(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-label">
+                        Display timezone
+                        <input
+                          className="text-input"
+                          value={draftDisplaySchedule.time_zone_name}
+                          onChange={(event) =>
+                            setDraftDisplaySchedule({
+                              ...draftDisplaySchedule,
+                              time_zone_name: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="planner-editor-list">
+                  {draftActivities.map((editable, index) => (
+                    <div
+                      className="planner-editor-item"
+                      key={editable.activityId ?? editable.place.place_id}
+                    >
+                      <div className="place-confirmation">
+                        <strong>{editable.place.display_name}</strong>
+                        <small>
+                          <span>
+                            {editable.input.schedule.state === "scheduled"
+                              ? `${formatOffset(editable.input.schedule.start_offset_ms)} – ${formatOffset(editable.input.schedule.end_offset_ms)}`
+                              : "Unscheduled"}
+                          </span>
+                          {" · "}
+                          {editable.place.time_zone_name}
+                        </small>
+                      </div>
+                      <ActivityEditor
+                        value={{ ...editable.input, ordinal: index }}
+                        onChange={(input) =>
+                          setDraftActivities((current) =>
+                            current.map((candidate, candidateIndex) =>
+                              candidateIndex === index
+                                ? {
+                                    ...candidate,
+                                    input: { ...input, ordinal: index },
+                                  }
+                                : candidate,
+                            ),
+                          )
+                        }
+                        title={`Review stop ${index + 1}`}
+                      />
+                      <button
+                        className="button-link danger-link"
+                        type="button"
+                        onClick={() => removeDraftActivity(index)}
+                        disabled={draftActivities.length <= 1}
+                      >
+                        Remove stop
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <PlaceSearch
+                  key={draftActivities.length}
+                  api={api}
+                  csrfToken={csrfToken}
+                  onPlaceConfirmed={addDraftPlace}
+                />
+                {editState.kind === "error" ? (
+                  <p className="form-error" role="alert">
+                    {editState.message}
+                  </p>
+                ) : null}
                 <button
                   className="primary-button"
                   type="button"
-                  onClick={() => decideProposal("accept_proposal")}
-                  disabled={proposalDecision !== null}
+                  onClick={() => void saveInactiveTrip()}
+                  disabled={editState.kind === "saving"}
                 >
-                  Accept suggestion
+                  {editState.kind === "saving"
+                    ? "Saving changes…"
+                    : "Save changes"}
                 </button>
-                <button
-                  className="button-link"
-                  type="button"
-                  onClick={() => decideProposal("reject_proposal")}
-                  disabled={proposalDecision !== null}
-                >
-                  Keep current plan
-                </button>
-              </div>
-            </section>
-          ) : null}
-        </>
-      ) : null}
-      <section className="trip-section" aria-labelledby="activities-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Your stops</p>
-            <h2 id="activities-title">Activities</h2>
-          </div>
-          <span>
-            {trip.execution_state === "inactive"
-              ? draftActivities.length
-              : trip.saved_plan.activities.length}
-          </span>
-        </div>
-        {trip.execution_state === "inactive" ? (
-          <>
-            <div className="form-grid">
-              <label className="field-label" htmlFor="saved-trip-name">
-                Trip name
-                <input
-                  id="saved-trip-name"
-                  className="text-input"
-                  value={draftTripName}
-                  maxLength={120}
-                  onChange={(event) => setDraftTripName(event.target.value)}
-                />
-              </label>
-              <label className="field-label" htmlFor="saved-trip-time-zone">
-                Trip timezone
-                <input
-                  id="saved-trip-time-zone"
-                  className="text-input"
-                  value={draftTimeZoneName}
-                  onChange={(event) => setDraftTimeZoneName(event.target.value)}
-                />
-              </label>
-            </div>
-            <div className="editor-group">
-              <label className="check-field">
-                <input
-                  type="checkbox"
-                  checked={draftDisplaySchedule !== null}
-                  onChange={(event) =>
-                    setDraftDisplaySchedule(
-                      event.target.checked
-                        ? {
-                            local_date: "",
-                            local_time: "09:00:00",
-                            time_zone_name: draftTimeZoneName,
-                          }
-                        : null,
-                    )
-                  }
-                />
-                Add a display-only date and time
-              </label>
-              {draftDisplaySchedule ? (
-                <div className="form-grid">
-                  <label className="field-label">
-                    Display date
-                    <input
-                      className="text-input"
-                      type="date"
-                      value={draftDisplaySchedule.local_date}
-                      onChange={(event) =>
-                        setDraftDisplaySchedule({
-                          ...draftDisplaySchedule,
-                          local_date: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="field-label">
-                    Display time
-                    <input
-                      className="text-input"
-                      type="time"
-                      step={1}
-                      value={displayTimeInput(draftDisplaySchedule.local_time)}
-                      onChange={(event) =>
-                        setDraftDisplaySchedule({
-                          ...draftDisplaySchedule,
-                          local_time: displayTimeValue(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="field-label">
-                    Display timezone
-                    <input
-                      className="text-input"
-                      value={draftDisplaySchedule.time_zone_name}
-                      onChange={(event) =>
-                        setDraftDisplaySchedule({
-                          ...draftDisplaySchedule,
-                          time_zone_name: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-              ) : null}
-            </div>
-            <div className="planner-editor-list">
-              {draftActivities.map((editable, index) => (
-                <div
-                  className="planner-editor-item"
-                  key={editable.activityId ?? editable.place.place_id}
-                >
-                  <div className="place-confirmation">
-                    <strong>{editable.place.display_name}</strong>
-                    <small>
-                      <span>
-                        {editable.input.schedule.state === "scheduled"
-                          ? `${formatOffset(editable.input.schedule.start_offset_ms)} – ${formatOffset(editable.input.schedule.end_offset_ms)}`
-                          : "Unscheduled"}
-                      </span>
-                      {" · "}
-                      {editable.place.time_zone_name}
-                    </small>
-                  </div>
-                  <ActivityEditor
-                    value={{ ...editable.input, ordinal: index }}
-                    onChange={(input) =>
-                      setDraftActivities((current) =>
-                        current.map((candidate, candidateIndex) =>
-                          candidateIndex === index
-                            ? {
-                                ...candidate,
-                                input: { ...input, ordinal: index },
+              </>
+            ) : (
+              <>
+                {activityCommand?.error ? (
+                  <p className="form-error" role="alert">
+                    {activityCommand.error}
+                  </p>
+                ) : null}
+                <ol className="planner-activity-list">
+                  {trip.saved_plan.activities.map((activity) => {
+                    const activityState =
+                      liveRuntimeState?.activityStates.get(
+                        activity.activity_id,
+                      ) ?? "planned";
+                    const actionable =
+                      liveConnection.kind === "subscribed" &&
+                      activity.activity_id === liveActionableActivityId;
+                    const commandPending =
+                      activityCommand !== null && !activityCommand.error;
+                    return (
+                      <li
+                        key={activity.activity_id}
+                        className="planner-activity"
+                      >
+                        <span className="trip-icon" aria-hidden="true">
+                          {activity.ordinal + 1}
+                        </span>
+                        <span>
+                          <strong>{activity.place.display_name}</strong>
+                          <small>
+                            {activity.schedule.state === "scheduled"
+                              ? `${formatOffset(activity.schedule.start_offset_ms)} – ${formatOffset(activity.schedule.end_offset_ms)}`
+                              : "Unscheduled"}
+                          </small>
+                        </span>
+                        <span className="state-pill">{activityState}</span>
+                        {actionable ? (
+                          <div className="activity-live-actions">
+                            {activityState === "started" ? (
+                              <button
+                                className="primary-button"
+                                type="button"
+                                disabled={commandPending}
+                                onClick={() =>
+                                  changeActivityStatus(
+                                    activity.activity_id,
+                                    "completed",
+                                  )
+                                }
+                              >
+                                Complete
+                              </button>
+                            ) : (
+                              <button
+                                className="primary-button"
+                                type="button"
+                                disabled={commandPending}
+                                onClick={() =>
+                                  changeActivityStatus(
+                                    activity.activity_id,
+                                    "started",
+                                  )
+                                }
+                              >
+                                Start
+                              </button>
+                            )}
+                            <button
+                              className="button-link"
+                              type="button"
+                              disabled={commandPending}
+                              onClick={() =>
+                                changeActivityStatus(
+                                  activity.activity_id,
+                                  "skipped",
+                                )
                               }
-                            : candidate,
-                        ),
-                      )
-                    }
-                    title={`Review stop ${index + 1}`}
-                  />
-                  <button
-                    className="button-link danger-link"
-                    type="button"
-                    onClick={() => removeDraftActivity(index)}
-                    disabled={draftActivities.length <= 1}
-                  >
-                    Remove stop
-                  </button>
-                </div>
-              ))}
-            </div>
-            <PlaceSearch
-              key={draftActivities.length}
-              api={api}
-              csrfToken={csrfToken}
-              onPlaceConfirmed={addDraftPlace}
-            />
-            {editState.kind === "error" ? (
-              <p className="form-error" role="alert">
-                {editState.message}
-              </p>
-            ) : null}
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => void saveInactiveTrip()}
-              disabled={editState.kind === "saving"}
-            >
-              {editState.kind === "saving" ? "Saving changes…" : "Save changes"}
-            </button>
-          </>
-        ) : (
-          <ol className="planner-activity-list">
-            {trip.saved_plan.activities.map((activity) => (
-              <li key={activity.activity_id} className="planner-activity">
-                <span className="trip-icon" aria-hidden="true">
-                  {activity.ordinal + 1}
-                </span>
-                <span>
-                  <strong>{activity.place.display_name}</strong>
-                  <small>
-                    {activity.schedule.state === "scheduled"
-                      ? `${formatOffset(activity.schedule.start_offset_ms)} – ${formatOffset(activity.schedule.end_offset_ms)}`
-                      : "Unscheduled"}
-                  </small>
-                </span>
-                <span className="state-pill">
-                  {activity.inbound_travel_mode}
-                </span>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
-      <MapPreview
-        trip={trip}
-        currentLocation={locationState.sample}
-        onCanonicalRoutes={setCanonicalRoutes}
-        routeOverride={routeOverride}
-      />
+                            >
+                              Skip
+                            </button>
+                            {activityCommand?.activityId ===
+                            activity.activity_id ? (
+                              <small role="status">
+                                {activityCommand.phase.replaceAll("_", " ")}…
+                              </small>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="state-pill">
+                            {activity.inbound_travel_mode}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </>
+            )}
+          </section>
+        </div>
+        <div className="planner-map-panel">
+          <MapPreview
+            trip={trip}
+            currentLocation={locationState.sample}
+            onCanonicalRoutes={setCanonicalRoutes}
+            routeOverride={routeOverride}
+          />
+        </div>
+      </div>
     </main>
   );
 }
@@ -1622,197 +2027,219 @@ export function NewTripPage({
           Back to trips
         </Link>
       </header>
-      <section className="trip-section" aria-labelledby="trip-details-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Trip details</p>
-            <h2 id="trip-details-title">Name your trip</h2>
+      <div className="planner-workspace new-trip-workspace">
+        <div className="planner-detail-panel">
+          <section
+            className="trip-section"
+            aria-labelledby="trip-details-title"
+          >
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Trip details</p>
+                <h2 id="trip-details-title">Name your trip</h2>
+              </div>
+            </div>
+            <label className="field-label" htmlFor="new-trip-name">
+              Trip name
+            </label>
+            <input
+              id="new-trip-name"
+              className="text-input"
+              value={tripName}
+              maxLength={120}
+              onChange={(event) => setTripName(event.target.value)}
+              placeholder="Saturday in Providence"
+            />
+            <label className="field-label" htmlFor="new-trip-time-zone">
+              Trip timezone
+            </label>
+            <input
+              id="new-trip-time-zone"
+              className="text-input"
+              value={tripTimeZoneName}
+              onChange={(event) => setTripTimeZoneName(event.target.value)}
+              placeholder="America/New_York"
+              autoComplete="off"
+            />
+            <p className="configuration-note">
+              Initialized from your stored default; you can change it for this
+              trip.
+            </p>
+            <p className="configuration-note">
+              Trip timezone: {tripTimeZoneName}
+            </p>
+            <div className="editor-group">
+              <label className="check-field">
+                <input
+                  type="checkbox"
+                  checked={displaySchedule !== null}
+                  onChange={(event) =>
+                    setDisplaySchedule(
+                      event.target.checked
+                        ? {
+                            local_date: "",
+                            local_time: "09:00:00",
+                            time_zone_name: tripTimeZoneName,
+                          }
+                        : null,
+                    )
+                  }
+                />
+                Add a display-only date and time
+              </label>
+              {displaySchedule ? (
+                <div className="form-grid">
+                  <label className="field-label">
+                    Display date
+                    <input
+                      className="text-input"
+                      type="date"
+                      value={displaySchedule.local_date}
+                      onChange={(event) =>
+                        setDisplaySchedule({
+                          ...displaySchedule,
+                          local_date: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="field-label">
+                    Display time
+                    <input
+                      className="text-input"
+                      type="time"
+                      step={1}
+                      value={displayTimeInput(displaySchedule.local_time)}
+                      onChange={(event) =>
+                        setDisplaySchedule({
+                          ...displaySchedule,
+                          local_time: displayTimeValue(event.target.value),
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="field-label">
+                    Display timezone
+                    <input
+                      className="text-input"
+                      value={displaySchedule.time_zone_name}
+                      onChange={(event) =>
+                        setDisplaySchedule({
+                          ...displaySchedule,
+                          time_zone_name: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </div>
+            {draftActivities.length > 0 ? (
+              <ol className="planner-activity-list">
+                {draftActivities.map((activity, index) => (
+                  <li
+                    className="planner-activity"
+                    key={activity.place.place_id}
+                  >
+                    <span className="trip-icon" aria-hidden="true">
+                      {index + 1}
+                    </span>
+                    <span>
+                      <strong>{activity.place.display_name}</strong>
+                      <small>{activity.place.time_zone_name}</small>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+          </section>
+          <PlaceSearch
+            key={draftActivities.length}
+            api={api}
+            csrfToken={csrfToken}
+            onPlaceConfirmed={(place) =>
+              setDraftActivities((current) => [
+                ...current,
+                {
+                  place,
+                  input: createDefaultActivity(place.place_id, current.length),
+                },
+              ])
+            }
+          />
+          {draftActivities.map((activity, index) => (
+            <div
+              className="planner-editor-item"
+              key={activity.place.place_id + "-" + index}
+            >
+              <ActivityEditor
+                value={{ ...activity.input, ordinal: index }}
+                onChange={(input) =>
+                  setDraftActivities((current) =>
+                    current.map((candidate, candidateIndex) =>
+                      candidateIndex === index
+                        ? { ...candidate, input: { ...input, ordinal: index } }
+                        : candidate,
+                    ),
+                  )
+                }
+                title={`Review stop ${index + 1}`}
+              />
+              <button
+                className="button-link danger-link"
+                type="button"
+                onClick={() =>
+                  setDraftActivities((current) =>
+                    current
+                      .filter((_, candidateIndex) => candidateIndex !== index)
+                      .map((candidate, ordinal) => ({
+                        ...candidate,
+                        input: { ...candidate.input, ordinal },
+                      })),
+                  )
+                }
+                disabled={draftActivities.length <= 1}
+              >
+                Remove stop
+              </button>
+            </div>
+          ))}
+          <div className="empty-state planner-coming-soon">
+            <h3>Save your inactive trip</h3>
+            <p>
+              A trip is saved only after it has a name and at least one complete
+              activity with schedule and travel settings. The selected timezone
+              is sent with that first canonical inactive revision.
+            </p>
+            {saveState.kind === "error" ? (
+              <p className="form-error" role="alert">
+                {saveState.message}
+              </p>
+            ) : null}
+            <button
+              className="primary-button"
+              type="button"
+              disabled={
+                !tripName.trim() ||
+                !tripTimeZoneName.trim() ||
+                draftActivities.length === 0 ||
+                saveState.kind === "saving"
+              }
+              onClick={() => void saveTrip()}
+            >
+              {saveState.kind === "saving" ? "Saving…" : "Save trip"}
+            </button>
           </div>
         </div>
-        <label className="field-label" htmlFor="new-trip-name">
-          Trip name
-        </label>
-        <input
-          id="new-trip-name"
-          className="text-input"
-          value={tripName}
-          maxLength={120}
-          onChange={(event) => setTripName(event.target.value)}
-          placeholder="Saturday in Providence"
-        />
-        <label className="field-label" htmlFor="new-trip-time-zone">
-          Trip timezone
-        </label>
-        <input
-          id="new-trip-time-zone"
-          className="text-input"
-          value={tripTimeZoneName}
-          onChange={(event) => setTripTimeZoneName(event.target.value)}
-          placeholder="America/New_York"
-          autoComplete="off"
-        />
-        <p className="configuration-note">
-          Initialized from your stored default; you can change it for this trip.
-        </p>
-        <p className="configuration-note">Trip timezone: {tripTimeZoneName}</p>
-        <div className="editor-group">
-          <label className="check-field">
-            <input
-              type="checkbox"
-              checked={displaySchedule !== null}
-              onChange={(event) =>
-                setDisplaySchedule(
-                  event.target.checked
-                    ? {
-                        local_date: "",
-                        local_time: "09:00:00",
-                        time_zone_name: tripTimeZoneName,
-                      }
-                    : null,
-                )
-              }
-            />
-            Add a display-only date and time
-          </label>
-          {displaySchedule ? (
-            <div className="form-grid">
-              <label className="field-label">
-                Display date
-                <input
-                  className="text-input"
-                  type="date"
-                  value={displaySchedule.local_date}
-                  onChange={(event) =>
-                    setDisplaySchedule({
-                      ...displaySchedule,
-                      local_date: event.target.value,
-                    })
-                  }
-                />
-              </label>
-              <label className="field-label">
-                Display time
-                <input
-                  className="text-input"
-                  type="time"
-                  step={1}
-                  value={displayTimeInput(displaySchedule.local_time)}
-                  onChange={(event) =>
-                    setDisplaySchedule({
-                      ...displaySchedule,
-                      local_time: displayTimeValue(event.target.value),
-                    })
-                  }
-                />
-              </label>
-              <label className="field-label">
-                Display timezone
-                <input
-                  className="text-input"
-                  value={displaySchedule.time_zone_name}
-                  onChange={(event) =>
-                    setDisplaySchedule({
-                      ...displaySchedule,
-                      time_zone_name: event.target.value,
-                    })
-                  }
-                />
-              </label>
-            </div>
-          ) : null}
-        </div>
-        {draftActivities.length > 0 ? (
-          <ol className="planner-activity-list">
-            {draftActivities.map((activity, index) => (
-              <li className="planner-activity" key={activity.place.place_id}>
-                <span className="trip-icon" aria-hidden="true">
-                  {index + 1}
-                </span>
-                <span>
-                  <strong>{activity.place.display_name}</strong>
-                  <small>{activity.place.time_zone_name}</small>
-                </span>
-              </li>
-            ))}
-          </ol>
-        ) : null}
-      </section>
-      <PlaceSearch
-        key={draftActivities.length}
-        api={api}
-        csrfToken={csrfToken}
-        onPlaceConfirmed={(place) =>
-          setDraftActivities((current) => [
-            ...current,
-            {
-              place,
-              input: createDefaultActivity(place.place_id, current.length),
-            },
-          ])
-        }
-      />
-      {draftActivities.map((activity, index) => (
-        <div
-          className="planner-editor-item"
-          key={activity.place.place_id + "-" + index}
-        >
-          <ActivityEditor
-            value={{ ...activity.input, ordinal: index }}
-            onChange={(input) =>
-              setDraftActivities((current) =>
-                current.map((candidate, candidateIndex) =>
-                  candidateIndex === index
-                    ? { ...candidate, input: { ...input, ordinal: index } }
-                    : candidate,
-                ),
-              )
-            }
-            title={`Review stop ${index + 1}`}
-          />
-          <button
-            className="button-link danger-link"
-            type="button"
-            onClick={() =>
-              setDraftActivities((current) =>
-                current
-                  .filter((_, candidateIndex) => candidateIndex !== index)
-                  .map((candidate, ordinal) => ({
-                    ...candidate,
-                    input: { ...candidate.input, ordinal },
-                  })),
-              )
-            }
-            disabled={draftActivities.length <= 1}
-          >
-            Remove stop
-          </button>
-        </div>
-      ))}
-      <div className="empty-state planner-coming-soon">
-        <h3>Save your inactive trip</h3>
-        <p>
-          A trip is saved only after it has a name and at least one complete
-          activity with schedule and travel settings. The selected timezone is
-          sent with that first canonical inactive revision.
-        </p>
-        {saveState.kind === "error" ? (
-          <p className="form-error" role="alert">
-            {saveState.message}
-          </p>
-        ) : null}
-        <button
-          className="primary-button"
-          type="button"
-          disabled={
-            !tripName.trim() ||
-            !tripTimeZoneName.trim() ||
-            draftActivities.length === 0 ||
-            saveState.kind === "saving"
-          }
-          onClick={() => void saveTrip()}
-        >
-          {saveState.kind === "saving" ? "Saving…" : "Save trip"}
-        </button>
+        <aside className="planner-map-placeholder" aria-label="Route preview">
+          <div className="placeholder-map-route" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <strong>Your route will take shape here</strong>
+          <p>Add confirmed stops to build the itinerary before saving it.</p>
+        </aside>
       </div>
     </main>
   );
@@ -1852,11 +2279,11 @@ function AppShell({
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <header className="topbar">
         <Brand />
         <nav aria-label="Primary navigation">
-          <NavLink to="/trips">Trips</NavLink>
-          <NavLink to="/planner/new">Planner</NavLink>
+          <NavLink to="/trips">My Trips</NavLink>
+          <NavLink to="/planner/new">Plan a Trip</NavLink>
           <NavLink
             className={active ? "" : "nav-disabled"}
             to="/live"
@@ -1883,11 +2310,11 @@ function AppShell({
           </button>
         </div>
         {signOutState.kind === "error" ? (
-          <p className="sidebar-error" role="alert">
+          <p className="topbar-error" role="alert">
             {signOutState.message}
           </p>
         ) : null}
-      </aside>
+      </header>
       <div className="app-content">
         <Routes>
           <Route path="/trips" element={<TripsPage trips={trips} />} />
@@ -1956,7 +2383,10 @@ function PlannerRoute({
   );
 }
 
-export function AppRoutes({ api = liveRouteApi }: AppRoutesProps): ReactNode {
+export function AppRoutes({
+  api = liveRouteApi,
+  googleClientId,
+}: AppRoutesProps): ReactNode {
   const [state, setState] = useState<AppState>({ phase: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -2033,7 +2463,13 @@ export function AppRoutes({ api = liveRouteApi }: AppRoutesProps): ReactNode {
 
   if (state.phase === "loading") return <LoadingScreen />;
   if (state.phase === "anonymous")
-    return <SignedOutScreen api={api} onAuthenticated={authenticated} />;
+    return (
+      <AnonymousExperience
+        api={api}
+        googleClientId={googleClientId}
+        onAuthenticated={authenticated}
+      />
+    );
   if (state.phase === "error")
     return <ErrorScreen message={state.message} retry={retry} />;
   return (
@@ -2058,10 +2494,11 @@ export function App(): ReactNode {
 export function TestApp({
   api,
   initialEntries = ["/trips"],
+  googleClientId = "",
 }: AppRoutesProps & { initialEntries?: string[] }): ReactNode {
   return (
     <MemoryRouter initialEntries={initialEntries}>
-      <AppRoutes api={api} />
+      <AppRoutes api={api} googleClientId={googleClientId} />
     </MemoryRouter>
   );
 }

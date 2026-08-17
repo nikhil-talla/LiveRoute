@@ -66,7 +66,7 @@ func TestRuntimeFinalizerMapsAcceptedMutation(t *testing.T) {
 		Disposition: liveroutev1.EventDisposition_EVENT_DISPOSITION_DUPLICATE,
 		Status:      liveroutev1.StatusCode_STATUS_CODE_DUPLICATE,
 	}
-	if err := finalizer.Finalize(context.Background(), runtimeRow(), event, response, ack); err != nil {
+	if _, err := finalizer.Finalize(context.Background(), runtimeRow(), event, response, ack); err != nil {
 		t.Fatal(err)
 	}
 	if store.mutation == nil || store.mutation.Mutation.TravelDelay == nil ||
@@ -83,7 +83,7 @@ func TestRuntimeFinalizerMapsLogicalExpiry(t *testing.T) {
 		Disposition: liveroutev1.EventDisposition_EVENT_DISPOSITION_REJECTED,
 		Status:      liveroutev1.StatusCode_STATUS_CODE_COMMAND_EXPIRED,
 	}
-	if err := finalizer.Finalize(
+	if _, err := finalizer.Finalize(
 		context.Background(), runtimeRow(),
 		&liveroutev1.ApplyTripEvent{},
 		&liveroutev1.PlannerStreamResponse{PlannerStateVersion: 9}, ack,
@@ -111,7 +111,7 @@ func TestRuntimeFinalizerMapsStaleProposalDecision(t *testing.T) {
 		Status:      liveroutev1.StatusCode_STATUS_CODE_STALE,
 		StaleReason: liveroutev1.StaleReason_STALE_REASON_PLAN_PROPOSAL,
 	}
-	if err := finalizer.Finalize(
+	if _, err := finalizer.Finalize(
 		context.Background(), runtimeRow(),
 		&liveroutev1.ApplyTripEvent{Event: &liveroutev1.ApplyTripEvent_PlanDecision{PlanDecision: decision}},
 		&liveroutev1.PlannerStreamResponse{PlannerStateVersion: 10}, ack,

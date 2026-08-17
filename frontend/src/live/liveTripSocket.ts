@@ -371,6 +371,30 @@ export class LiveTripSocket {
     return messageId;
   }
 
+  sendActivityStatus(
+    activityId: string,
+    state: "started" | "completed" | "skipped",
+    expectedTripRevision: string,
+  ): string | null {
+    if (!this.#subscribed || !this.#socket) return null;
+    const envelope = clientEnvelope(
+      "trip_command",
+      {
+        command_kind: "activity_status_changed",
+        command: {
+          expected_trip_revision: expectedTripRevision,
+          activity_id: activityId,
+          state,
+        },
+      },
+      this.#options.tripId,
+    );
+    const messageId = envelope.message_id;
+    if (typeof messageId !== "string") return null;
+    this.#socket.send(JSON.stringify(envelope));
+    return messageId;
+  }
+
   #sendTelemetry(
     observationKind: "location" | "route_deviation",
     observedAtUnixMs: number,

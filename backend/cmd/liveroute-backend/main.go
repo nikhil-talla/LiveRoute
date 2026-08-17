@@ -298,6 +298,44 @@ func run(args []string) error {
 		return err
 	}
 	websocketHandler.SetOnSessionClosed(subscriptions.RemoveSink)
+	durableDispatcher.SetOnRuntimeFinalized(func(
+		finalized persistence.FinalizedCommand,
+		response *liveroutev1.PlannerStreamResponse,
+	) {
+		if err := supervisor.CommitMutation(
+			finalized.TripID,
+			response.GetRuntimeEpoch(),
+			response.GetAcceptedMutationSequence(),
+			response.GetPlannerStateVersion(),
+		); err != nil {
+			slog.Warn("commit finalized runtime watermarks failed", "trip_id", finalized.TripID, "error", err)
+		}
+		raw, err := gateway.BuildRuntimeCommandFinalizedEnvelope(
+			finalized,
+			gateway.RuntimeVersions{
+				RuntimeEpoch:                response.GetRuntimeEpoch(),
+				AcceptedMutationSequence:    response.GetAcceptedMutationSequence(),
+				AcceptedObservationSequence: response.GetAcceptedObservationSequence(),
+			},
+		)
+		if err != nil {
+			slog.Warn("build finalized command acknowledgement failed", "trip_id", finalized.TripID, "error", err)
+			return
+		}
+		if err := subscriptions.PublishTrip(finalized.TripID, raw); err != nil {
+			slog.Warn("publish finalized command acknowledgement failed", "trip_id", finalized.TripID, "error", err)
+		}
+		if err := broadcastSubscriptionState(
+			rootContext,
+			finalized.TripID,
+			canonicalState,
+			proposals,
+			supervisor,
+			subscriptions,
+		); err != nil {
+			slog.Warn("publish finalized trip state failed", "trip_id", finalized.TripID, "error", err)
+		}
+	})
 	proposalConsumer.SetOnStored(func(ctx context.Context, stored persistence.PersistedProposal, response *liveroutev1.PlannerStreamResponse) error {
 		raw, err := gateway.BuildPlanProposalEnvelope(stored.TripID, gateway.TripVersions{
 			TripRevision:                strconv.FormatUint(response.GetTripRevision(), 10),
@@ -659,6 +697,56 @@ func publishSubscriptionState(ctx context.Context, message gateway.Authenticated
 		return err
 	}
 	return message.Sink.PublishServerEnvelope(raw)
+}
+
+func broadcastSubscriptionState(
+	ctx context.Context,
+	tripID string,
+	stateStore *persistence.CanonicalStateStore,
+	proposals *persistence.ProposalStore,
+	supervisor *dispatch.RuntimeSupervisor,
+	subscriptions *gateway.SubscriptionHub,
+) error {
+	state, err := stateStore.Load(ctx, tripID)
+	if err != nil {
+		return err
+	}
+	pending, err := pendingProposal(ctx, proposals, tripID)
+	if err != nil {
+		return err
+	}
+	runtimeState := runtimeVersions(supervisor, tripID)
+	syncState, err := runtimeSyncState(ctx, stateStore, state, runtimeState, tripID)
+	if err != nil {
+		return err
+	}
+	payload, err := gateway.SubscriptionStatePayload(
+		state,
+		pending,
+		true,
+		syncState,
+	)
+	if err != nil {
+		return err
+	}
+	raw, err := gateway.BuildTripStateEnvelope(
+		"subscription_state",
+		"OK",
+		false,
+		tripID,
+		"",
+		gateway.StateVersions(state, gateway.RuntimeVersions{
+			RuntimeEpoch:                runtimeState.RuntimeEpoch,
+			PlannerStateVersion:         runtimeState.PlannerStateVersion,
+			AcceptedMutationSequence:    runtimeState.AcceptedMutationSequence,
+			AcceptedObservationSequence: runtimeState.AcceptedObservationSequence,
+		}),
+		payload,
+	)
+	if err != nil {
+		return err
+	}
+	return subscriptions.PublishTrip(tripID, raw)
 }
 
 func authorizedState(ctx context.Context, stateStore *persistence.CanonicalStateStore, tripID, userID string) (persistence.CanonicalTripState, error) {

@@ -1,0 +1,14 @@
+{
+  "protocol_version": "liveroute.v1",
+  "message_id": "550e8400-e29b-41d4-a716-446655440020",
+  "kind": "trip_command",
+  "trip_id": "550e8400-e29b-41d4-a716-446655440011",
+  "payload": {
+    "command_kind": "activity_status_changed",
+    "command": {
+      "expected_trip_revision": "4",
+      "activity_id": "550e8400-e29b-41d4-a716-446655440012",
+      "state": "started"
+    }
+  }
+}

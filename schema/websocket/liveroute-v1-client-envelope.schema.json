@@ -311,12 +311,12 @@
       ]
     },
     "activityStatusCommand": {
-      "type": "object", "required": ["activity_id", "state"],
-      "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "state": { "enum": ["planned", "started", "completed", "skipped"] } }, "additionalProperties": false
+      "type": "object", "required": ["expected_trip_revision", "activity_id", "state"],
+      "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "activity_id": { "$ref": "#/$defs/uuid" }, "state": { "enum": ["planned", "started", "completed", "skipped"] } }, "additionalProperties": false
     },
     "activityDelayedCommand": {
-      "type": "object", "required": ["activity_id", "delay_seconds"],
-      "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "delay_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 } }, "additionalProperties": false
+      "type": "object", "required": ["expected_trip_revision", "activity_id", "delay_seconds"],
+      "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "activity_id": { "$ref": "#/$defs/uuid" }, "delay_seconds": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 } }, "additionalProperties": false
     },
     "tripEditedCommand": { "type": "object", "required": ["expected_trip_revision", "operation", "current_plan"], "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "operation": { "$ref": "#/$defs/tripEditOperation" }, "current_plan": { "$ref": "#/$defs/userPlanDraft" } }, "additionalProperties": false },
     "tripEditOperation": { "oneOf": [
@@ -325,11 +325,11 @@
       { "type": "object", "required": ["remove"], "properties": { "remove": { "type": "object", "required": ["activity_id"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" } }, "additionalProperties": false } }, "additionalProperties": false },
       { "type": "object", "required": ["reorder"], "properties": { "reorder": { "type": "object", "required": ["activity_ids"], "properties": { "activity_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" }, "uniqueItems": true } }, "additionalProperties": false } }, "additionalProperties": false }
     ] },
-    "reservationChangedCommand": { "type": "object", "required": ["activity_id", "reservation_grace_seconds"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "reservation_start_unix_ms": { "type": "integer" }, "reservation_grace_seconds": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
-    "mandatoryDeadlineCommand": { "type": "object", "required": ["activity_id", "latest_finish_unix_ms"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "latest_finish_unix_ms": { "type": "integer" } }, "additionalProperties": false },
-    "operatingHoursCommand": { "type": "object", "required": ["activity_id", "open_windows"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "open_windows": { "type": "array", "items": { "$ref": "#/$defs/timeWindow" } } }, "additionalProperties": false },
-    "placeClosedCommand": { "type": "object", "required": ["activity_id", "observed_at_unix_ms"], "properties": { "activity_id": { "$ref": "#/$defs/uuid" }, "observed_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
-    "travelDelayCommand": { "type": "object", "required": ["from_activity_id", "to_activity_id", "additional_seconds"], "properties": { "from_activity_id": { "$ref": "#/$defs/uuid" }, "to_activity_id": { "$ref": "#/$defs/uuid" }, "additional_seconds": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+    "reservationChangedCommand": { "type": "object", "required": ["expected_trip_revision", "activity_id", "reservation_grace_seconds"], "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "activity_id": { "$ref": "#/$defs/uuid" }, "reservation_start_unix_ms": { "type": "integer" }, "reservation_grace_seconds": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+    "mandatoryDeadlineCommand": { "type": "object", "required": ["expected_trip_revision", "activity_id", "latest_finish_unix_ms"], "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "activity_id": { "$ref": "#/$defs/uuid" }, "latest_finish_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+    "operatingHoursCommand": { "type": "object", "required": ["expected_trip_revision", "activity_id", "open_windows"], "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "activity_id": { "$ref": "#/$defs/uuid" }, "open_windows": { "type": "array", "items": { "$ref": "#/$defs/timeWindow" } } }, "additionalProperties": false },
+    "placeClosedCommand": { "type": "object", "required": ["expected_trip_revision", "activity_id", "observed_at_unix_ms"], "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "activity_id": { "$ref": "#/$defs/uuid" }, "observed_at_unix_ms": { "type": "integer" } }, "additionalProperties": false },
+    "travelDelayCommand": { "type": "object", "required": ["expected_trip_revision", "from_activity_id", "to_activity_id", "additional_seconds"], "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "from_activity_id": { "$ref": "#/$defs/uuid" }, "to_activity_id": { "$ref": "#/$defs/uuid" }, "additional_seconds": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
     "replaceCurrentPlanCommand": {
       "type": "object", "required": ["expected_trip_revision", "current_plan"],
       "properties": { "expected_trip_revision": { "$ref": "#/$defs/uint64" }, "current_plan": { "$ref": "#/$defs/userPlanDraft" } }, "additionalProperties": false

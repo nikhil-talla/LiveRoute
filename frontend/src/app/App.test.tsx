@@ -148,7 +148,7 @@ describe("App session restoration", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the signed-out experience for an unauthenticated session", async () => {
+  it("shows the landing page first for an unauthenticated session", async () => {
     render(
       <TestApp
         api={api({
@@ -160,11 +160,32 @@ describe("App session restoration", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: /Build the plan/i }),
+      await screen.findByRole("heading", { name: /Plans that move/i }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Sign in with Google" }),
-    ).toBeDisabled();
+      screen.getByRole("link", { name: "Sign in with Google" }),
+    ).toHaveAttribute("href", "/signin");
+  });
+
+  it("opens the sign-in experience from the public landing page", async () => {
+    render(
+      <TestApp
+        api={api({
+          getSession: async () => {
+            throw new ApiError(401);
+          },
+        })}
+        initialEntries={["/"]}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: /Plans that move/i }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Sign in with Google" }));
+    expect(
+      await screen.findByRole("heading", { name: /Build the plan/i }),
+    ).toBeInTheDocument();
   });
 
   it("revokes the session from the application shell", async () => {
@@ -177,7 +198,7 @@ describe("App session restoration", () => {
       expect(logout).toHaveBeenCalledWith(session.csrf_token),
     );
     expect(
-      await screen.findByRole("heading", { name: /Build the plan/i }),
+      await screen.findByRole("heading", { name: /Plans that move/i }),
     ).toBeInTheDocument();
   });
 

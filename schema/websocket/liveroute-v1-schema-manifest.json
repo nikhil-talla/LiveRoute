@@ -5,7 +5,7 @@
   "files": [
     {
       "path": "schema/websocket/liveroute-v1-client-envelope.schema.json",
-      "sha256": "b967889ff3515f7210ceb87e47dbdfab286a2297a9732f6e86b3698dd840a7fb"
+      "sha256": "dcf6f0371547ec74765739ea9780bd275b58bfc2a689392ed3392dd446f3517f"
     },
     {
       "path": "schema/websocket/liveroute-v1-server-envelope.schema.json",
@@ -16,5 +16,5 @@
       "sha256": "87b450707a96fc2732f9a0402aae25eee844d81e9f603a3b4d6172fb9c808441"
     }
   ],
-  "bundle_sha256": "d1162b40e0be84a4ba4f886d4b288d2b796c56bd385f04b7c9e05a27dfeafb47"
+  "bundle_sha256": "2a132fc9fa0010eb814db5a0dc0e5ce4dde63e2b1510ce16df9e19e7998d07f7"
 }

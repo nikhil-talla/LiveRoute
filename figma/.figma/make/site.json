@@ -1,0 +1,10 @@
+{
+  "description": "Streamline logistics with a clean, intuitive interface featuring live status updates, progress tracking, and clear visual cues for efficient route management.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
